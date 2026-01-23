@@ -1,0 +1,89 @@
+#cloud-config
+autoinstall:
+  version: 1
+  interactive: false
+
+  # [优化 1] 增加 reboot 策略，安装完自动拔盘重启，无需人工干预
+  shutdown: reboot
+
+  # [优化 2] 语言与键盘设置（避免有些系统默认变成没法输入的布局）
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+
+  # [优化 3] 存储安全防呆
+  storage:
+    layout:
+      name: direct
+      # ⚠️ 关键：防止把系统装到 USB 启动盘上！
+      # 逻辑：只安装到最大的那块盘（通常是硬盘），或者指定 size: "20G+"
+      match:
+        size: largest 
+
+  identity:
+    hostname: myserver
+    username: admin
+    # 密码是 "admin" (以下是哈希值，不能是明文 , 生成方式 openssl passwd -6 admin )
+    password: "$6$tY22hWWMnPlGHjLQ$Oz16kbvmSDYccQVUiFBP5jlqRktAQVebHmEDcuhooC9Yh189GJ1L.VAQOJxwXkghejh9fVOc1l2piYJ2vWo0K0"
+
+  # [优化 4] SSH 增强（允许密码登录，方便内网调试）
+  ssh:
+    install-server: true
+    allow-pw: true
+    authorized-keys: [] #以此覆盖默认行为
+
+  # ====================================================
+  # 阶段 1: Late Commands (文件搬运 + 权限修正)
+  # ====================================================
+  late-commands:
+    # 1. 创建目录
+    - mkdir -p /target/opt/resource
+    # 2. 搬运文件
+    - cp -r /cdrom/resource/packages /target/opt/resource/
+    - cp -r /cdrom/resource/scripts  /target/opt/resource/
+    # 3. [关键优化] 修正权限
+    # ISO 里的文件通常是只读(444/555)的。cp 过去后可能还是只读，导致脚本无法执行或被修改。
+    # 这里强制改为可读写可执行。
+    - chmod -R 755 /target/opt/resource/scripts
+
+  # ====================================================
+  # 阶段 2: User Data (第一次启动 ) （以下 全部都是以 root 身份执行）
+  # ====================================================
+  user-data:
+    runcmd:
+        - |
+            #!/bin/bash
+            set -e  # 遇到错误立即停止 (可选，取决于你是否希望出错继续)
+            LOG_FILE="/var/log/scripts.log"
+            OFFLINE_LOG="/var/log/install-deb.log"
+
+            # 1. 设置静默安装环境
+            export DEBIAN_FRONTEND=noninteractive
+
+            # 2. 开始记录 (使用 -a 追加模式，或者 >>)
+            echo "========== [Phase 1] Installing offline packages ==========" | tee -a "$LOG_FILE"
+            
+            cd /opt/resource/packages
+            
+            # 将 apt 的详细嘈杂日志重定向到专用文件，主日志只记录进度
+            if apt-get install -y --allow-downgrades ./*.deb > "$OFFLINE_LOG" 2>&1; then
+                echo "✅ Packages installed successfully." | tee -a "$LOG_FILE"
+            else
+                echo "❌ Package installation failed! Check $OFFLINE_LOG" | tee -a "$LOG_FILE"
+                # exit 1 # 如果希望安装失败就中断，取消注释这一行
+            fi
+
+            # 3. 执行脚本
+            echo "========== [Phase 2] Running init script ==========" | tee -a "$LOG_FILE"
+            
+            if [ -x /opt/resource/scripts/init_system.sh ]; then
+                # 将脚本的输出追加到主日志中
+                /opt/resource/scripts/init_system.sh >> "$LOG_FILE" 2>&1
+                echo "✅ Init script executed." | tee -a "$LOG_FILE"
+            else
+                echo "⚠️  Warning: init_system.sh not found or not executable." | tee -a "$LOG_FILE"
+            fi
+
+            # 4. 标记完成
+            echo "========== Setup finished at $(date) ==========" | tee -a "$LOG_FILE"
+
