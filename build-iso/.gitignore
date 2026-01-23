@@ -1,0 +1,4 @@
+*.iso
+*.deb
+build_workspace/
+qemu.log

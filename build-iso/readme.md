@@ -93,6 +93,10 @@ sudo ./build.sh
     # 设置 root 密码
     sudo passwd root
 
+    # check installation log
+    cat /var/log/scripts.log
+    cat /var/log/install-deb.log
+
 # 从虚拟机上拉取目录或者文件到当前目录下
 ./test.sh pull <VM_Path>
 ```
