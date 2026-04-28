@@ -1,0 +1,22 @@
+version: v0.8
+superbench:
+  rules:
+    ib-traffic:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: RDMA-MULTINODE
+      aggregate: True
+      metrics:
+        - ib-traffic:perftest:multinode/.*(bw|lat|msg_rate|Gbps|Mpps).*
+    nccl-ib:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: NCCL-IB
+      aggregate: True
+      metrics:
+        - nccl-bw:bw:allreduce:ib/.+
+        - nccl-bw:bw:allgather:ib/.+
