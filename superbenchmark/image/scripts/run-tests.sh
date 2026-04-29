@@ -126,7 +126,7 @@ if [ ${#TESTS_TO_RUN[@]} -gt 0 ]; then
     echo "========================================"
     echo "步骤 1: 部署 SuperBench 到被测节点..."
     echo "========================================"
-    sb deploy -f "${HOSTS_FILE}" --no-image-pull -i "${SBCLI_IMAGE}" -o "${RESULT_DIR}/deploy"
+    sb deploy -f "${HOSTS_FILE}" --no-image-pull -i "${WORKER_IMAGE}" -o "${RESULT_DIR}/deploy"
     echo "部署完成"
     echo ""
 fi
