@@ -200,7 +200,7 @@ metal-deployer/
 
 ---
 
-## 五、参考链接
+## 六、参考链接
 
 - [SuperBench 官方文档](https://microsoft.github.io/superbenchmark/)
 - [Ubuntu Autoinstall](https://canonical-subiquity.readthedocs-hosted.com/)
