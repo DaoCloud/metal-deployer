@@ -1,0 +1,49 @@
+diff --git a/superbench/analyzer/result_summary.py b/superbench/analyzer/result_summary.py
+index 09954a8d..9ae551fb 100644
+--- a/superbench/analyzer/result_summary.py
++++ b/superbench/analyzer/result_summary.py
+@@ -185,7 +185,9 @@ def generate_md_lines(self, summary):
+         for category in summary:
+             lines.append('## {}\n'.format(category))
+             summary_df = pd.DataFrame(summary[category])
+-            summary_df = summary_df.drop(columns=0, axis=1)
++            # Keep this call compatible with newer pandas, which rejects mixing
++            # columns=/index= with axis= in DataFrame.drop().
++            summary_df = summary_df.drop(columns=0)
+             header = ['metric', 'statistics', 'values']
+             table_lines = file_handler.generate_md_table(summary_df, header)
+             lines.extend(table_lines)
+@@ -210,7 +212,9 @@ def output_summary_in_excel(self, raw_data_df, summary, output_path):
+             file_handler.output_excel_raw_data(writer, raw_data_df, 'Raw Data')
+             # output the result summary in 'Summary' sheet
+             if isinstance(summary, pd.DataFrame) and not summary.empty:
+-                summary.to_excel(writer, 'Summary', index=False, header=False)
++                # Use keyword arguments for sheet_name and other options so this
++                # remains valid with newer pandas keyword-only signatures.
++                summary.to_excel(writer, sheet_name='Summary', index=False, header=False)
+                 worksheet = writer.sheets['Summary']
+                 row = worksheet.max_row
+                 # merge cells in 'category' column with the same category
+diff --git a/superbench/runner/playbooks/check_env.yaml b/superbench/runner/playbooks/check_env.yaml
+index 0d559c28..582a9d72 100644
+--- a/superbench/runner/playbooks/check_env.yaml
++++ b/superbench/runner/playbooks/check_env.yaml
+@@ -23,13 +23,16 @@
+     workspace: '{{ ansible_user_dir }}/sb-workspace'
+     container: sb-workspace
+     skip_docker: '{{ no_docker | default(false) }}'
+-    sb_nodes: '{{ hostvars.values() | map(attribute="ansible_hostname") | sort }}'
++    # Use the inventory addresses directly so MPI launches against the same
++    # endpoints Ansible can already reach. This avoids requiring intra-node
++    # hostname resolution for ansible_hostname values.
++    sb_nodes: '{{ groups["all"] | sort }}'
+     sb_env: |
+       # sb env
+       SB_WORKSPACE={{ workspace if skip_docker else '/root' }}
+       # pytorch env
+       NNODES={{ sb_nodes | length }}
+-      NODE_RANK={{ lookup('ansible.utils.index_of', sb_nodes, 'eq', ansible_hostname) }}
++      NODE_RANK={{ lookup('ansible.utils.index_of', sb_nodes, 'eq', inventory_hostname) }}
+       MASTER_ADDR={{ sb_nodes | first }}
+       MASTER_PORT=29500
+       OMP_NUM_THREADS=1

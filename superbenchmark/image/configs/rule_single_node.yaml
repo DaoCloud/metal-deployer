@@ -1,0 +1,85 @@
+version: v0.8
+superbench:
+  rules:
+    cpu-memory-bw-latency:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: CPU-MEM
+      aggregate: True
+      metrics:
+        - cpu-memory-bw-latency/mem_.*_(bw|lat)
+    cpu-hpl:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: CPU-COMPUTE
+      aggregate: True
+      metrics:
+        - cpu-hpl/.*
+    disk-benchmark:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: DISK
+      aggregate: True
+      metrics:
+        - disk-benchmark/.*(bw|iops|lat|clat|slat).*
+    gpu-copy-bw:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: GPU-MEM
+      aggregate: True
+      metrics:
+        - gpu-copy-bw:perf/.+_bw
+    kernel-launch:
+      statistics:
+        - mean
+        - p90
+        - min
+        - max
+      categories: GPU-LAUNCH
+      aggregate: True
+      metrics:
+        - kernel-launch:.*/.*(overhead|time)
+    gemm-flops:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: GPU-COMPUTE
+      aggregate: True
+      metrics:
+        - gemm-flops:.*/.*(flops|tflops).*
+    gpu-burn:
+      statistics:
+        - mean
+        - max
+      categories: GPU-STABILITY
+      aggregate: True
+      metrics:
+        - gpu-burn:.*/.*
+    ib-loopback:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: RDMA-LOCAL
+      aggregate: True
+      metrics:
+        - ib-loopback:1G/.*(Avg|BW|Gbps|Mpps).*
+    nccl-nvlink:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: NCCL-NVLINK
+      aggregate: True
+      metrics:
+        - nccl-bw:bw:allreduce:nvlink/.+
+        - nccl-bw:lat:allreduce:nvlink/.+

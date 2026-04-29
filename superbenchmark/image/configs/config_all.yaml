@@ -1,0 +1,179 @@
+version: v0.13
+superbench:
+  enable:
+  - cpu-memory-bw-latency
+  - cpu-hpl
+  - gpu-copy-bw:perf
+  - gpu-copy-bw:correctness
+  - disk-benchmark
+  - ib-loopback:1G
+  - nccl-bw:lat:allgather:nvlink
+  - nccl-bw:lat:allreduce:nvlink
+  - nccl-bw:lat:alltoall:nvlink
+  - nccl-bw:bw:allgather:nvlink
+  - nccl-bw:bw:allreduce:nvlink
+  - nccl-bw:bw:alltoall:nvlink
+  - nccl-bw:lat:allgather:nvlink-sharp
+  - nccl-bw:lat:allreduce:nvlink-sharp
+  - nccl-bw:lat:alltoall:nvlink-sharp
+  - nccl-bw:bw:allgather:nvlink-sharp
+  - nccl-bw:bw:allreduce:nvlink-sharp
+  - nccl-bw:bw:alltoall:nvlink-sharp
+  - nccl-bw:lat:allgather:nvlink:graph
+  - nccl-bw:lat:allreduce:nvlink:graph
+  - nccl-bw:lat:alltoall:nvlink:graph
+  - nccl-bw:bw:allgather:nvlink:graph
+  - nccl-bw:bw:allreduce:nvlink:graph
+  - nccl-bw:bw:alltoall:nvlink:graph
+  - nccl-bw:lat:allgather:nvlink-sharp:graph
+  - nccl-bw:lat:allreduce:nvlink-sharp:graph
+  - nccl-bw:lat:alltoall:nvlink-sharp:graph
+  - nccl-bw:bw:allgather:nvlink-sharp:graph
+  - nccl-bw:bw:allreduce:nvlink-sharp:graph
+  - nccl-bw:bw:alltoall:nvlink-sharp:graph
+  - nccl-bw:bw:allreduce:ib
+  - kernel-launch
+  - cublaslt-gemm:compute
+  - gemm-flops
+  - cudnn-function
+  - cublas-function
+  - matmul
+  - computation-communication-overlap
+  - sharding-matmul
+  - gpu-burn
+  - cublaslt-gemm:memory:fp16
+  - cublaslt-gemm:memory:fp8
+  - dist-inference:gpt-3-175b:6144-12288-1
+  - dist-inference:gpt-3-175b:6144-12288-2
+  - dist-inference:gpt-3-175b:6144-12288-4
+  - dist-inference:gpt-3-175b:6144-12288-8
+  - dist-inference:gpt-3-175b:6144-12288-16
+  - dist-inference:gpt-3-175b:6144-12288-32
+  - dist-inference:gpt-3-175b:6144-12288-64
+  - dist-inference:gpt-3-175b:6144-12288-128
+  - dist-inference:gpt-3-175b:6144-12288-256
+  - dist-inference:gpt-3-175b:6144-12288-512
+  - dist-inference:gpt-3-175b:6144-12288-1024
+  - dist-inference:gpt-3-175b:6144-12288-2048
+  - model-benchmarks:gpt:peak:gpt-large:float32
+  - model-benchmarks:gpt:peak:gpt-large:float16
+  - model-benchmarks:gpt:peak:gpt-large:fp8_hybrid
+  - model-benchmarks:gpt:peak:gpt-small:float32
+  - model-benchmarks:gpt:peak:gpt-small:float16
+  - model-benchmarks:gpt:peak:gpt-small:fp8_hybrid
+  - model-benchmarks:bert:peak:bert-base:float32
+  - model-benchmarks:bert:peak:bert-base:float16
+  - model-benchmarks:bert:peak:bert-base:fp8_hybrid
+  - model-benchmarks:bert:peak:bert-large:float32
+  - model-benchmarks:bert:peak:bert-large:float16
+  - model-benchmarks:bert:peak:bert-large:fp8_hybrid
+  - model-benchmarks:lstm:peak:lstm:float32
+  - model-benchmarks:lstm:peak:lstm:float16
+  - model-benchmarks:resnet:peak:resnet50:float32
+  - model-benchmarks:resnet:peak:resnet50:float16
+  - model-benchmarks:resnet:peak:resnet152:float32
+  - model-benchmarks:resnet:peak:resnet152:float16
+  - model-benchmarks:vgg:peak:vgg11:float32
+  - model-benchmarks:vgg:peak:vgg11:float16
+  - model-benchmarks:vgg:peak:vgg19:float32
+  - model-benchmarks:vgg:peak:vgg19:float16
+  - model-benchmarks:llama:peak:llama2-7b:float16
+  - model-benchmarks:llama:peak:llama2-7b:fp8_hybrid
+  - megatron-gpt:lm:bs2
+  - megatron-gpt:lm:bs4
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  var:
+    default_timeout: 600
+    default_local_mode:
+      modes:
+      - name: local
+        proc_num: 8
+        prefix: CUDA_VISIBLE_DEVICES={proc_rank}
+        parallel: true
+    default_pytorch_mode:
+      modes:
+      - name: torch.distributed
+        proc_num: 8
+        node_num: 1
+        env:
+          NCCL_DEBUG: WARN
+          NCCL_ASYNC_ERROR_HANDLING: '0'
+      frameworks:
+      - pytorch
+    model_ddp_parameter:
+      duration: 0
+      num_warmup: 128
+      num_steps: 512
+      sample_count: 8192
+      batch_size: 128
+      precision:
+      - float32
+      - float16
+      model_action:
+      - train
+      pin_memory: true
+      num_workers: 0
+    nccl_param:
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+    nccl_graph_param:
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+      graph_iters: 1
+    default_nccl_mode:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: 1
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '0'
+          CUBLASLT_LOG_LEVEL: '1'
+    nccl_sharp_mode:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: 1
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '1'
+    nccl_env:
+      NCCL_IB_PCI_RELAXED_ORDERING: '1'
+      NCCL_NET_GDR_LEVEL: '5'
+      NCCL_DEBUG: WARN
+      NCCL_SOCKET_IFNAME: eth0
+    default_dist_inference_param:
+      num_layers: 50
+      num_warmup: 20
+      num_steps: 100
+      use_cuda_graph: true
+      tune_gemm: true
+    default_dist_inference_mode:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: 1
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '1'
+      frameworks:
+      - pytorch

@@ -1,0 +1,55 @@
+version: v0.8
+superbench:
+  rules:
+    micro-core:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: MICRO
+      aggregate: True
+      metrics:
+        - cpu-memory-bw-latency:.*/mem_.*_(bw|lat)
+        - cpu-hpl:.*/.*
+        - gpu-copy-bw:(perf|correctness)/.*
+        - disk-benchmark:.*/.*
+        - ib-loopback:1G/.*
+        - kernel-launch:.*/.*
+        - gemm-flops:.*/.*
+        - cudnn-function:.*/.*
+        - cublas-function:.*/.*
+        - matmul:.*/.*
+        - computation-communication-overlap:.*/.*
+        - sharding-matmul:.*/.*
+        - gpu-burn:.*/.*
+        - cublaslt-gemm:compute/.+
+        - cublaslt-gemm:memory:fp16/.+
+        - cublaslt-gemm:memory:fp8/.+
+    nccl-all:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: NCCL
+      aggregate: True
+      metrics:
+        - nccl-bw:.*/.*
+    dist-inference:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: DIST-INFERENCE
+      aggregate: True
+      metrics:
+        - dist-inference:.*/.*
+    model-benchmarks:
+      statistics:
+        - mean
+        - min
+        - max
+      categories: MODEL
+      aggregate: True
+      metrics:
+        - model-benchmarks:.*/.*
+        - megatron-gpt:.*/.*

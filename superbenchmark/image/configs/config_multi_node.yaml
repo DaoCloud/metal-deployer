@@ -1,0 +1,194 @@
+version: v0.13
+superbench:
+  enable:
+  - ib-traffic:perftest:multinode
+  - nccl-bw:bw:allreduce:ib
+  - nccl-bw:bw:allgather:ib
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  var:
+    default_timeout: 600
+    default_local_mode:
+      modes:
+      - name: local
+        proc_num: 8
+        prefix: CUDA_VISIBLE_DEVICES={proc_rank}
+        parallel: true
+    default_pytorch_mode:
+      modes:
+      - name: torch.distributed
+        proc_num: 8
+        node_num: 1
+        env:
+          NCCL_DEBUG: WARN
+          NCCL_ASYNC_ERROR_HANDLING: '0'
+      frameworks:
+      - pytorch
+    model_ddp_parameter:
+      duration: 0
+      num_warmup: 128
+      num_steps: 512
+      sample_count: 8192
+      batch_size: 128
+      precision:
+      - float32
+      - float16
+      model_action:
+      - train
+      pin_memory: true
+      num_workers: 0
+    nccl_param:
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+    nccl_graph_param:
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+      graph_iters: 1
+    default_nccl_mode:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: all
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '0'
+          CUBLASLT_LOG_LEVEL: '1'
+    nccl_sharp_mode:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: all
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '1'
+    nccl_env:
+      NCCL_IB_PCI_RELAXED_ORDERING: '1'
+      NCCL_NET_GDR_LEVEL: '5'
+      NCCL_DEBUG: WARN
+      NCCL_SOCKET_IFNAME: eth0
+    default_dist_inference_param:
+      num_layers: 50
+      num_warmup: 20
+      num_steps: 100
+      use_cuda_graph: true
+      tune_gemm: true
+    default_dist_inference_mode:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: all
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '1'
+      frameworks:
+      - pytorch
+  benchmarks:
+    ib-traffic:perftest:multinode:
+      timeout: 6000
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: all
+        env:
+          PATH: null
+          LD_LIBRARY_PATH: null
+          SB_MICRO_PATH: null
+          SB_WORKSPACE: null
+        mca:
+          pml: ob1
+          btl: ^openib
+          btl_tcp_if_exclude: lo,docker0
+          coll_hcoll_enable: 0
+          plm_rsh_args: >-
+            "-F /root/.ssh/config -i /root/.ssh/key"
+      parameters:
+        iters: 5000
+        msg_size: 8388608
+        direction:
+        - cpu-to-cpu
+        command:
+        - ib_write_bw
+        pattern: one-to-one
+    nccl-bw:bw:allreduce:ib:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: all
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '0'
+          CUBLASLT_LOG_LEVEL: '1'
+          PATH: null
+          LD_LIBRARY_PATH: null
+          SB_MICRO_PATH: null
+          SB_WORKSPACE: null
+        mca:
+          pml: ob1
+          btl: ^openib
+          btl_tcp_if_exclude: lo,docker0
+          coll_hcoll_enable: 0
+          plm_rsh_args: >-
+            "-F /root/.ssh/config -i /root/.ssh/key"
+      parameters:
+        minbytes: 1
+        maxbytes: 16G
+        stepfactor: 2
+        check: 1
+        warmup_iters: 20
+        iters: 100
+        ngpus: 1
+        operation: allreduce
+        in_place: true
+        data_type: half
+    nccl-bw:bw:allgather:ib:
+      enable: true
+      timeout: 600
+      modes:
+      - name: mpi
+        proc_num: 8
+        node_num: all
+        env:
+          NCCL_DEBUG: DEBUG
+          NCCL_NVLS_ENABLE: '0'
+          CUBLASLT_LOG_LEVEL: '1'
+          PATH: null
+          LD_LIBRARY_PATH: null
+          SB_MICRO_PATH: null
+          SB_WORKSPACE: null
+        mca:
+          pml: ob1
+          btl: ^openib
+          btl_tcp_if_exclude: lo,docker0
+          coll_hcoll_enable: 0
+          plm_rsh_args: >-
+            "-F /root/.ssh/config -i /root/.ssh/key"
+      parameters:
+        minbytes: 1
+        maxbytes: 16G
+        stepfactor: 2
+        check: 1
+        warmup_iters: 20
+        iters: 100
+        ngpus: 1
+        operation: allgather
+        in_place: true
