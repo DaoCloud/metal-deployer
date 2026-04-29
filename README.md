@@ -172,7 +172,7 @@ make clean-iso
 
 ---
 
-## 四、项目结构
+## 五、项目结构
 
 ```
 metal-deployer/
