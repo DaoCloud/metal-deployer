@@ -3,8 +3,8 @@
 # Copyright 2024 Authors of metal-deployer
 # SPDX-License-Identifier: Apache-2.0
 #
-# Configuration Ubuntu 24.04 (Noble Numbat) APT MirrorSource
-# Supports: aliyun, intranet mirror, or official source
+# Configuration Ubuntu 24.04 (Noble Numbat) APT source.
+# Default first-boot mode is offline local repository from the ISO payload.
 
 set -o errexit
 set -o nounset
@@ -15,8 +15,8 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 1
 fi
 
-# Mirror source selection (can be overridden via environment variable)
-MIRROR_SOURCE="${MIRROR_SOURCE:-aliyun}"  # Optional: aliyun, intranet, official
+# Source selection (can be overridden via environment variable)
+MIRROR_SOURCE="${MIRROR_SOURCE:-local}"  # Optional: local, aliyun, intranet, official
 
 # Intranet mirror address (used when MIRROR_SOURCE=intranet)
 INTRANET_MIRROR="${INTRANET_MIRROR:-http://mirrors.intranet.daocloud.io}"
@@ -25,14 +25,32 @@ echo "=========================================="
 echo "Configure APT mirror source: ${MIRROR_SOURCE}"
 echo "=========================================="
 
-# Backup original sources.list
+# Backup original APT source files and disable Ubuntu 24.04 deb822 source so
+# this script owns the active mirror set.
 if [ -f /etc/apt/sources.list ]; then
-    cp -n /etc/apt/sources.list /etc/apt/sources.list.bak.$(date +%Y%m%d%H%M%S) || true
+    cp -a /etc/apt/sources.list /etc/apt/sources.list.bak.$(date +%Y%m%d%H%M%S) || true
     echo "✅ Backed up original sources.list"
+fi
+if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+    cp -a /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.bak.$(date +%Y%m%d%H%M%S) || true
+    mv -f /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.disabled
+    echo "✅ Disabled original ubuntu.sources"
 fi
 
 # Select configuration based on mirror source
 case "${MIRROR_SOURCE}" in
+    local)
+        echo "📦 Use local ISO package repository"
+        if [ ! -f /opt/resource/packages/Packages ] && [ ! -f /opt/resource/packages/Packages.gz ]; then
+            echo "❌ Local APT repository index missing: /opt/resource/packages/Packages[.gz]"
+            exit 1
+        fi
+        cat <<'EOF' > /etc/apt/sources.list
+# Local offline repository copied from ISO
+deb [trusted=yes] file:/opt/resource/packages ./
+EOF
+        ;;
+
     aliyun)
         echo "🌐 Use Aliyun mirror"
         cat <<'EOF' > /etc/apt/sources.list
@@ -92,14 +110,18 @@ EOF
 
     *)
         echo "❌ Unknown mirror source type: ${MIRROR_SOURCE}"
-        echo "Supported options: aliyun, intranet, official"
+        echo "Supported options: local, aliyun, intranet, official"
         exit 1
         ;;
 esac
 
 # Update APT cache
 echo "🔄 Update APT cache..."
-apt-get update
+apt-get \
+    -o Acquire::Retries=3 \
+    -o Acquire::http::Timeout=30 \
+    -o Acquire::https::Timeout=30 \
+    update
 
 echo "=========================================="
 echo "✅ APT Mirror source configuration complete"

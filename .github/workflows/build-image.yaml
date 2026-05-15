@@ -1,0 +1,62 @@
+name: Build Image
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - 'benchmarks/superbenchmark/image/**'
+      - 'benchmarks/deepep-ucx/image/**'
+      - '.github/workflows/build-image.yaml'
+      - '.github/workflows/call-build-image.yaml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'benchmarks/superbenchmark/image/**'
+      - 'benchmarks/deepep-ucx/image/**'
+      - '.github/workflows/build-image.yaml'
+      - '.github/workflows/call-build-image.yaml'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - sbcli
+          - deepep-ucx
+      push:
+        description: Push image to registry
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      version:
+        description: Release version for semver image tags, for example v0.1.0
+        required: false
+        default: ''
+      latest:
+        description: Tag image as latest
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  build-image:
+    uses: ./.github/workflows/call-build-image.yaml
+    with:
+      image: ${{ github.event_name == 'workflow_dispatch' && inputs.image || 'all' }}
+      push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push == 'true') }}
+      version: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      latest: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.latest == 'true') }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write

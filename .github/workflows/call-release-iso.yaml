@@ -1,0 +1,188 @@
+name: Call Release ISO
+
+on:
+  workflow_call:
+    inputs:
+      nvidia_driver_branch:
+        description: NVIDIA driver branch to bake into install.env
+        required: true
+        default: default
+        type: string
+      cuda_profile:
+        description: CUDA manifest profile
+        required: true
+        default: 'cuda13'
+        type: string
+      version:
+        description: Release version, used in ISO filename (metal-deployer-vX.Y.Z-...)
+        required: true
+        default: 'v0.1.0'
+        type: string
+      destination_url:
+        description: Destination URL/path for ISO upload; leave empty to skip publish
+        required: false
+        default: ''
+        type: string
+      cleanup_after_run:
+        description: Remove CI working directory after uploading artifacts
+        required: true
+        default: 'false'
+        type: string
+
+concurrency:
+  group: release-iso-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-iso:
+    name: Build and publish ISO
+    runs-on: [self-hosted, linux, x64, 10-64-65-31]
+    timeout-minutes: 80
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      DOWNLOAD_IMAGES: 'false'
+      NVIDIA_DRIVER_BRANCH: ${{ inputs.nvidia_driver_branch }}
+      CUDA_PROFILE: ${{ inputs.cuda_profile }}
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+      RELEASE_ISO_DESTINATION_URL: ${{ inputs.destination_url }}
+      ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}
+      ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/iso
+      PACKAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/packages
+      IMAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/packages/images
+      BUILD_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/build_workspace
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute artifact names
+        run: |
+          set -euxo pipefail
+          TS="$(date -u +%Y%m%d%H%M)"
+          UBUNTU_VER="$(grep -oE 'ubuntu-[0-9]+\.[0-9]+' "$MANIFEST_FILE" | head -n1 | sed 's/ubuntu-//')"
+          UBUNTU_TAG="ubuntu${UBUNTU_VER//./}"
+          BASE_NAME="metal-deployer-${{ inputs.version }}-${UBUNTU_TAG}-${TS}-${CUDA_PROFILE}"
+          OUT_DIR="${ISO_CI_WORK_DIR}"
+          echo "OUTPUT_ISO=${OUT_DIR}/${BASE_NAME}.iso" >> "$GITHUB_ENV"
+          echo "OUTPUT_ISO_INFO=${OUT_DIR}/${BASE_NAME}.info.txt" >> "$GITHUB_ENV"
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ruby xorriso mtools dosfstools
+
+      - name: Restore ISO/package cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build-iso/.ci-work/iso
+            build-iso/.ci-work/packages
+          key: iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
+          restore-keys: |
+            iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-
+
+      - name: Download base ISO and packages
+        run: |
+          set -euxo pipefail
+          cd build-iso
+          ./prepare.sh --skip-images
+          find "$ISO_DIR" "$PACKAGE_DIR" -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+
+      - name: Build custom ISO
+        run: |
+          set -euxo pipefail
+          sudo --preserve-env=DEBIAN_FRONTEND,NVIDIA_DRIVER_BRANCH,MANIFEST_FILE,ISO_DIR,PACKAGE_DIR,CONFIG_DIR,BUILD_WORK_DIR,OUTPUT_ISO ./build-iso/build.sh
+          ls -lh "$OUTPUT_ISO"
+
+      - name: Generate ISO info file
+        run: |
+          set -euxo pipefail
+          INFO_FILE="$OUTPUT_ISO_INFO"
+          ruby - "$MANIFEST_FILE" "$CUDA_PROFILE" "$NVIDIA_DRIVER_BRANCH" "$INFO_FILE" <<'RUBY'
+          require "yaml"
+          manifest_path, cuda_profile, driver_branch, out_path = ARGV
+          m = YAML.safe_load_file(manifest_path, permitted_classes: [Symbol], aliases: true)
+
+          profile_data = m.dig("cuda", "profiles", cuda_profile) || {}
+          env = profile_data["install_environment"] || {}
+          base_iso = m.dig("basic", "base_iso") || {}
+          basic_pkgs  = Array(m.dig("basic", "packages"))
+          profile_pkgs = Array(profile_data["packages"])
+          basic_imgs  = Array(m.dig("basic", "docker_images"))
+          profile_imgs = Array(profile_data["docker_images"])
+
+          lines = []
+          lines << "=== ISO Build Info ==="
+          lines << "Build time : #{Time.now.utc.strftime("%Y-%m-%d %H:%M:%S UTC")}"
+          lines << "Manifest   : #{manifest_path} (version #{m["manifest_version"]})"
+          lines << "CUDA profile         : #{cuda_profile}"
+          lines << "NVIDIA driver branch : #{driver_branch}"
+          lines << ""
+          lines << "=== Base OS ==="
+          src = base_iso["source"].to_s
+          ubuntu_ver = src[/ubuntu-([0-9]+\.[0-9]+(?:\.[0-9]+)?)/, 1]
+          arch = src[/(amd64|arm64)/, 1]
+          lines << "  Ubuntu     : #{ubuntu_ver}#{arch ? " (#{arch})" : ""}" if ubuntu_ver
+          lines << "  Image      : #{File.basename(src)}" unless src.empty?
+          lines << "  Source     : #{src}"
+          lines << "  Local path : #{base_iso["local_path"]}"
+          checksum = base_iso["checksum"] || {}
+          lines << "  Checksum   : #{checksum["algorithm"]}:#{checksum["value"]}" if checksum["value"]
+          lines << ""
+          lines << "=== Install Environment ==="
+          env.each { |k, v| lines << "  #{k}=#{v}" }
+          lines << ""
+          lines << "=== Packages (basic) ==="
+          basic_pkgs.each do |p|
+            next unless p["version"] && p["name"]
+            lines << "  #{p["name"]} #{p["version"]}#{p["download"] == false ? " [skip-download]" : ""}"
+          end
+          lines << ""
+          lines << "=== Packages (#{cuda_profile} profile) ==="
+          profile_pkgs.each do |p|
+            next unless p["version"] && p["name"]
+            lines << "  #{p["name"]} #{p["version"]}#{p["download"] == false ? " [skip-download]" : ""}"
+          end
+          lines << ""
+          lines << "=== Docker Images ==="
+          (basic_imgs + profile_imgs).each do |img|
+            lines << "  #{img["name"]} : #{img["image"]}  -> #{img["filename"]}"
+          end
+          lines << ""
+
+          File.write(out_path, lines.join("\n") + "\n")
+          puts "Written: #{out_path}"
+          RUBY
+          cat "$OUTPUT_ISO_INFO"
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-ubuntu-iso
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            ${{ env.OUTPUT_ISO }}
+            ${{ env.OUTPUT_ISO_INFO }}
+
+      - name: Publish ISO to destination
+        if: ${{ env.RELEASE_ISO_DESTINATION_URL != '' }}
+        run: |
+          set -euxo pipefail
+          curl -fL --retry 3 --retry-delay 2 \
+            --upload-file "$OUTPUT_ISO" \
+            "$RELEASE_ISO_DESTINATION_URL"
+
+      - name: Destination not configured
+        if: ${{ env.RELEASE_ISO_DESTINATION_URL == '' }}
+        run: |
+          echo "RELEASE_ISO_DESTINATION_URL is empty; skip ISO publish."
+
+      - name: Clean CI working directory
+        if: ${{ always() && inputs.cleanup_after_run == 'true' }}
+        run: |
+          set -euxo pipefail
+          rm -rf "$ISO_CI_WORK_DIR"

@@ -133,12 +133,14 @@ jobs:
     name: Build ISO and run smoke test
     runs-on: [self-hosted, linux, x64, 10-64-65-31]
     timeout-minutes: 100
+    needs: [lint]
 
     env:
       DEBIAN_FRONTEND: noninteractive
       DOWNLOAD_IMAGES: 'false'
       DISK_SIZE: 40G
       CUDA_PROFILE: cuda12
+      MIRROR_SOURCE: local
       MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
       CACHE_BASE_DIR: /home/runner/actions-runner/_work/metal-deployer-cache
       ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12
@@ -149,6 +151,7 @@ jobs:
       OUTPUT_ISO: ${{ github.workspace }}/build-iso/.ci-work/cuda12/custom-ubuntu.iso
       TEST_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/qemu
       ISO_FILE: ${{ github.workspace }}/build-iso/.ci-work/cuda12/custom-ubuntu.iso
+      NET_RESTRICT: 'true'
 
     steps:
       - name: Checkout repository
@@ -192,7 +195,7 @@ jobs:
       - name: Build custom ISO
         run: |
           set -euxo pipefail
-          sudo --preserve-env=DEBIAN_FRONTEND,CUDA_PROFILE,MANIFEST_FILE,ISO_DIR,PACKAGE_DIR,CONFIG_DIR,BUILD_WORK_DIR,OUTPUT_ISO ./build-iso/build.sh
+          sudo --preserve-env=DEBIAN_FRONTEND,CUDA_PROFILE,MIRROR_SOURCE,MANIFEST_FILE,ISO_DIR,PACKAGE_DIR,CONFIG_DIR,BUILD_WORK_DIR,OUTPUT_ISO ./build-iso/build.sh
           ls -lh "$OUTPUT_ISO"
           df -h
 
@@ -214,9 +217,10 @@ jobs:
           ./test.sh setup
 
       - name: Collect QEMU logs from VM
-        if: ${{ always() }}
+        if: ${{ failure() }}
         run: |
           set +e
+          mkdir -p "$ISO_CI_WORK_DIR/failure-logs"
           if sshpass -p admin ssh \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
@@ -241,6 +245,7 @@ jobs:
               -o UserKnownHostsFile=/dev/null \
               -P 5555 \
               admin@localhost:/tmp/metal-deployer-logs.tgz "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz"
+            tar -C "$ISO_CI_WORK_DIR/failure-logs" -xzf "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz" 2>/dev/null || true
           else
             echo "VM SSH is not reachable; skip VM log collection."
           fi
@@ -250,19 +255,72 @@ jobs:
         run: |
           set +e
           cd build-iso
-          ./test.sh clean
+          PRESERVE_TEST_LOGS=1 ./test.sh clean
+
+      - name: Print failure logs inline
+        if: ${{ failure() }}
+        run: |
+          set +e
+          {
+            echo "## ISO CI failure logs"
+            echo
+            echo "Full logs are also uploaded as artifact \`iso-ci-logs\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          print_tail() {
+            local title="$1"
+            local file="$2"
+            local lines="${3:-200}"
+
+            if [ ! -f "$file" ]; then
+              return 0
+            fi
+
+            echo "::group::${title}"
+            tail -n "$lines" "$file" || true
+            echo "::endgroup::"
+
+            {
+              echo
+              echo "### ${title}"
+              echo '```text'
+              tail -n "$lines" "$file" || true
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          print_tail "QEMU serial log" "$TEST_WORK_DIR/qemu.log" 300
+          print_tail "cloud-init output" "$ISO_CI_WORK_DIR/failure-logs/var/log/cloud-init-output.log" 200
+          print_tail "cloud-init log" "$ISO_CI_WORK_DIR/failure-logs/var/log/cloud-init.log" 120
+          print_tail "scripts log" "$ISO_CI_WORK_DIR/failure-logs/var/log/scripts.log" 200
+          print_tail "install summary" "$ISO_CI_WORK_DIR/failure-logs/var/log/metal-deployer/install-summary.log" 200
 
       - name: Upload CI logs
-        if: ${{ always() }}
+        if: ${{ failure() }}
         uses: actions/upload-artifact@v4
         with:
           name: iso-ci-logs
           if-no-files-found: ignore
+          include-hidden-files: true
           path: |
             build-iso/.ci-work/**/qemu.log
             build-iso/.ci-work/**/iso-resource-files.txt
             build-iso/.ci-work/**/metal-deployer-logs.tgz
             build-iso/.ci-work/**/*.log
+
+      - name: Clean ISO test artifacts
+        if: ${{ always() }}
+        run: |
+          set +e
+          cd build-iso
+          PRESERVE_TEST_LOGS=0 ./test.sh clean
+          rm -rf \
+            "$TEST_WORK_DIR" \
+            "$BUILD_WORK_DIR" \
+            "$OUTPUT_ISO" \
+            "$ISO_CI_WORK_DIR/failure-logs" \
+            "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz" \
+            "$ISO_CI_WORK_DIR/iso-resource-files.txt"
 
       - name: Clean CI working directory
         if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.cleanup_after_run == 'true' }}

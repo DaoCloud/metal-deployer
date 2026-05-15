@@ -293,6 +293,60 @@ prepare_packages() {
     done
 }
 
+prepare_apt_package_closure() {
+    local packages
+    packages=$(extract_manifest_json | ruby -rjson -e '
+      m = JSON.parse(STDIN.read)
+      names = []
+      Array(m["packages"]).each do |p|
+        if p["install_method"] == "apt" && p["packages"].is_a?(Array)
+          names.concat(p["packages"])
+        end
+        Array(p["build_deps"]).each do |dep|
+          next if ["mpi", "nccl", "cuda"].include?(dep)
+          names << dep
+        end
+      end
+      puts names.compact.uniq.sort.join(" ")
+    ')
+
+    [ -n "$packages" ] || return 0
+    require_tool apt-cache
+    require_tool apt-get
+
+    echo "Resolve APT dependency closure for offline first-boot packages..."
+    # shellcheck disable=SC2086
+    apt-cache depends --recurse --no-recommends --no-suggests --no-conflicts \
+        --no-breaks --no-replaces --no-enhances $packages \
+        | awk '/^[[:alnum:]][[:alnum:].+:-]*$/ {print $1}' \
+        | sort -u \
+        | while read -r package; do
+            [ -n "$package" ] || continue
+            if ls "${PACKAGE_DIR}/${package}_"*.deb >/dev/null 2>&1; then
+                echo "Skip existing APT package: ${package}"
+                continue
+            fi
+            echo "Download APT package: ${package}"
+            if [ "$DRY_RUN" = "true" ]; then
+                echo "[dry-run] apt-get download ${package}"
+            else
+                local success=false
+                for attempt in {1..3}; do
+                    if (cd "$PACKAGE_DIR" && apt-get -o Acquire::Retries=5 download "$package"); then
+                        success=true
+                        break
+                    fi
+                    echo "⚠️ Download ${package} failed (attempt ${attempt}/3). Retrying in 2s..."
+                    sleep 2
+                done
+                if [ "$success" = "false" ]; then
+                    echo "❌ Failed to download ${package} after 3 attempts."
+                    exit 1
+                fi
+            fi
+        done
+}
+
 prepare_docker_images() {
     [ "$DOWNLOAD_IMAGES" = "true" ] || return 0
 
@@ -341,6 +395,7 @@ main() {
     prepare_ssh_keys
     prepare_base_iso
     prepare_packages
+    prepare_apt_package_closure
     prepare_docker_images
 
     echo "Prepare finished."

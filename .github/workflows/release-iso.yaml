@@ -15,10 +15,14 @@ on:
         options:
           - 'cuda13'
           - 'cuda12'
+      version:
+        description: Release version, used in ISO filename (metal-deployer-vX.Y.Z-...)
+        required: true
+        default: 'v0.1.0'
       destination_url:
         description: Destination URL/path for ISO upload; leave empty to skip publish
         required: false
-        default: ''
+        default: 'http://10.64.40.200:5000/iso/GPU'
       cleanup_after_run:
         description: Remove CI working directory after uploading artifacts
         required: true
@@ -28,86 +32,13 @@ on:
           - 'false'
           - 'true'
 
-concurrency:
-  group: release-iso-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
   release-iso:
-    name: Build and publish ISO
-    runs-on: [self-hosted, linux, x64, 10-64-65-31]
-    timeout-minutes: 80
-
-    env:
-      DEBIAN_FRONTEND: noninteractive
-      DOWNLOAD_IMAGES: 'false'
-      NVIDIA_DRIVER_BRANCH: ${{ inputs.nvidia_driver_branch }}
-      CUDA_PROFILE: ${{ inputs.cuda_profile }}
-      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
-      RELEASE_ISO_DESTINATION_URL: ${{ inputs.destination_url }}
-      ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}
-      ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/iso
-      PACKAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/packages
-      IMAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/packages/images
-      BUILD_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/build_workspace
-      OUTPUT_ISO: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/custom-ubuntu.iso
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install build dependencies
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            curl ruby xorriso mtools dosfstools
-
-      - name: Restore ISO/package cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            build-iso/.ci-work/iso
-            build-iso/.ci-work/packages
-          key: iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
-          restore-keys: |
-            iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-
-
-      - name: Download base ISO and packages
-        run: |
-          set -euxo pipefail
-          cd build-iso
-          ./prepare.sh --skip-images
-          find "$ISO_DIR" "$PACKAGE_DIR" -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
-
-      - name: Build custom ISO
-        run: |
-          set -euxo pipefail
-          sudo --preserve-env=DEBIAN_FRONTEND,NVIDIA_DRIVER_BRANCH,MANIFEST_FILE,ISO_DIR,PACKAGE_DIR,CONFIG_DIR,BUILD_WORK_DIR,OUTPUT_ISO ./build-iso/build.sh
-          ls -lh "$OUTPUT_ISO"
-
-      - name: Upload ISO artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: custom-ubuntu-iso
-          if-no-files-found: error
-          path: ${{ env.OUTPUT_ISO }}
-
-      - name: Publish ISO to destination
-        if: ${{ env.RELEASE_ISO_DESTINATION_URL != '' }}
-        run: |
-          set -euxo pipefail
-          curl -fL --retry 3 --retry-delay 2 \
-            --upload-file "$OUTPUT_ISO" \
-            "$RELEASE_ISO_DESTINATION_URL"
-
-      - name: Destination not configured
-        if: ${{ env.RELEASE_ISO_DESTINATION_URL == '' }}
-        run: |
-          echo "RELEASE_ISO_DESTINATION_URL is empty; skip ISO publish."
-
-      - name: Clean CI working directory
-        if: ${{ always() && inputs.cleanup_after_run == 'true' }}
-        run: |
-          set -euxo pipefail
-          rm -rf "$ISO_CI_WORK_DIR"
+    uses: ./.github/workflows/call-release-iso.yaml
+    with:
+      nvidia_driver_branch: ${{ inputs.nvidia_driver_branch }}
+      cuda_profile: ${{ inputs.cuda_profile }}
+      version: ${{ inputs.version }}
+      destination_url: ${{ inputs.destination_url }}
+      cleanup_after_run: ${{ inputs.cleanup_after_run }}
+    secrets: inherit

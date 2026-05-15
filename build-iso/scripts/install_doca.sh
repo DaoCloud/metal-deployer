@@ -20,8 +20,7 @@ fi
 
 apt-get update
 
-# DOCA package names differ across releases. DOCA 3.3 host installs the
-# host RDMA/OFED path through doca-networking.
+# DOCA package names differ across releases. Follow NVIDIA host install path.
 read -r -a doca_packages <<< "${DOCA_PACKAGES:-doca-networking}"
 
 if ! apt-get install -y --allow-downgrades "${doca_packages[@]}"; then

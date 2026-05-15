@@ -71,14 +71,6 @@ basic:
     required: true
     filename: docker-compose-plugin-5.0.0-ubuntu2404.deb
     install_method: apt
-  - name: mlnx-ofed
-    description: Mellanox/NVIDIA MLNX_OFED 驱动（InfiniBand/RDMA）- Ubuntu 24.04 专用,仅作为
-      DOCA 不可用时的 fallback
-    url: https://content.mellanox.com/ofed/MLNX_OFED-24.04-0.6.6.0/MLNX_OFED_LINUX-24.04-0.6.6.0-ubuntu24.04-x86_64.tgz
-    version: 24.04-0.6.6.0
-    required: false
-    filename: mlnx-ofed-24.04-0.6.6.0-ubuntu24.04.tgz
-    install_method: script
   - name: librdmacm-dev
     description: RDMA CM development headers（perftest 构建依赖,Ubuntu 24.04）
     url: http://archive.ubuntu.com/ubuntu/pool/main/r/rdma-core/librdmacm-dev_50.0-2ubuntu0.2_amd64.deb
@@ -99,6 +91,13 @@ basic:
     version: 50.0-2ubuntu0.2
     required: true
     filename: ibverbs-utils_50.0-2ubuntu0.2_amd64.deb
+    install_method: apt
+  - name: infiniband-diags
+    description: InfiniBand diagnostics utilities（ibstat 等,Ubuntu 24.04）
+    url: http://archive.ubuntu.com/ubuntu/pool/universe/r/rdma-core/infiniband-diags_50.0-2ubuntu0.2_amd64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: infiniband-diags_50.0-2ubuntu0.2_amd64.deb
     install_method: apt
   - name: doca-host
     description: NVIDIA DOCA host repository（Ubuntu 24.04,提供 DOCA Networking/RDMA 驱动）
@@ -165,8 +164,6 @@ basic:
     - stressapptest
     - memtester
     - sysstat
-    - linux-tools-generic
-    - linux-cloud-tools-generic
     - dmidecode
     - pciutils
     - usbutils
@@ -251,26 +248,16 @@ basic:
     build_deps:
     - cmake
     - cuda
-  - name: ofed-utils
-    description: OFED 用户态工具集合（Ubuntu 24.04）
-    download: false
-    url: http://mirrors.intranet.daocloud.io/mellanox/ofed/ofed-utilities-ubuntu2404.deb
-    version: 24.04-0.6.6.0
-    required: false
-    filename: ofed-utilities-24.04-ubuntu2404.deb
-    install_method: apt
-    packages:
-    - infiniband-diags
-    - rdmacm-utils
-    - ibverbs-utils
-    - ibutils2
-    - ibdump
-    - libibumad3
   docker_images:
   - name: superbench
     description: Microsoft/NVIDIA SuperBench GPU/RDMA 基准测试镜像（仓库文档默认使用）
     image: docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9
     filename: images/superbench-v0.12.0-cuda12.9.tar
+    required: false
+  - name: deepep-ucx
+    description: DeepEP with UCX for high-performance GPU communication
+    image: ghcr.io/daocloud/metal-deployer/deepep-ucx:latest
+    filename: images/deepep-ucx-latest.tar
     required: false
   runtime_config:
     ssh:
@@ -301,13 +288,8 @@ basic:
     source: scripts/nvidia_setup.sh
     target: scripts/nvidia_setup.sh
     executable: true
-  - name: install_ofed
-    description: MLNX_OFED fallback 安装脚本（默认不作为 RDMA 首选）
-    source: scripts/install_ofed.sh
-    target: scripts/install_ofed.sh
-    executable: true
   - name: install_doca
-    description: DOCA 安装脚本（RDMA/OFED 默认入口,适用于 ConnectX/BlueField）
+    description: DOCA 安装脚本（RDMA 默认入口,适用于 ConnectX/BlueField）
     source: scripts/install_doca.sh
     target: scripts/install_doca.sh
     executable: true
@@ -355,11 +337,6 @@ basic:
     description: 编译安装 GDRCopy 和 gdrdrv 内核模块
     source: scripts/install_gdrcopy.sh
     target: scripts/install_gdrcopy.sh
-    executable: true
-  - name: install_ofed_utils
-    description: 安装 OFED 用户态工具（infiniband-diags 等）
-    source: scripts/install_ofed_utils.sh
-    target: scripts/install_ofed_utils.sh
     executable: true
   - name: set_nic_rdma_mode
     description: Spiderpool RDMA 网卡模式切换脚本（支持 InfiniBand/Ethernet 切换）
@@ -636,29 +613,17 @@ user_data:
       enabled: true
       log: "/var/log/apt-install.log"
     - name: doca_install
-      description: 通过 DOCA 安装 RDMA/OFED 相关驱动和用户态组件
+      description: 通过 DOCA 安装 RDMA 相关驱动和用户态组件
       script: install_doca.sh
       enabled: true
       condition: lspci | grep -i mellanox
       log: "/var/log/doca-install.log"
-    - name: ofed_install
-      description: 安装 MLNX_OFED fallback（仅当不用 DOCA 时启用）
-      script: install_ofed.sh
-      enabled: false
-      condition: lspci | grep -i mellanox
-      log: "/var/log/ofed-install.log"
     - name: hpcx_install
       description: 安装 HPC-X（MPI 和 UCX 通信库）
       script: install_hpcx.sh
       enabled: true
       condition: test -f /opt/resource/packages/hpcx-v2.21.3-ubuntu2404-cuda12.tbz
       log: "/var/log/hpcx-install.log"
-    - name: ofed_utils
-      description: 安装 OFED 用户态工具（ibstat, ib_write_bw 等）
-      script: install_ofed_utils.sh
-      enabled: false
-      condition: test -f /opt/resource/packages/ofed-utilities-24.04-ubuntu2404.deb
-      log: "/var/log/ofed-utils.log"
     - name: test_tools_build
       description: 编译安装 RDMA/GPU 性能测试工具
       script: install_test_tools.sh

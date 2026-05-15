@@ -55,7 +55,7 @@ install_base_packages() {
         cmake git pkg-config libglvnd-dev autoconf automake \
         libpmix-dev libboost-program-options-dev libnuma1 libnuma-dev libsubunit0 \
         libpci-dev libtool devscripts debhelper fakeroot check openmpi-bin libopenmpi-dev \
-        rdma-core ibverbs-utils
+        rdma-core ibverbs-utils infiniband-diags
 
     apt-get install -y --no-install-recommends "linux-headers-$(uname -r)" || \
         log "Skip matching kernel headers install: linux-headers-$(uname -r) is unavailable."
@@ -257,14 +257,6 @@ main() {
 
     run_stage doca_install run_optional_script install_doca.sh
     run_stage rdma_modules run_optional_script configure_rdma_modules.sh
-
-    if has_rdma_adapter; then
-        run_stage ofed_utils run_optional_script install_ofed_utils.sh
-
-        if [ "${ENABLE_MLNX_OFED_FALLBACK:-false}" = "true" ]; then
-            run_stage ofed_install run_optional_script install_ofed.sh
-        fi
-    fi
 
     run_stage ssh_keys run_optional_script configure_ssh.sh
     run_stage container_runtime run_optional_script setup_container_runtime.sh

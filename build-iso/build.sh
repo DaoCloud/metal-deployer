@@ -35,11 +35,12 @@ resolve_manifest() {
 OUTPUT_ISO="${OUTPUT_ISO:-${CI_WORK_DIR}/custom-ubuntu.iso}"
 
 # 2. Dependency Check
-REQUIRED_TOOLS="xorriso sed find mtools mkfs.vfat ruby"
+REQUIRED_TOOLS="xorriso sed find mtools mkfs.vfat ruby dpkg-scanpackages"
 for tool in $REQUIRED_TOOLS; do
     if ! command -v $tool &> /dev/null; then
         echo "🔧 Installing dependency: $tool"
         if [ "$tool" == "mkfs.vfat" ]; then apt-get update -qq && apt-get install -y -qq dosfstools
+        elif [ "$tool" == "dpkg-scanpackages" ]; then apt-get update -qq && apt-get install -y -qq dpkg-dev
         else apt-get update -qq && apt-get install -y -qq $tool; fi
     fi
 done
@@ -66,6 +67,13 @@ mkdir -p "$TARGET_RES_DIR/packages"
 [ -d "$SCRIPT_DIR" ] && { cp -r "$SCRIPT_DIR" "$TARGET_RES_DIR/scripts"; chmod -R +x "$TARGET_RES_DIR/scripts"; }
 [ -d "$CONFIG_DIR" ] && cp -r "$CONFIG_DIR" "$TARGET_RES_DIR/config"
 mkdir -p "$TARGET_RES_DIR/config"
+if find "$TARGET_RES_DIR/packages" -maxdepth 1 -name '*.deb' -print -quit | grep -q .; then
+    (
+        cd "$TARGET_RES_DIR/packages"
+        dpkg-scanpackages . /dev/null > Packages
+        gzip -9c Packages > Packages.gz
+    )
+fi
 
 # Generate effective manifest for current CUDA profile
 MANIFEST_EFFECTIVE=$(resolve_manifest)
@@ -82,6 +90,11 @@ fi
 if [ -n "${NVIDIA_DRIVER_BRANCH:-}" ]; then
     printf 'NVIDIA_DRIVER_BRANCH=%q\n' "$NVIDIA_DRIVER_BRANCH" >> "$TARGET_RES_DIR/config/install.env"
 fi
+for env_key in MIRROR_SOURCE INTRANET_MIRROR; do
+    if [ -n "${!env_key:-}" ]; then
+        printf '%s=%q\n' "$env_key" "${!env_key}" >> "$TARGET_RES_DIR/config/install.env"
+    fi
+done
 
 if [ -f "$USER_DATA_FILE" ]; then
     mkdir -p "$WORK_DIR/iso-content/nocloud"

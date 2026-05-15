@@ -16,6 +16,7 @@ ISO_FILE="${ISO_FILE:-${CI_WORK_DIR}/custom-ubuntu.iso}"
 DISK_IMG="${DISK_IMG:-${TEST_WORK_DIR}/test_disk.qcow2}"
 PID_FILE="${PID_FILE:-${TEST_WORK_DIR}/qemu.pid}"
 LOG_FILE="${LOG_FILE:-${TEST_WORK_DIR}/qemu.log}"
+PRESERVE_TEST_LOGS="${PRESERVE_TEST_LOGS:-false}"
 SSH_PORT=5555
 SSH_USER="admin"
 SSH_PASS="admin" # Note: Ensure this matches the password in config/cloud-init/user-data
@@ -23,12 +24,12 @@ DISK_SIZE="${DISK_SIZE:-40G}"
 VM_MEMORY="${VM_MEMORY:-8G}"
 GPU_PASSTHROUGH="${GPU_PASSTHROUGH:-auto}"
 GPU_PCI_ADDR="${GPU_PCI_ADDR:-}"
+NET_RESTRICT="${NET_RESTRICT:-false}"
 
 # Base timeout (seconds)
 TIMEOUT=2400
 FIRST_BOOT_TIMEOUT="${FIRST_BOOT_TIMEOUT:-3600}"
 SSH_PROBE_TIMEOUT=15
-FIRST_BOOT_TIMEOUT="${FIRST_BOOT_TIMEOUT:-3600}"
 
 ssh_vm() {
     sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -76,6 +77,45 @@ dump_qemu_log() {
     else
         echo "📄 QEMU Serial logdoes not exist: ${LOG_FILE}"
     fi
+}
+
+is_truthy() {
+    case "$1" in
+        1|true|True|TRUE|yes|Yes|YES|on|On|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+remove_empty_work_dirs() {
+    local dir="$TEST_WORK_DIR"
+
+    while [ -n "$dir" ] && [ "$dir" != "/" ]; do
+        if [ ! -d "$dir" ]; then
+            break
+        fi
+        if rmdir "$dir" 2>/dev/null; then
+            echo "   -> Remove empty work directory $dir"
+        else
+            break
+        fi
+
+        if [ "$dir" = "$CI_WORK_DIR" ]; then
+            break
+        fi
+
+        case "$dir" in
+            "$CI_WORK_DIR"/*)
+                dir="$(dirname "$dir")"
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
 }
 
 # --- Check dependencies ---
@@ -183,6 +223,19 @@ do_clean() {
         echo "   -> Delete virtual disk $DISK_IMG"
         rm -f "$DISK_IMG"
     fi
+
+    # 4. Delete local QEMU test artifacts, but allow CI to keep logs until artifact upload.
+    if [ -f "$LOG_FILE" ]; then
+        if is_truthy "$PRESERVE_TEST_LOGS"; then
+            echo "   -> Preserve QEMU log $LOG_FILE"
+        else
+            echo "   -> Delete QEMU log $LOG_FILE"
+            rm -f "$LOG_FILE"
+        fi
+    fi
+
+    # 5. Remove empty test work directories, including .ci-work when only test artifacts existed.
+    remove_empty_work_dirs
     
     echo "✅ Environment cleanup complete."
 }
@@ -213,6 +266,11 @@ do_setup() {
         echo "🐢 [KVM] No available KVM detected, using software emulation mode (slower)."
     fi
     configure_gpu_passthrough
+    QEMU_NET_ARGS=(-netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22" -device "e1000,netdev=net0")
+    if is_truthy "$NET_RESTRICT"; then
+        echo "🌐 [NET] Restrict guest outbound network; keep SSH host forwarding."
+        QEMU_NET_ARGS=(-netdev "user,id=net0,restrict=on,hostfwd=tcp::${SSH_PORT}-:22" -device "e1000,netdev=net0")
+    fi
 
     echo "💿 Create disk..."
     rm -f "$DISK_IMG"
@@ -232,7 +290,7 @@ do_setup() {
       -nographic \
       -serial mon:stdio \
       "${QEMU_GPU_ARGS[@]}" \
-      -net nic -net user,hostfwd=tcp::${SSH_PORT}-:22 \
+      "${QEMU_NET_ARGS[@]}" \
       > >(tee "$LOG_FILE") 2>&1 &
     
     QEMU_PID=$!
@@ -269,17 +327,17 @@ do_setup() {
     done
 
     echo "⏳ Wait for cloud-init/first-boot scripts to complete..."
+    # init_system.sh runs in cloud-init's final stage (scripts-user / runcmd),
+    # which starts only after sshd is reachable. Block on `cloud-init status --wait`
+    # so we don't race the not-yet-started first-boot script, then verify the marker.
     if ! sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -p $SSH_PORT $SSH_USER@localhost \
         "echo '$SSH_PASS' | sudo -S timeout \"$FIRST_BOOT_TIMEOUT\" bash -c '
-            while [ ! -f /root/installed ]; do
-                if ! pgrep -af \"/opt/resource/scripts/init_system.sh|/var/lib/cloud/instance/scripts/runcmd\" \
-                    | grep -v -E \"pgrep|grep|timeout .*bash -c\" >/dev/null; then
-                    echo \"first-boot script is no longer running and /root/installed is missing\" >&2
-                    exit 2
-                fi
-                sleep 10
-            done
+            cloud-init status --wait >/dev/null 2>&1 || true
+            if [ ! -f /root/installed ]; then
+                echo \"cloud-init finished but /root/installed marker is missing\" >&2
+                exit 2
+            fi
         '"; then
         echo "❌ first-boot script did not complete normally, please check /var/log/cloud-init-output.log and /var/log/scripts.log."
         dump_first_boot_logs
