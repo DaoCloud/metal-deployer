@@ -1,0 +1,271 @@
+name: ISO Build and Smoke Test
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - '.github/workflows/iso-build-ci.yaml'
+      - 'Makefile'
+      - 'build-iso/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/iso-build-ci.yaml'
+      - 'Makefile'
+      - 'build-iso/**'
+  workflow_dispatch:
+    inputs:
+      run_qemu:
+        description: Run QEMU autoinstall smoke test
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      cuda_profile:
+        description: CUDA manifest profile
+        required: true
+        default: 'cuda13'
+        type: choice
+        options:
+          - 'cuda13'
+          - 'cuda12'
+      cleanup_after_run:
+        description: Remove CI working directory after uploading logs
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: iso-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint scripts and manifest (${{ matrix.cuda_profile }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    strategy:
+      matrix:
+        cuda_profile: ['cuda12', 'cuda13']
+
+    env:
+      CUDA_PROFILE: ${{ matrix.cuda_profile }}
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Shell syntax check
+        run: |
+          set -euxo pipefail
+          find build-iso -type f -name '*.sh' -print0 | xargs -0 -n1 bash -n
+          bash -n build-iso/test.sh
+
+      - name: Check lint dependencies
+        run: |
+          set -euo pipefail
+          missing=0
+          for tool in ruby curl bash find xargs; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "Missing required tool: ${tool}" >&2
+              missing=$((missing+1))
+            else
+              printf '%-6s -> %s\n' "$tool" "$(command -v "$tool")"
+            fi
+          done
+          # ruby needs json/yaml stdlib for prepare.sh and URL extraction.
+          if command -v ruby >/dev/null 2>&1; then
+            ruby -rjson -ryaml -e 'puts "ruby #{RUBY_VERSION} json+yaml OK"' \
+              || { echo "ruby json/yaml stdlib missing" >&2; missing=$((missing+1)); }
+          fi
+          if [ "$missing" -gt 0 ]; then
+            echo "${missing} dependency check(s) failed" >&2
+            exit 1
+          fi
+
+      - name: Check public manifest URLs are reachable
+        run: |
+          set -euo pipefail
+          # GitHub-hosted runner 访问不到内网 mirror,跳过 *.intranet.* 域名。
+          ruby -rjson -ryaml -e '
+            urls = []
+            manifest = JSON.parse(`ruby build-iso/tools/resolve_manifest.rb build-iso/manifest.yaml #{ENV.fetch("CUDA_PROFILE")} json`)
+            base = manifest["base_iso"] && manifest["base_iso"]["source"]
+            urls << base if base && base =~ %r{^https?://}
+            Array(manifest["packages"]).each do |p|
+              next if p["download"] == false
+              urls << p["url"] if p["url"] && p["url"] =~ %r{^https?://}
+            end
+            urls.uniq!
+            urls.reject! { |u| u =~ %r{//[^/]*\.intranet\.[^/]+/} }
+            puts urls
+          ' > /tmp/manifest-urls.txt
+          echo "Found $(wc -l < /tmp/manifest-urls.txt) public URL(s):"
+          cat /tmp/manifest-urls.txt
+          failed=0
+          while IFS= read -r url; do
+            [ -n "$url" ] || continue
+            if ! curl -fsSIL --retry 3 --retry-delay 2 --max-time 30 -o /dev/null \
+                  -w '%{http_code} %{url_effective}\n' "$url"; then
+              echo "UNREACHABLE: $url" >&2
+              failed=$((failed+1))
+            fi
+          done < /tmp/manifest-urls.txt
+          if [ "$failed" -gt 0 ]; then
+            echo "$failed URL(s) failed reachability check" >&2
+            exit 1
+          fi
+
+      - name: prepare.sh --dry-run
+        run: |
+          set -euxo pipefail
+          ./build-iso/prepare.sh --dry-run --skip-images
+
+  iso:
+    name: Build ISO and run smoke test
+    runs-on: [self-hosted, linux, x64, 10-64-65-31]
+    timeout-minutes: 100
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      DOWNLOAD_IMAGES: 'false'
+      DISK_SIZE: 40G
+      CUDA_PROFILE: cuda12
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+      CACHE_BASE_DIR: /home/runner/actions-runner/_work/metal-deployer-cache
+      ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12
+      ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/iso
+      PACKAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/packages
+      IMAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/packages/images
+      BUILD_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/build_workspace
+      OUTPUT_ISO: ${{ github.workspace }}/build-iso/.ci-work/cuda12/custom-ubuntu.iso
+      TEST_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/qemu
+      ISO_FILE: ${{ github.workspace }}/build-iso/.ci-work/cuda12/custom-ubuntu.iso
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show runner disk space
+        run: |
+          set -euxo pipefail
+          df -h
+
+      - name: Install build and test dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ruby xorriso mtools dosfstools \
+            qemu-system-x86 qemu-utils sshpass openssh-client pciutils
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+          fi
+          df -h
+
+      - name: Restore ISO/package cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            build-iso/.ci-work/iso
+            build-iso/.ci-work/packages
+          key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
+          restore-keys: |
+            iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-
+
+      - name: Download base ISO and packages
+        run: |
+          set -euxo pipefail
+          cd build-iso
+          ./prepare.sh --skip-images
+          find "$ISO_DIR" "$PACKAGE_DIR" -maxdepth 2 -type f -printf '%p %s bytes\n' | sort
+          df -h
+
+      - name: Build custom ISO
+        run: |
+          set -euxo pipefail
+          sudo --preserve-env=DEBIAN_FRONTEND,CUDA_PROFILE,MANIFEST_FILE,ISO_DIR,PACKAGE_DIR,CONFIG_DIR,BUILD_WORK_DIR,OUTPUT_ISO ./build-iso/build.sh
+          ls -lh "$OUTPUT_ISO"
+          df -h
+
+      - name: Verify packaged resources are present
+        run: |
+          set -euxo pipefail
+          xorriso -sh_style_result on -indev "$OUTPUT_ISO" -find /resource -maxdepth 3 -type f -exec echo \
+            | tee "$ISO_CI_WORK_DIR/iso-resource-files.txt"
+          grep -q '^/resource/scripts/init_system.sh$' "$ISO_CI_WORK_DIR/iso-resource-files.txt"
+          grep -q '^/resource/config/rdma_modules.conf$' "$ISO_CI_WORK_DIR/iso-resource-files.txt"
+          package_count="$(grep -c '^/resource/packages/.*' "$ISO_CI_WORK_DIR/iso-resource-files.txt")"
+          test "$package_count" -ge 20
+
+      - name: Run QEMU autoinstall smoke test
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_qemu == 'true' }}
+        run: |
+          set -euxo pipefail
+          cd build-iso
+          ./test.sh setup
+
+      - name: Collect QEMU logs from VM
+        if: ${{ always() }}
+        run: |
+          set +e
+          if sshpass -p admin ssh \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            -p 5555 admin@localhost 'echo ready' >/dev/null 2>&1; then
+            sshpass -p admin ssh \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -o ConnectTimeout=5 \
+              -p 5555 admin@localhost \
+              'echo admin | sudo -S bash -c "
+                set +e
+                cloud-init status --long || true
+                tail -n 200 /var/log/cloud-init-output.log || true
+                tail -n 120 /var/log/cloud-init.log || true
+                tail -n 200 /var/log/scripts.log || true
+                cat /var/log/metal-deployer/install-summary.log || true
+                tar -C / -czf /tmp/metal-deployer-logs.tgz var/log/scripts.log var/log/metal-deployer var/log/cloud-init-output.log var/log/cloud-init.log 2>/dev/null
+              "'
+            sshpass -p admin scp \
+              -o StrictHostKeyChecking=no \
+              -o UserKnownHostsFile=/dev/null \
+              -P 5555 \
+              admin@localhost:/tmp/metal-deployer-logs.tgz "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz"
+          else
+            echo "VM SSH is not reachable; skip VM log collection."
+          fi
+
+      - name: Stop QEMU
+        if: ${{ always() }}
+        run: |
+          set +e
+          cd build-iso
+          ./test.sh clean
+
+      - name: Upload CI logs
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: iso-ci-logs
+          if-no-files-found: ignore
+          path: |
+            build-iso/.ci-work/**/qemu.log
+            build-iso/.ci-work/**/iso-resource-files.txt
+            build-iso/.ci-work/**/metal-deployer-logs.tgz
+            build-iso/.ci-work/**/*.log
+
+      - name: Clean CI working directory
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.cleanup_after_run == 'true' }}
+        run: |
+          set -euxo pipefail
+          rm -rf "$ISO_CI_WORK_DIR"

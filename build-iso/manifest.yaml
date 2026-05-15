@@ -1,0 +1,721 @@
+manifest_version: '2.0'
+basic:
+  base_iso:
+    source: https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso
+    checksum:
+      algorithm: sha256
+      value: e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433
+    local_path: iso/ubuntu-24.04-base.iso
+  packages:
+  - name: libnvidia-container-tools
+    description: NVIDIA Container CLI 工具（nvidia-container-cli,Container Toolkit 1.19.1）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/amd64/libnvidia-container-tools_1.19.1-1_amd64.deb
+    version: 1.19.1
+    required: true
+    filename: libnvidia-container-tools-1.19.1-ubuntu2404.deb
+    install_method: apt
+  - name: nvidia-container-toolkit-base
+    description: NVIDIA Container Toolkit 基础组件（nvidia-ctk, nvidia-cdi-hook, runtime
+      hook, 1.19.1）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/amd64/nvidia-container-toolkit-base_1.19.1-1_amd64.deb
+    version: 1.19.1
+    required: true
+    filename: nvidia-container-toolkit-base-1.19.1-ubuntu2404.deb
+    install_method: apt
+  - name: nvidia-container-toolkit
+    description: NVIDIA Container Toolkit（包含 nvidia-container-runtime 集成,1.19.1）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/amd64/nvidia-container-toolkit_1.19.1-1_amd64.deb
+    version: 1.19.1
+    required: true
+    filename: nvidia-container-toolkit-1.19.1-ubuntu2404.deb
+    install_method: apt
+  - name: libnvidia-container
+    description: NVIDIA Container Library（libnvidia-container1,1.19.1）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/amd64/libnvidia-container1_1.19.1-1_amd64.deb
+    version: 1.19.1
+    required: true
+    filename: libnvidia-container1-1.19.1-ubuntu2404.deb
+    install_method: apt
+  - name: containerd.io
+    description: containerd 容器运行时（Docker 官方打包,Ubuntu 24.04）
+    url: https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/containerd.io_2.2.4-1~ubuntu.24.04~noble_amd64.deb
+    version: 2.2.4
+    required: true
+    filename: containerd.io-2.2.4-ubuntu2404.deb
+    install_method: apt
+  - name: docker-ce-cli
+    description: Docker CLI（Ubuntu 24.04 / Noble）
+    url: https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce-cli_29.5.2-1~ubuntu.24.04~noble_amd64.deb
+    version: 29.5.2
+    required: true
+    filename: docker-ce-cli-29.5.2-ubuntu2404.deb
+    install_method: apt
+  - name: docker-ce
+    description: Docker Engine（Ubuntu 24.04 / Noble）
+    url: https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-ce_29.5.2-1~ubuntu.24.04~noble_amd64.deb
+    version: 29.5.2
+    required: true
+    filename: docker-ce-29.5.2-ubuntu2404.deb
+    install_method: apt
+  - name: docker-buildx-plugin
+    description: Docker Buildx 插件（多架构/BuildKit 构建）
+    url: https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-buildx-plugin_0.30.1-1~ubuntu.24.04~noble_amd64.deb
+    version: 0.30.1
+    required: true
+    filename: docker-buildx-plugin-0.30.1-ubuntu2404.deb
+    install_method: apt
+  - name: docker-compose-plugin
+    description: Docker Compose v2 插件
+    url: https://download.docker.com/linux/ubuntu/dists/noble/pool/stable/amd64/docker-compose-plugin_5.0.0-1~ubuntu.24.04~noble_amd64.deb
+    version: 5.0.0
+    required: true
+    filename: docker-compose-plugin-5.0.0-ubuntu2404.deb
+    install_method: apt
+  - name: mlnx-ofed
+    description: Mellanox/NVIDIA MLNX_OFED 驱动（InfiniBand/RDMA）- Ubuntu 24.04 专用,仅作为
+      DOCA 不可用时的 fallback
+    url: https://content.mellanox.com/ofed/MLNX_OFED-24.04-0.6.6.0/MLNX_OFED_LINUX-24.04-0.6.6.0-ubuntu24.04-x86_64.tgz
+    version: 24.04-0.6.6.0
+    required: false
+    filename: mlnx-ofed-24.04-0.6.6.0-ubuntu24.04.tgz
+    install_method: script
+  - name: librdmacm-dev
+    description: RDMA CM development headers（perftest 构建依赖,Ubuntu 24.04）
+    url: http://archive.ubuntu.com/ubuntu/pool/main/r/rdma-core/librdmacm-dev_50.0-2ubuntu0.2_amd64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: librdmacm-dev_50.0-2ubuntu0.2_amd64.deb
+    install_method: apt
+  - name: libibumad-dev
+    description: InfiniBand UMAD development headers（perftest 构建依赖,Ubuntu 24.04）
+    url: http://archive.ubuntu.com/ubuntu/pool/main/r/rdma-core/libibumad-dev_50.0-2ubuntu0.2_amd64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: libibumad-dev_50.0-2ubuntu0.2_amd64.deb
+    install_method: apt
+  - name: ibverbs-utils
+    description: RDMA verbs user utilities（ibv_devinfo 等,Ubuntu 24.04）
+    url: http://archive.ubuntu.com/ubuntu/pool/universe/r/rdma-core/ibverbs-utils_50.0-2ubuntu0.2_amd64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: ibverbs-utils_50.0-2ubuntu0.2_amd64.deb
+    install_method: apt
+  - name: doca-host
+    description: NVIDIA DOCA host repository（Ubuntu 24.04,提供 DOCA Networking/RDMA 驱动）
+    url: https://www.mellanox.com/downloads/DOCA/DOCA_v3.3.0/host/doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb
+    version: 3.3.0
+    required: true
+    filename: doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb
+    install_method: apt
+  - name: gdrdrv-dkms
+    description: GDRCopy 内核驱动 DKMS（Ubuntu 24.04,GPU 显存零拷贝）
+    url: https://github.com/NVIDIA/gdrcopy/archive/refs/tags/v2.5.1.tar.gz
+    version: 2.5.1
+    required: false
+    filename: gdrcopy-2.5.1.tar.gz
+    install_method: build
+  - name: libgdrapi
+    description: GDRCopy 用户态库 libgdrapi（Ubuntu 24.04）
+    download: false
+    url: http://mirrors.intranet.daocloud.io/nvidia/gdrcopy/libgdrapi_2.5.1-1_amd64.Ubuntu24_04.deb
+    version: 2.5.1
+    required: false
+    filename: libgdrapi-2.5.1-ubuntu2404.deb
+    install_method: apt
+  - name: gdrcopy
+    description: GDRCopy 命令行工具（Ubuntu 24.04）
+    download: false
+    url: http://mirrors.intranet.daocloud.io/nvidia/gdrcopy/gdrcopy_2.5.1-1_amd64.Ubuntu24_04.deb
+    version: 2.5.1
+    required: false
+    filename: gdrcopy-2.5.1-ubuntu2404.deb
+    install_method: apt
+  - name: datacenter-gpu-manager
+    description: NVIDIA DCGM 4.x（Ubuntu 24.04,GPU 监控管理）
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/datacenter-gpu-manager-4-proprietary_4.4.2-1_amd64.deb
+    version: 4.4.2
+    required: true
+    filename: dcgm-4.4.2-ubuntu2404.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-core
+    description: NVIDIA DCGM 4.x core package（Ubuntu 24.04,GPU 监控管理核心依赖）
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/datacenter-gpu-manager-4-core_4.4.2-1_amd64.deb
+    version: 4.4.2
+    required: true
+    filename: dcgm-core-4.4.2-ubuntu2404.deb
+    install_method: apt
+  - name: diagnostic-tools
+    description: 系统诊断工具集合（Ubuntu 24.04）
+    packages:
+    - fping
+    - arping
+    - ipmitool
+    - net-tools
+    - iproute2
+    - ethtool
+    - tcpdump
+    - iperf3
+    - traceroute
+    - nvme-cli
+    - fio
+    - smartmontools
+    - mdadm
+    - lvm2
+    - stress-ng
+    - stressapptest
+    - memtester
+    - sysstat
+    - linux-tools-generic
+    - linux-cloud-tools-generic
+    - dmidecode
+    - pciutils
+    - usbutils
+    - hwloc
+    - numactl
+    - bc
+    - jq
+    - lldpd
+    - unzip
+    - tar
+    - xz-utils
+    - ca-certificates
+    - gnupg
+    - curl
+    - wget
+    - vim
+    - htop
+    - tmux
+    - rsync
+    - chrony
+    - build-essential
+    - gcc
+    - make
+    - dkms
+    - linux-image-generic
+    - linux-headers-generic
+    - linux-tools-generic
+    - linux-cloud-tools-generic
+    - cmake
+    - git
+    - pkg-config
+    - libglvnd-dev
+    - autoconf
+    - automake
+    - libpmix-dev
+    - libboost-program-options-dev
+    - libnuma1
+    - libnuma-dev
+    - libsubunit0
+    - libpci-dev
+    - libtool
+    - devscripts
+    - debhelper
+    - fakeroot
+    - check
+    - openmpi-bin
+    - libopenmpi-dev
+    install_method: apt
+    required: true
+  - name: perftest
+    description: perftest（RDMA 性能测试工具,从源码构建）
+    url: https://github.com/linux-rdma/perftest/archive/refs/tags/24.07.0-0.44.tar.gz
+    version: 24.07.0-0.44
+    required: false
+    filename: perftest-24.07.0.tar.gz
+    install_method: build
+    build_deps:
+    - libibverbs-dev
+    - librdmacm-dev
+    - libibumad-dev
+    - automake
+    - libtool
+    - make
+  - name: nccl-tests
+    description: NCCL Tests（GPU 集合通信性能测试）
+    url: https://github.com/NVIDIA/nccl-tests/archive/refs/tags/v2.18.3.tar.gz
+    version: 2.18.3
+    required: false
+    filename: nccl-tests-2.18.3.tar.gz
+    install_method: build
+    build_deps:
+    - mpi
+    - nccl
+    - cuda
+  - name: nvbandwidth
+    description: nvbandwidth（NVIDIA GPU 带宽测试工具）
+    url: https://github.com/NVIDIA/nvbandwidth/archive/refs/tags/v0.5.tar.gz
+    version: '0.5'
+    required: false
+    filename: nvbandwidth-0.5.tar.gz
+    install_method: build
+    build_deps:
+    - cmake
+    - cuda
+  - name: ofed-utils
+    description: OFED 用户态工具集合（Ubuntu 24.04）
+    download: false
+    url: http://mirrors.intranet.daocloud.io/mellanox/ofed/ofed-utilities-ubuntu2404.deb
+    version: 24.04-0.6.6.0
+    required: false
+    filename: ofed-utilities-24.04-ubuntu2404.deb
+    install_method: apt
+    packages:
+    - infiniband-diags
+    - rdmacm-utils
+    - ibverbs-utils
+    - ibutils2
+    - ibdump
+    - libibumad3
+  docker_images:
+  - name: superbench
+    description: Microsoft/NVIDIA SuperBench GPU/RDMA 基准测试镜像（仓库文档默认使用）
+    image: docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9
+    filename: images/superbench-v0.12.0-cuda12.9.tar
+    required: false
+  runtime_config:
+    ssh:
+      authorized_keys_file: config/ssh_authorized_keys
+      install_users:
+      - admin
+      - root
+      generate_node_private_key: false
+    rdma:
+      modules_file: config/rdma_modules.conf
+      modules:
+      - ib_core
+      - ib_uverbs
+      - ib_umad
+      - ib_ipoib
+      - rdma_cm
+      - iw_cm
+      - mlx5_core
+      - mlx5_ib
+  scripts:
+  - name: init_system
+    description: 系统初始化脚本（首次启动时执行）
+    source: scripts/init_system.sh
+    target: scripts/init_system.sh
+    executable: true
+  - name: nvidia_setup
+    description: NVIDIA 驱动额外配置（启用 Persistence Mode、配置 nvidia-smi 等）
+    source: scripts/nvidia_setup.sh
+    target: scripts/nvidia_setup.sh
+    executable: true
+  - name: install_ofed
+    description: MLNX_OFED fallback 安装脚本（默认不作为 RDMA 首选）
+    source: scripts/install_ofed.sh
+    target: scripts/install_ofed.sh
+    executable: true
+  - name: install_doca
+    description: DOCA 安装脚本（RDMA/OFED 默认入口,适用于 ConnectX/BlueField）
+    source: scripts/install_doca.sh
+    target: scripts/install_doca.sh
+    executable: true
+  - name: setup_container_runtime
+    description: 配置 containerd/docker 支持 NVIDIA Container Runtime
+    source: scripts/setup_container_runtime.sh
+    target: scripts/setup_container_runtime.sh
+    executable: true
+  - name: load_docker_images
+    description: 预加载 packages/images 下的 Docker 镜像 tar 包
+    source: scripts/load_docker_images.sh
+    target: scripts/load_docker_images.sh
+    executable: true
+  - name: configure_ssh
+    description: 配置 SSH authorized_keys,并可选生成节点本机 SSH 密钥
+    source: scripts/configure_ssh.sh
+    target: scripts/configure_ssh.sh
+    executable: true
+  - name: configure_rdma_modules
+    description: 配置 /etc/rdma/modules/rdma.conf 并加载 ib_umad 等 RDMA 模块
+    source: scripts/configure_rdma_modules.sh
+    target: scripts/configure_rdma_modules.sh
+    executable: true
+  - name: install_hpcx
+    description: 安装 HPC-X（解压到 /opt/hpcx,配置环境变量）
+    source: scripts/install_hpcx.sh
+    target: scripts/install_hpcx.sh
+    executable: true
+  - name: install_perftest
+    description: 从源码编译安装 perftest（RDMA 性能测试）
+    source: scripts/install_perftest.sh
+    target: scripts/install_perftest.sh
+    executable: true
+  - name: install_test_tools
+    description: 安装 GPU 测试工具（NCCL tests, bandwidthTest, nvbandwidth）
+    source: scripts/install_test_tools.sh
+    target: scripts/install_test_tools.sh
+    executable: true
+  - name: install_gpu_burn
+    description: 编译安装 GPU Burn（GPU 压力测试工具）
+    source: scripts/install_gpu_burn.sh
+    target: scripts/install_gpu_burn.sh
+    executable: true
+  - name: install_gdrcopy
+    description: 编译安装 GDRCopy 和 gdrdrv 内核模块
+    source: scripts/install_gdrcopy.sh
+    target: scripts/install_gdrcopy.sh
+    executable: true
+  - name: install_ofed_utils
+    description: 安装 OFED 用户态工具（infiniband-diags 等）
+    source: scripts/install_ofed_utils.sh
+    target: scripts/install_ofed_utils.sh
+    executable: true
+  - name: set_nic_rdma_mode
+    description: Spiderpool RDMA 网卡模式切换脚本（支持 InfiniBand/Ethernet 切换）
+    url: https://raw.githubusercontent.com/spidernet-io/spiderpool/main/tools/scripts/setNicRdmaMode.sh
+    source: scripts/setNicRdmaMode.sh
+    target: scripts/setNicRdmaMode.sh
+    executable: true
+  - name: cpu_performance_service
+    description: CPU 性能模式 systemd 服务配置
+    source: scripts/cpu-performance.service
+    target: systemd/cpu-performance.service
+  - name: apt_source_config
+    description: APT 镜像源配置脚本（阿里云/内网镜像）
+    source: scripts/configure-apt-sources.sh
+    target: scripts/configure-apt-sources.sh
+    executable: true
+cuda:
+  default_profile: cuda13
+  profiles:
+    cuda12:
+      install_environment:
+        CUDA_PROFILE: cuda12
+        CUDA_TOOLKIT_PACKAGE: cuda-toolkit-12-8
+        NVIDIA_DRIVER_BRANCH: default
+        NVIDIA_DRIVER_VERSION: 570.124.06
+      packages:
+      - name: nvidia-driver
+        description: NVIDIA 数据中心 GPU 驱动（Ubuntu 24.04 专用,CUDA 12.8 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-drivers_570.124.06-0ubuntu1_amd64.deb
+        version: 570.124.06
+        required: true
+        filename: cuda-drivers-570.124.06-ubuntu2404.deb
+        install_method: apt
+      - name: nvidia-fabric-manager
+        description: NVIDIA NVSwitch Fabric Manager（Ubuntu 24.04,CUDA 12.8 配套）
+        download: false
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-drivers-fabricmanager_570.124.06-1_amd64.deb
+        version: 570.124.06
+        required: false
+        filename: nvidia-fabricmanager-570.124.06-ubuntu2404.deb
+        install_method: apt
+      - name: nvidia-persistenced
+        description: NVIDIA Persistence Daemon（Ubuntu 24.04,CUDA 12.8 配套）
+        download: false
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nvidia-persistenced_570.124.06-0ubuntu1_amd64.deb
+        version: 570.124.06
+        required: true
+        filename: nvidia-persistenced-570.124.06-ubuntu2404.deb
+        install_method: apt
+      - name: cuda-toolkit
+        description: NVIDIA CUDA Toolkit 12.8（Ubuntu 24.04 专用）
+        url: https://developer.download.nvidia.com/compute/cuda/12.8.1/local_installers/cuda-repo-ubuntu2404-12-8-local_12.8.1-570.124.06-1_amd64.deb
+        version: 12.8.1
+        required: true
+        filename: cuda-toolkit-12.8.1-ubuntu2404.deb
+        install_method: apt
+      - name: nccl
+        description: NVIDIA NCCL（Ubuntu 24.04,多 GPU 通信库,CUDA 12.8 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnccl2_2.26.2-1+cuda12.8_amd64.deb
+        version: 2.26.2
+        required: true
+        filename: libnccl2-2.26.2-ubuntu2404-cuda12.8.deb
+        install_method: apt
+      - name: nccl-dev
+        description: NVIDIA NCCL development headers（Ubuntu 24.04,CUDA 12.8 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnccl-dev_2.26.2-1+cuda12.8_amd64.deb
+        version: 2.26.2
+        required: true
+        filename: libnccl-dev-2.26.2-ubuntu2404-cuda12.8.deb
+        install_method: apt
+      - name: gdrcopy-tests
+        description: GDRCopy 测试工具（Ubuntu 24.04,CUDA 12.8 配套）
+        download: false
+        url: http://mirrors.intranet.daocloud.io/nvidia/gdrcopy/gdrcopy-tests_2.5.1-1_amd64.Ubuntu24_04+cuda12.8.deb
+        version: 2.5.1
+        required: false
+        filename: gdrcopy-tests-2.5.1-ubuntu2404-cuda12.8.deb
+        install_method: apt
+      - name: gpu-burn
+        description: GPU Burn（GPU 压力测试/烤机工具,CUDA 12.8 配套）
+        url: https://github.com/wilicc/gpu-burn/archive/refs/heads/master.tar.gz
+        version: '1.0'
+        required: false
+        filename: gpu-burn-1.0.tar.gz
+        install_method: build
+        build_deps:
+        - cuda
+        - build-essential
+        install_path: "/usr/local/bin"
+      - name: hpcx
+        description: NVIDIA HPC-X（Ubuntu 24.04,MPI 和通信加速库,CUDA 12.8 配套）
+        url: https://content.mellanox.com/hpc/hpc-x/v2.21.3/hpcx-v2.21.3-gcc-inbox-ubuntu24.04-cuda12-x86_64.tbz
+        version: 2.21.3
+        required: false
+        filename: hpcx-v2.21.3-ubuntu2404-cuda12.tbz
+        install_method: extract
+        install_path: "/opt/hpcx"
+      - name: cuda-samples-bandwidthtest
+        description: CUDA Bandwidth Test（GPU 带宽测试,CUDA 12.8 配套）
+        url: https://github.com/NVIDIA/cuda-samples/archive/refs/tags/v12.8.tar.gz
+        version: '12.8'
+        required: false
+        filename: cuda-samples-12.8.tar.gz
+        install_method: build
+        build_target: Samples/1_Utilities/bandwidthTest
+      docker_images:
+      - name: cuda-runtime-smoke-test
+        description: CUDA runtime 冒烟测试镜像,可用于 docker run --gpus all nvidia-smi
+        image: nvcr.io/nvidia/cuda:12.8.1-runtime-ubuntu24.04
+        filename: images/nvidia-cuda-12.8.1-runtime-ubuntu24.04.tar
+        required: false
+    cuda13:
+      install_environment:
+        CUDA_PROFILE: cuda13
+        CUDA_TOOLKIT_PACKAGE: cuda-toolkit-13-2
+        NVIDIA_DRIVER_BRANCH: default
+        NVIDIA_DRIVER_VERSION: 595.58.03
+      packages:
+      - name: nvidia-driver
+        description: NVIDIA 数据中心 GPU 驱动（Ubuntu 24.04 专用,CUDA 13.2 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-drivers_595.58.03-1ubuntu1_amd64.deb
+        version: 595.58.03
+        required: true
+        filename: cuda-drivers-595.58.03-ubuntu2404.deb
+        install_method: apt
+      - name: nvidia-fabric-manager
+        description: NVIDIA NVSwitch Fabric Manager（Ubuntu 24.04,CUDA 13.2 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nvidia-fabricmanager_595.58.03-1ubuntu1_amd64.deb
+        version: 595.58.03
+        required: false
+        filename: nvidia-fabricmanager-595.58.03-ubuntu2404.deb
+        install_method: apt
+      - name: nvidia-persistenced
+        description: NVIDIA Persistence Daemon（Ubuntu 24.04,CUDA 13.2 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nvidia-persistenced_595.58.03-1ubuntu1_amd64.deb
+        version: 595.58.03
+        required: true
+        filename: nvidia-persistenced-595.58.03-ubuntu2404.deb
+        install_method: apt
+      - name: cuda-toolkit
+        description: NVIDIA CUDA Toolkit 13.2（Ubuntu 24.04 专用）
+        url: https://developer.download.nvidia.com/compute/cuda/13.2.1/local_installers/cuda-repo-ubuntu2404-13-2-local_13.2.1-595.58.03-1_amd64.deb
+        version: 13.2.1
+        required: true
+        filename: cuda-toolkit-13.2.1-ubuntu2404.deb
+        install_method: apt
+      - name: nccl
+        description: NVIDIA NCCL（Ubuntu 24.04,多 GPU 通信库,CUDA 13.2 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnccl2_2.30.4-1+cuda13.2_amd64.deb
+        version: 2.30.4
+        required: true
+        filename: libnccl2-2.30.4-ubuntu2404-cuda13.2.deb
+        install_method: apt
+      - name: nccl-dev
+        description: NVIDIA NCCL development headers（Ubuntu 24.04,CUDA 13.2 配套）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libnccl-dev_2.30.4-1+cuda13.2_amd64.deb
+        version: 2.30.4
+        required: true
+        filename: libnccl-dev-2.30.4-ubuntu2404-cuda13.2.deb
+        install_method: apt
+      - name: gdrcopy-tests
+        description: GDRCopy 测试工具（Ubuntu 24.04,CUDA 13.2 配套）
+        download: false
+        url: http://mirrors.intranet.daocloud.io/nvidia/gdrcopy/gdrcopy-tests_2.5.1-1_amd64.Ubuntu24_04+cuda13.2.deb
+        version: 2.5.1
+        required: false
+        filename: gdrcopy-tests-2.5.1-ubuntu2404-cuda13.2.deb
+        install_method: apt
+      - name: gpu-burn
+        description: GPU Burn（GPU 压力测试/烤机工具,CUDA 13.2 配套）
+        url: https://github.com/wilicc/gpu-burn/archive/refs/heads/master.tar.gz
+        version: '1.0'
+        required: false
+        filename: gpu-burn-1.0.tar.gz
+        install_method: build
+        build_deps:
+        - cuda
+        - build-essential
+        install_path: "/usr/local/bin"
+      - name: hpcx
+        description: NVIDIA HPC-X（Ubuntu 24.04,MPI 和通信加速库；CUDA 13 profile 默认关闭）
+        download: false
+        url: https://content.mellanox.com/hpc/hpc-x/v2.21.3/hpcx-v2.21.3-gcc-inbox-ubuntu24.04-cuda12-x86_64.tbz
+        version: 2.21.3
+        required: false
+        filename: hpcx-v2.21.3-ubuntu2404-cuda12.tbz
+        install_method: extract
+        install_path: "/opt/hpcx"
+      - name: cuda-samples-bandwidthtest
+        description: CUDA Bandwidth Test（GPU 带宽测试,CUDA 13.2 配套）
+        url: https://github.com/NVIDIA/cuda-samples/archive/refs/tags/v13.2.tar.gz
+        version: '13.2'
+        required: false
+        filename: cuda-samples-13.2.tar.gz
+        install_method: build
+        build_target: Samples/1_Utilities/bandwidthTest
+      docker_images:
+      - name: cuda-runtime-smoke-test
+        description: CUDA runtime 冒烟测试镜像,可用于 docker run --gpus all nvidia-smi
+        image: nvcr.io/nvidia/cuda:13.2.1-runtime-ubuntu24.04
+        filename: images/nvidia-cuda-13.2.1-runtime-ubuntu24.04.tar
+        required: false
+user_data:
+  source: user-data
+  autoinstall:
+    apt:
+      fallback: offline-install
+      preserve_sources_list: false
+      geoip: false
+    codecs:
+      install: false
+    drivers:
+      install: false
+    kernel:
+      package: linux-generic
+    shutdown: reboot
+    updates: security
+    locale: en_US.UTF-8
+    timezone: Etc/UTC
+    keyboard:
+      layout: us
+      variant: ''
+    network:
+      version: 2
+      ethernets:
+        default:
+          match:
+            name: e*
+          dhcp4: true
+          dhcp6: false
+    storage:
+      layout:
+        name: direct
+        match:
+          size: largest
+    identity:
+      hostname: myserver
+      realname: admin
+      username: admin
+      password: "$6$tY22hWWMnPlGHjLQ$Oz16kbvmSDYccQVUiFBP5jlqRktAQVebHmEDcuhooC9Yh189GJ1L.VAQOJxwXkghejh9fVOc1l2piYJ2vWo0K0"
+    ssh:
+      install-server: true
+      allow-pw: true
+      authorized-keys: []
+  installation:
+    stages:
+    - name: apt_sources
+      description: 配置 APT 镜像源（阿里云/内网镜像加速）
+      script: configure-apt-sources.sh
+      enabled: true
+      log: "/var/log/apt-sources.log"
+    - name: diagnostic_tools
+      description: 安装系统诊断工具（fping, arping, ipmitool, nvme-cli, fio 等）
+      command: apt-get update && apt-get install -y --no-install-recommends fping
+        arping ipmitool net-tools iproute2 ethtool tcpdump iperf3 traceroute sysstat
+        stress-ng stressapptest memtester fio nvme-cli bc dmidecode pciutils usbutils
+        hwloc numactl smartmontools mdadm lvm2 jq lldpd unzip tar xz-utils ca-certificates
+        gnupg curl wget vim htop tmux rsync chrony build-essential gcc make dkms linux-headers-generic
+        linux-cloud-tools-generic cmake git pkg-config libglvnd-dev autoconf automake
+        libpmix-dev libboost-program-options-dev libnuma1 libnuma-dev libsubunit0
+        libpci-dev libtool devscripts debhelper fakeroot check openmpi-bin libopenmpi-dev
+      enabled: true
+      log: "/var/log/diagnostic-tools.log"
+    - name: kernel_packages
+      description: 安装 Ubuntu 24.04 generic 内核、headers、tools、cloud-tools
+      command: apt-get install -y --no-install-recommends linux-image-generic linux-headers-generic
+        linux-tools-generic linux-cloud-tools-generic
+      enabled: true
+      log: "/var/log/kernel-install.log"
+    - name: apt_packages
+      description: 通过 apt 安装所有 .deb 包（NVIDIA 驱动 570、CUDA 12.8、容器工具等）
+      command: cd /opt/resource/packages && apt-get install -y --allow-downgrades
+        ./*.deb
+      enabled: true
+      log: "/var/log/apt-install.log"
+    - name: doca_install
+      description: 通过 DOCA 安装 RDMA/OFED 相关驱动和用户态组件
+      script: install_doca.sh
+      enabled: true
+      condition: lspci | grep -i mellanox
+      log: "/var/log/doca-install.log"
+    - name: ofed_install
+      description: 安装 MLNX_OFED fallback（仅当不用 DOCA 时启用）
+      script: install_ofed.sh
+      enabled: false
+      condition: lspci | grep -i mellanox
+      log: "/var/log/ofed-install.log"
+    - name: hpcx_install
+      description: 安装 HPC-X（MPI 和 UCX 通信库）
+      script: install_hpcx.sh
+      enabled: true
+      condition: test -f /opt/resource/packages/hpcx-v2.21.3-ubuntu2404-cuda12.tbz
+      log: "/var/log/hpcx-install.log"
+    - name: ofed_utils
+      description: 安装 OFED 用户态工具（ibstat, ib_write_bw 等）
+      script: install_ofed_utils.sh
+      enabled: false
+      condition: test -f /opt/resource/packages/ofed-utilities-24.04-ubuntu2404.deb
+      log: "/var/log/ofed-utils.log"
+    - name: test_tools_build
+      description: 编译安装 RDMA/GPU 性能测试工具
+      script: install_test_tools.sh
+      enabled: true
+      condition: test -d /opt/hpcx && test -d /usr/local/cuda
+      log: "/var/log/test-tools-build.log"
+      timeout: 1800
+    - name: gpu_burn_build
+      description: 编译安装 GPU Burn（GPU 压力测试/烤机工具）
+      script: install_gpu_burn.sh
+      enabled: false
+      condition: test -d /usr/local/cuda
+      log: "/var/log/gpu-burn-build.log"
+      timeout: 600
+    - name: container_runtime
+      description: 配置 containerd/docker 支持 NVIDIA Container Runtime
+      script: setup_container_runtime.sh
+      enabled: true
+      log: "/var/log/container-runtime.log"
+    - name: docker_images
+      description: 预加载 Docker 镜像 tar 包（SuperBench/CUDA runtime 等）
+      script: load_docker_images.sh
+      enabled: true
+      condition: test -d /opt/resource/packages/images
+      log: "/var/log/docker-image-load.log"
+    - name: rdma_nic_config
+      description: 配置 RDMA 网卡模式（InfiniBand/Ethernet 切换）
+      script: setNicRdmaMode.sh
+      enabled: false
+      condition: lspci | grep -i mellanox
+      log: "/var/log/rdma-nic-config.log"
+    - name: rdma_modules
+      description: 配置 /etc/rdma/modules/rdma.conf,确保 ib_umad 等模块开机加载
+      script: configure_rdma_modules.sh
+      enabled: true
+      log: "/var/log/rdma-modules.log"
+    - name: ssh_keys
+      description: 配置 SSH 公钥登录入口（authorized_keys）
+      script: configure_ssh.sh
+      enabled: true
+      log: "/var/log/ssh-keys.log"
+    - name: system_init
+      description: 执行系统初始化脚本
+      script: init_system.sh
+      enabled: true
+      log: "/var/log/init-system.log"
+    - name: cpu_performance
+      description: 启用 CPU 性能模式（performance governor）
+      command: systemctl enable cpu-performance.service && systemctl start cpu-performance.service
+      enabled: true
+      log: "/var/log/cpu-performance.log"
+    - name: nvidia_config
+      description: NVIDIA 驱动额外配置（Persistence Mode 等）
+      script: nvidia_setup.sh
+      enabled: true
+      log: "/var/log/nvidia-setup.log"
+    ignore_install_errors: false
+    logging:
+      base_dir: "/var/log/metal-deployer"
+      summary_log: "/var/log/metal-deployer/install-summary.log"

@@ -6,7 +6,7 @@
 它不仅仅是一个重打包工具，还包含了一整套从**构建**到**自动化验证**的完整闭环流程。
 
 ### 核心功能
-*   **全自动安装 (Autoinstall)**: 基于 `user-data` (Cloud-Init) 实现零交互安装，自动分区、创建用户。
+*   **全自动安装 (Autoinstall)**: 基于 `config/cloud-init/user-data` (Cloud-Init) 实现零交互安装，自动分区、创建用户。
 *   **资源注入**: 将离线 `.deb` 包和自定义脚本注入到 ISO 中。
 *   **持久化搬运**: 安装过程中自动将 ISO 内的资源 (`packages` 和 `scripts`) 搬运到目标机器的 `/opt/resource/` 目录。
 *   **初次启动自举**: 系统第一次启动 (First Boot) 时，自动批量安装离线包并执行初始化脚本。
@@ -15,7 +15,7 @@
 
 ### 工作原理
 1.  **解包**: 使用 `xorriso` 解压官方 ISO。
-2.  **注入**: 将本地 `packages/` 和 `scripts/` 目录复制到解压后的 ISO 内容中；将 `user-data` 放入 `/nocloud/` 目录供安装器读取。
+2.  **注入**: 将本地 `packages/` 和 `scripts/` 目录复制到解压后的 ISO 内容中；将 `config/cloud-init/user-data` 放入 `/nocloud/` 目录供安装器读取。
 3.  **配置**: 修改 Grub 配置以支持串口日志 (方便 QEMU 调试) 并缩短等待时间。
 4.  **引导修复**: 重新生成 EFI 启动镜像 (`efi.img`) 并提取 MBR 模板，确保新 ISO 可启动。
 5.  **重打包**: 使用 `xorriso` 生成新的混合引导 ISO。
@@ -32,7 +32,11 @@
 rebuildIso/
 ├── build.sh            # [核心] ISO 构建脚本
 ├── test.sh             # [工具] QEMU 自动化验证脚本
-├── user-data           # [配置] Cloud-Init 自动化安装配置
+├── config/
+│   ├── cloud-init/
+│   │   └── user-data   # [配置] Cloud-Init 自动化安装配置
+│   ├── rdma_modules.conf
+│   └── ssh_authorized_keys.example
 ├── iso/                # [输入] 存放官方 Ubuntu Server ISO (需自行下载)
 ├── packages/           # [资源] 存放需离线安装的 .deb 包
 └── scripts/            # [资源] 存放系统初始化脚本 (如 init_system.sh)
@@ -45,13 +49,35 @@ rebuildIso/
 
 ### 第一步：准备环境与资源
 
-1.  **下载官方 ISO**:
+1.  **执行构建前准备脚本**:
+    `prepare.sh` 会读取所选 manifest，下载基础 ISO、离线包，并可选预加载 Docker 镜像 tar。
+    默认 profile 是 CUDA 13；也可以显式选择 CUDA 12.8 或 CUDA 13.2：
+
+```bash
+cd build-iso
+./prepare.sh --ssh-public-key ~/.ssh/id_ed25519.pub
+CUDA_PROFILE=cuda12 MANIFEST_FILE="$PWD/manifest.yaml" ./prepare.sh --skip-images
+```
+
+    如暂时不想拉取 Docker 镜像：
+
+```bash
+./prepare.sh --skip-images
+```
+
+    校验远程下载地址并预览下载动作：
+
+```bash
+./prepare.sh --dry-run --skip-images
+```
+
+2.  **下载官方 ISO（手动方式）**:
     将 Ubuntu 24.04 Server ISO 文件 (如 `ubuntu-24.04.3-live-server-amd64.iso`) 放入 `iso/` 目录。
 
-2.  **准备离线包**:
+3.  **准备离线包（手动方式）**:
     将需要预装的 `.deb` 文件放入 `packages/` 目录。
 
-3.  **准备脚本**:
+4.  **准备脚本**:
     将初始化脚本放入 `scripts/` 目录下，通过 `init_system.sh` 作为调用入口
 
 ### 第二步：构建 ISO
@@ -61,10 +87,16 @@ rebuildIso/
 sudo ./build.sh
 ```
 
+如果准备阶段选择了 CUDA 12.8，构建阶段也要使用同一个 CUDA profile：
+
+```bash
+sudo CUDA_PROFILE=cuda12 MANIFEST_FILE="$PWD/manifest.yaml" ./build.sh
+```
+
 **脚本行为**:
 *   自动检查并通过 `apt-get` 安装 `xorriso`, `sed`, `mtools`, `dosfstools` 等依赖。
 *   在 `build_workspace` 目录清理并提取 ISO。
-*   注入资源和 `user-data`。
+*   注入资源和 `config/cloud-init/user-data`。
 *   生成最终文件：`custom-server-24.04.iso`。
 
 ### 第三步：验证 ISO (自动化测试)
@@ -114,13 +146,13 @@ sudo ./build.sh
 ## 4. 自定义配置指南
 
 ### 修改用户名/密码
-编辑 `user-data` 文件中的 `identity` 字段：
+编辑 `config/cloud-init/user-data` 文件中的 `identity` 字段：
 *   **username**: 默认为 `admin`。
 *   **password**: 默认为 `admin` (注意：文件中存储的是 SHA-512 哈希值)。
     *   生成新哈希的方法: `mkpasswd -m sha-512` (需安装 `whois` 软件包)。
 
 ### 修改安装后的行为
-编辑 `user-data` 文件中的 `runcmd` 部分：
+编辑 `config/cloud-init/user-data` 文件中的 `runcmd` 部分：
 *   目前配置为自动安装 `/opt/resource/packages/*.deb`。
 *   目前配置为执行 `/opt/resource/scripts/*.sh`。
 *   你可以在此添加任意 Shell 命令。

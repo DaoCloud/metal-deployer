@@ -1,7 +1,7 @@
 # Metal Deployer Makefile
-# 提供本地构建镜像等常用操作
+# Provides common operations for local image building
 
-# 变量定义
+# Variable definitions
 REGISTRY ?= ghcr.io
 REPOSITORY ?= daocloud/metal-deployer
 
@@ -10,6 +10,10 @@ SBCLI_IMAGE_NAME ?= $(REPOSITORY)/sbcli
 SBCLI_IMAGE_TAG ?= latest
 SBCLI_CONTEXT ?= ./benchmarks/superbenchmark/image
 SBCLI_DOCKERFILE ?= $(SBCLI_CONTEXT)/Dockerfile
+ISO_DIR ?= ./build-iso
+CUDA_PROFILE ?= cuda13
+ISO_MANIFEST ?= $(ISO_DIR)/manifest.yaml
+CACHE_BASE_DIR ?= $(ISO_DIR)/.ci-work/cache
 
 # deepep-ucx 镜像变量
 DEEPEP_UCX_IMAGE_NAME ?= $(REPOSITORY)/deepep-ucx
@@ -30,8 +34,8 @@ ENV_TORCH_CUDA_ARCH_LIST ?= "7.0;7.5;8.0;8.6;9.0"
 
 # 默认目标
 .PHONY: help
-help: ## 显示帮助信息
-	@echo "Metal Deployer 构建工具"
+help: ## Show help information
+	@echo "Metal Deployer build tool"
 	@echo ""
 	@echo "可用目标:"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-25s\033[0m %s\n", $$1, $$2}'
@@ -51,7 +55,7 @@ help: ## 显示帮助信息
 	@echo "  ENV_TORCH_CUDA_ARCH_LIST=$(ENV_TORCH_CUDA_ARCH_LIST)"
 
 .PHONY: build-sbcli
-build-sbcli: ## 本地构建 sbcli 镜像
+build-sbcli: ## Build sbcli image locally
 	@echo "Building sbcli image..."
 	@echo "Image: $(SBCLI_IMAGE_NAME):$(SBCLI_IMAGE_TAG)"
 	@echo "Context: $(SBCLI_CONTEXT)"

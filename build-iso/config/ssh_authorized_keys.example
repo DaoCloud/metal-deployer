@@ -1,0 +1,6 @@
+# Put one SSH public key per line, then copy this file to:
+#   build-iso/config/ssh_authorized_keys
+#
+# Do not put private keys in the ISO.
+# Example:
+# ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... admin@example

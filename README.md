@@ -32,7 +32,7 @@ Metal Deployer 是一个用于裸金属服务器部署和性能测试的工具�
 cd build-iso/
 
 # 1. 下载官方 ISO 到 iso/ 目录
-wget -P iso/ https://releases.ubuntu.com/24.04/ubuntu-24.04-live-server-amd64.iso
+wget -P iso/ https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso
 
 # 2. 准备离线包到 packages/ 目录
 
@@ -50,6 +50,7 @@ sudo ./build.sh
 ### 详细文档
 
 - [ISO 构建完整文档](./build-iso/readme.md)
+- [ISO 快速上手指南](./guide.md)
 
 ---
 
@@ -182,7 +183,8 @@ metal-deployer/
 ├── build-iso/                        # ISO 构建工具
 │   ├── build.sh                      # ISO 构建脚本
 │   ├── test.sh                       # QEMU 测试脚本
-│   ├── user-data                     # Cloud-Init 配置
+│   ├── config/                       # 配置文件
+│   │   └── cloud-init/user-data      # Cloud-Init 配置
 │   ├── iso/                          # 存放官方 ISO
 │   ├── packages/                     # 离线 .deb 包
 │   └── scripts/                      # 初始化脚本
