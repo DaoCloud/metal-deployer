@@ -1,26 +1,42 @@
 # Copyright 2024 Authors of spidernet-io
 # SPDX-License-Identifier: Apache-2.0
 
-name: Build and Push sbcli Image
+name: Build and Push deepep-ucx Image
 
 on:
   pull_request:
     types: [opened, reopened, synchronize]
     paths:
-      - 'benchmarks/superbenchmark/image/**'
-      - '.github/workflows/build-sbcli-image.yml'
+      - 'benchmarks/deepep-ucx/image/**'
+      - '.github/workflows/build-deepep-ucx-image.yml'
   push:
     branches:
       - main
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
     paths:
-      - 'benchmarks/superbenchmark/image/**'
-      - '.github/workflows/build-sbcli-image.yml'
+      - 'benchmarks/deepep-ucx/image/**'
+      - '.github/workflows/build-deepep-ucx-image.yml'
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/sbcli
+  IMAGE_NAME: ${{ github.repository }}/deepep-ucx
+
+  # Build configuration
+  ENV_BUILD_TOOLS_IMAGE_NAME: nvidia/cuda:12.8.1-devel-ubuntu22.04
+  ENV_BASEIMAGE_FULL_NAME: nvidia/cuda:12.8.1-runtime-ubuntu22.04
+  ENV_BASEIMAGE_CUDA_VERISON: 12.8
+  ENV_BASEIMAGE_OS_VERISON: ubuntu22.04
+
+  # Component versions
+  ENV_DEEPEP_VERSION: v1.2.1
+  ENV_DEEPGEMM_VERSION: v2.1.1.post3
+  ENV_UCX_VERSION: v1.20.0
+  ENV_NVSHMEM_VERSION: v3.4.5-0
+
+  # Build settings
+  ENV_BUILD_AND_DOWNLOAD_PARALLEL: 4
+  ENV_TORCH_CUDA_ARCH_LIST: "9.0"
 
 jobs:
   build-and-push:
@@ -57,9 +73,20 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./benchmarks/superbenchmark/image
+          context: ./benchmarks/deepep-ucx/image
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            ENV_BUILD_TOOLS_IMAGE_NAME=${{ env.ENV_BUILD_TOOLS_IMAGE_NAME }}
+            ENV_BASEIMAGE_FULL_NAME=${{ env.ENV_BASEIMAGE_FULL_NAME }}
+            ENV_BASEIMAGE_CUDA_VERISON=${{ env.ENV_BASEIMAGE_CUDA_VERISON }}
+            ENV_BASEIMAGE_OS_VERISON=${{ env.ENV_BASEIMAGE_OS_VERISON }}
+            ENV_DEEPEP_VERSION=${{ env.ENV_DEEPEP_VERSION }}
+            ENV_DEEPGEMM_VERSION=${{ env.ENV_DEEPGEMM_VERSION }}
+            ENV_UCX_VERSION=${{ env.ENV_UCX_VERSION }}
+            ENV_NVSHMEM_VERSION=${{ env.ENV_NVSHMEM_VERSION }}
+            ENV_BUILD_AND_DOWNLOAD_PARALLEL=${{ env.ENV_BUILD_AND_DOWNLOAD_PARALLEL }}
+            ENV_TORCH_CUDA_ARCH_LIST=${{ env.ENV_TORCH_CUDA_ARCH_LIST }}

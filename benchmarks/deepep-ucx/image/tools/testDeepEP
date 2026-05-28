@@ -1,0 +1,1050 @@
+#!/bin/bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+TEST_DIR=${TEST_DIR:-"/opt/DeepEP/tests"}
+PYTHON_EXEC=${PYTHON_EXEC:-"python3"}
+REPORT_FILE=${REPORT_FILE:-"/tmp/deepep_benchmark_results.json"}
+RAW_LOG=${RAW_LOG:-"/tmp/deepep_raw.log"}
+
+DEBUG=${DEBUG:-"false"}
+
+TIMEOUT_INTRA_SEC=${TIMEOUT_INTRA_SEC:-60}
+TIMEOUT_LOW_LATENCY_SEC=${TIMEOUT_LOW_LATENCY_SEC:-60}
+TIMEOUT_INTERNODE_SEC=${TIMEOUT_INTERNODE_SEC:-120}
+
+FILE_INTRA=${FILE_INTRA:-"test_intranode.py"}
+FILE_LOW_LATENCY=${FILE_LOW_LATENCY:-"test_low_latency.py"}
+FILE_INTERNODE=${FILE_INTERNODE:-"test_internode.py"}
+
+INTRA_TEST="${TEST_DIR}/${FILE_INTRA}"
+LOW_LATENCY_TEST="${TEST_DIR}/${FILE_LOW_LATENCY}"
+INTERNODE_TEST="${TEST_DIR}/${FILE_INTERNODE}"
+
+HOSTS_FILE=${HOSTS_FILE:-""}
+SSH_USER=${SSH_USER:-"root"}
+SSH_PORT=${SSH_PORT:-2022}
+
+RUN_INTRANODE=${RUN_INTRANODE:-"true"}
+RUN_LOW_LATENCY=${RUN_LOW_LATENCY:-"true"}
+RUN_INTERNODE=${RUN_INTERNODE:-"true"}
+INTERNODE_ORCHESTRATE=${INTERNODE_ORCHESTRATE:-"true"}
+INTERNODE_NUM_PROCESSES=${INTERNODE_NUM_PROCESSES:-""}
+INTERNODE_LOG_DIR=${INTERNODE_LOG_DIR:-""}
+INTERNODE_MASTER_PORT=${INTERNODE_MASTER_PORT:-8361}
+INTERNODE_SET_NCCL_HOSTID=${INTERNODE_SET_NCCL_HOSTID:-"true"}
+
+print_help() {
+  cat <<EOF
+Usage:
+  testDeepEP [--help|-h]
+
+Description:
+  Runs DeepEP benchmarks.
+  - Intranode: always runs ${FILE_INTRA} and ${FILE_LOW_LATENCY} on the current host.
+  - Internode (multi-host/multi-GPU): optional; uses SSH to start ${FILE_INTERNODE} on all hosts.
+
+Internode prerequisites:
+  - RUN_INTERNODE=true
+  - HOSTS_FILE points to a file with management addresses/hostnames, one per line.
+  - You must run testDeepEP on a node that exists in HOSTS_FILE (so rank can be determined).
+  - SSH connectivity to all hosts: SSH_USER/SSH_PORT.
+
+Key environment variables (internode):
+  RUN_INTERNODE=true|false              Enable internode test (default: false)
+  RUN_INTRANODE=true|false              Enable intranode test_intranode (default: true)
+  RUN_LOW_LATENCY=true|false            Enable intranode test_low_latency (default: true)
+  HOSTS_FILE=/path/to/hosts             Hosts list (management endpoints for SSH)
+  SSH_USER=root|...                     SSH user (default: root)
+  SSH_PORT=2022|...                     SSH port (default: 2022)
+  INTERNODE_ORCHESTRATE=true|false      If true, start remote ranks via SSH from this node (default: true)
+  INTERNODE_NUM_PROCESSES=<N>           GPUs/processes per node (passed to --num-processes).
+                                       If empty, auto-detect via nvidia-smi; fallback 8.
+  INTERNODE_MASTER_PORT=8361            TCP store port on rank0/master (default: 8361)
+  INTERNODE_LOG_DIR=/tmp/...            Where to write per-host internode logs (default: auto)
+  INTERNODE_SET_NCCL_HOSTID=true|false  Export NCCL_HOSTID=<hostname> (default: true)
+  DEBUG=true|false                      When true, stream internode diagnostics to stderr (default: false)
+
+Timeouts:
+  TIMEOUT_INTRA_SEC=60
+  TIMEOUT_LOW_LATENCY_SEC=60
+  TIMEOUT_INTERNODE_SEC=120
+
+Examples:
+  # Intranode only
+  testDeepEP
+
+  # Internode only (skip intranode + low_latency)
+  RUN_INTERNODE=true RUN_INTRANODE=false RUN_LOW_LATENCY=false HOSTS_FILE=/hosts INTERNODE_NUM_PROCESSES=8 DEBUG=true testDeepEP
+
+  # Internode: 2 nodes, 8 GPUs each (processes per node)
+  RUN_INTERNODE=true HOSTS_FILE=/hosts INTERNODE_NUM_PROCESSES=8 DEBUG=true testDeepEP
+
+Outputs:
+  REPORT_FILE=${REPORT_FILE}
+  RAW_LOG=${RAW_LOG}
+  Internode logs: INTERNODE_LOG_DIR (or auto under /tmp)
+EOF
+}
+
+case "${1:-}" in
+  -h|--help)
+    print_help
+    exit 0
+    ;;
+  "")
+    ;;
+  *)
+    echo "Error: unknown argument: $1" >&2
+    echo "Hint: use --help to see usage." >&2
+    exit 2
+    ;;
+esac
+
+have_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+cleanup_procs() {
+  pkill -9 -f "${FILE_INTRA}" >/dev/null 2>&1 || true
+  pkill -9 -f "${FILE_LOW_LATENCY}" >/dev/null 2>&1 || true
+  pkill -9 -f "${FILE_INTERNODE}" >/dev/null 2>&1 || true
+}
+
+on_interrupt() {
+  trap - INT TERM
+  set +o errexit
+  cleanup_procs
+  jobs -pr | xargs -r kill -9 >/dev/null 2>&1 || true
+  pkill -9 -P $$ >/dev/null 2>&1 || true
+  exit 130
+}
+
+trap on_interrupt INT TERM
+
+read_hosts_file() {
+  local f=${1:-""}
+  if [[ -z "${f}" ]] || [[ ! -f "${f}" ]]; then
+    return 0
+  fi
+  awk '{print $1}' "${f}" | sed 's/[[:space:]]*$//' | grep -v '^$' | grep -v '^#' || true
+}
+
+is_token_in_list() {
+  local token=${1:-""}
+  shift || true
+  local x
+  for x in "$@"; do
+    if [[ "${x}" == "${token}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+find_rank_in_hosts() {
+  local me_host=${1:-""}
+  local me_fqdn=${2:-""}
+  local me_short=${3:-""}
+  local me_ips=${4:-""}
+  shift 4 || true
+  local hosts=("$@")
+
+  local i
+  for i in "${!hosts[@]}"; do
+    local h=${hosts[$i]}
+    if [[ "${h}" == "${me_host}" ]] || [[ "${h}" == "${me_fqdn}" ]] || [[ "${h}" == "${me_short}" ]]; then
+      echo "${i}"
+      return 0
+    fi
+    if [[ -n "${me_ips}" ]] && echo " ${me_ips} " | grep -q " ${h} "; then
+      echo "${i}"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+build_passthrough_exports() {
+  local re=${1:-""}
+  if [[ -z "${re}" ]]; then
+    return 0
+  fi
+  env | grep -E "${re}" | while IFS='=' read -r k v; do
+    if [[ -n "${k}" ]]; then
+      printf 'export %s=%q; ' "${k}" "${v}"
+    fi
+  done
+}
+
+build_passthrough_env_assignments() {
+  local re=${1:-""}
+  if [[ -z "${re}" ]]; then
+    return 0
+  fi
+  env | grep -E "${re}" | while IFS='=' read -r k v; do
+    if [[ -n "${k}" ]]; then
+      printf '%s=%q ' "${k}" "${v}"
+    fi
+  done
+}
+
+run_internode_cluster() {
+  local hosts_file=${1:-""}
+  local num_procs=${2:-""}
+  local timeout_sec=${3:-""}
+
+  local hosts_raw
+  hosts_raw=$(read_hosts_file "${hosts_file}")
+  if [[ -z "${hosts_raw}" ]]; then
+    echo "[Internode] skip: HOSTS_FILE has no usable host entries: ${hosts_file}" >&2
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "skip" 0 0 0 "" 0 "" 0 "" '[]'
+    return 0
+  fi
+
+  local hosts=()
+  local line
+  while IFS= read -r line; do
+    [[ -n "${line}" ]] || continue
+    hosts+=("${line}")
+  done <<<"${hosts_raw}"
+
+  local world_size=${#hosts[@]}
+  if [[ "${world_size}" -lt 2 ]]; then
+    echo "[Internode] skip: need at least 2 hosts, got ${world_size} (HOSTS_FILE=${hosts_file})" >&2
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "skip" 0 0 "${world_size}" "${hosts[0]}" "${INTERNODE_MASTER_PORT}" "" 0 "" '[]'
+    return 0
+  fi
+
+  local master_host=${hosts[0]}
+  local master_port=${INTERNODE_MASTER_PORT}
+
+  local me_host me_fqdn me_short me_ips
+  me_host=$(hostname 2>/dev/null || echo "unknown")
+  me_fqdn=$(hostname -f 2>/dev/null || echo "")
+  me_short=$(hostname -s 2>/dev/null || echo "")
+  me_ips=$(hostname -I 2>/dev/null || echo "")
+
+  local rank
+  rank=$(find_rank_in_hosts "${me_host}" "${me_fqdn}" "${me_short}" "${me_ips}" "${hosts[@]}") || {
+    echo "[Internode] fail: cannot determine local rank from HOSTS_FILE=${hosts_file}" >&2
+    echo "[Internode]   hostname=$(hostname 2>/dev/null || echo unknown)" >&2
+    echo "[Internode]   hostname_f=$(hostname -f 2>/dev/null || echo '')" >&2
+    echo "[Internode]   hostname_s=$(hostname -s 2>/dev/null || echo '')" >&2
+    echo "[Internode]   hostname_I=$(hostname -I 2>/dev/null || echo '')" >&2
+    echo "[Internode]   hosts=(${hosts[*]})" >&2
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "fail" 0 2 "${world_size}" "${master_host}" "${master_port}" "" 0 "" '[]'
+    return 0
+  }
+
+  if [[ -z "${num_procs}" ]]; then
+    if have_cmd nvidia-smi; then
+      num_procs=$(nvidia-smi -L 2>/dev/null | wc -l | awk '{print $1}')
+      num_procs=${num_procs:-""}
+    fi
+  fi
+  if [[ -z "${num_procs}" ]]; then
+    num_procs=8
+  fi
+
+  local log_dir=${INTERNODE_LOG_DIR}
+  if [[ -z "${log_dir}" ]]; then
+    log_dir="/tmp/deepep_internode_logs_$(date +%Y%m%d_%H%M%S)"
+  fi
+  mkdir -p "${log_dir}"
+
+  local env_re
+  env_re='^(NVSHMEM|UCX|NCCL|CUDA|TORCH|OMPI|PMI)_' 
+  local pass_env
+  pass_env=$(build_passthrough_env_assignments "${env_re}")
+
+  local t0
+  t0=$(date +%s)
+
+  local pids=()
+  local host
+
+  if [[ "${INTERNODE_ORCHESTRATE}" == "true" ]]; then
+    local i
+    for i in "${!hosts[@]}"; do
+      host="${hosts[$i]}"
+      if [[ "${i}" -eq "${rank}" ]]; then
+        continue
+      fi
+
+      local host_log="${log_dir}/${host}.log"
+      local host_rc_file="${host_log}.rc"
+      local host_rank="${i}"
+
+      local remote_cmd
+      remote_cmd="env WORLD_SIZE=${world_size} RANK=${host_rank} MASTER_ADDR=${master_host} MASTER_PORT=${master_port} "
+      if [[ "${INTERNODE_SET_NCCL_HOSTID}" == "true" ]]; then
+        remote_cmd+="NCCL_HOSTID=${host} "
+      fi
+      remote_cmd+="${pass_env}${PYTHON_EXEC} ${INTERNODE_TEST} --num-processes ${num_procs}"
+
+      (
+        if have_cmd timeout; then
+          timeout "${timeout_sec}s" ssh -p "${SSH_PORT}" "${SSH_USER}@${host}" "${remote_cmd}" >"${host_log}" 2>&1
+          echo $? >"${host_rc_file}"
+        else
+          ssh -p "${SSH_PORT}" "${SSH_USER}@${host}" "${remote_cmd}" >"${host_log}" 2>&1
+          echo $? >"${host_rc_file}"
+        fi
+      ) &
+
+      pids+=("$!")
+    done
+  fi
+
+  local local_host
+  local_host="${hosts[$rank]}"
+  local local_log="${log_dir}/${local_host}.log"
+  local local_rc_file="${local_log}.rc"
+  local local_env="WORLD_SIZE=${world_size} RANK=${rank} MASTER_ADDR=${master_host} MASTER_PORT=${master_port}"
+  if [[ "${INTERNODE_SET_NCCL_HOSTID}" == "true" ]]; then
+    local_env+=" NCCL_HOSTID=${local_host}"
+  fi
+  local_env+=" ${pass_env}"
+
+  if have_cmd timeout; then
+    timeout "${timeout_sec}s" env ${local_env} ${PYTHON_EXEC} "${INTERNODE_TEST}" --num-processes "${num_procs}" >"${local_log}" 2>&1 || echo $? >"${local_rc_file}"
+    if [[ ! -f "${local_rc_file}" ]]; then
+      echo 0 >"${local_rc_file}"
+    fi
+  else
+    env ${local_env} ${PYTHON_EXEC} "${INTERNODE_TEST}" --num-processes "${num_procs}" >"${local_log}" 2>&1 || echo $? >"${local_rc_file}"
+    if [[ ! -f "${local_rc_file}" ]]; then
+      echo 0 >"${local_rc_file}"
+    fi
+  fi
+
+  local pid
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || true
+  done
+
+  local t1
+  t1=$(date +%s)
+  local duration=$((t1 - t0))
+
+  local any_fail=0
+  local per_host_raw=""
+  local i
+  for i in "${!hosts[@]}"; do
+    local h=${hosts[$i]}
+    local lp="${log_dir}/${h}.log"
+    local rc_file="${lp}.rc"
+    local rc=2
+    if [[ -f "${rc_file}" ]]; then
+      rc=$(cat "${rc_file}" 2>/dev/null || echo 2)
+    fi
+    local st="pass"
+    if [[ "${rc}" -ne 0 ]]; then
+      st="fail"
+      any_fail=1
+    fi
+    if [[ "${rc}" -eq 124 ]]; then
+      st="timeout"
+      any_fail=1
+    fi
+    local has_ibgda=0
+    local has_ibrc=0
+    if [[ -f "${lp}" ]]; then
+      if grep -q "transport: IBGDA" "${lp}"; then
+        has_ibgda=1
+      fi
+      if grep -q "transport: ibrc" "${lp}"; then
+        has_ibrc=1
+      fi
+    fi
+    per_host_raw+=$(
+      jq -cn \
+        --arg host "${h}" \
+        --arg status "${st}" \
+        --arg log_path "${lp}" \
+        --argjson rank "${i}" \
+        --argjson rc "${rc}" \
+        --argjson has_ibgda "${has_ibgda}" \
+        --argjson has_ibrc "${has_ibrc}" \
+        '{host:$host,rank:$rank,status:$status,rc:$rc,has_ibgda:$has_ibgda,has_ibrc:$has_ibrc,log_path:$log_path}'
+    )
+    per_host_raw+=$'\n'
+  done
+
+  local per_host_json
+  if [[ -n "${per_host_raw}" ]]; then
+    per_host_json=$(printf '%s\n' "${per_host_raw}" | jq -cs '.' 2>/dev/null || echo '[]')
+  else
+    per_host_json='[]'
+  fi
+
+  local overall_status="pass"
+  if [[ "${any_fail}" -ne 0 ]]; then
+    overall_status="fail"
+  fi
+
+  local master_log_path="${log_dir}/${master_host}.log"
+  if [[ ! -f "${master_log_path}" ]]; then
+    master_log_path="${local_log}"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${overall_status}" "${duration}" 0 "${world_size}" "${master_host}" "${master_port}" "${master_log_path}" "${num_procs}" "${log_dir}" "${per_host_json}"
+}
+
+run_one_test() {
+  local name=$1
+  local script_path=$2
+  local timeout_sec=$3
+
+  echo "=== START TEST: ${name} ===" >>"${RAW_LOG}"
+  local t0
+  t0=$(date +%s)
+
+  local rc=0
+  if have_cmd timeout; then
+    timeout "${timeout_sec}s" "${PYTHON_EXEC}" "${script_path}" >>"${RAW_LOG}" 2>&1 || rc=$?
+  else
+    "${PYTHON_EXEC}" "${script_path}" >>"${RAW_LOG}" 2>&1 || rc=$?
+  fi
+
+  local t1
+  t1=$(date +%s)
+  echo "=== END TEST: ${name} ===" >>"${RAW_LOG}"
+
+  echo $((t1 - t0)) $rc
+}
+
+tail_log_lines_json() {
+  local file=${1:-""}
+  local lines=${2:-40}
+  if [[ -n "${file}" ]] && [[ -f "${file}" ]]; then
+    tail -n "${lines}" "${file}" 2>/dev/null | jq -Rs '.' 2>/dev/null || printf '""'
+  else
+    printf '""'
+  fi
+}
+
+build_internode_failure_logs_json() {
+  local per_host_json=${1:-"[]"}
+  local result='[]'
+  local item
+  while IFS= read -r item; do
+    [[ -n "${item}" ]] || continue
+    local item_log_path
+    item_log_path=$(printf '%s' "${item}" | jq -r '.log_path // empty' 2>/dev/null || echo "")
+    local item_tail_json
+    item_tail_json=$(tail_log_lines_json "${item_log_path}" 60)
+    local item_with_tail
+    item_with_tail=$(printf '%s' "${item}" | jq -c --argjson log_tail "${item_tail_json}" '. + {log_tail: $log_tail}' 2>/dev/null || echo "")
+    [[ -n "${item_with_tail}" ]] || continue
+    result=$(jq -c --argjson arr "${result}" --argjson obj "${item_with_tail}" '$arr + [$obj]' 2>/dev/null <<<'null' || echo '[]')
+  done < <(echo "${per_host_json}" | jq -c '.[] | select(.status != "pass") | {host,rank,status,rc,log_path}' 2>/dev/null || true)
+  printf '%s' "${result}"
+}
+
+extract_block() {
+  local name=$1
+  sed -n "/=== START TEST: ${name} ===/,/=== END TEST: ${name} ===/p" "${RAW_LOG}" || true
+}
+
+num_or_zero() {
+  local v=${1:-}
+  if [[ -z "${v}" ]]; then
+    echo 0
+    return
+  fi
+  if [[ "${v}" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    echo "${v}"
+  else
+    echo 0
+  fi
+}
+
+json_escape_one_line() {
+  local s=${1:-""}
+  printf '%s' "${s}" | tr '\n' ' ' | sed 's/[[:space:]]\+/ /g' | sed 's/^ //; s/ $//'
+}
+
+main() {
+  cleanup_procs
+
+  rm -f "${RAW_LOG}"
+  : >"${RAW_LOG}"
+
+  if [ ! -d "${TEST_DIR}" ]; then
+    echo "[Error] Directory ${TEST_DIR} not found."
+    exit 1
+  fi
+
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    if [ ! -f "${INTRA_TEST}" ]; then
+      echo "[Error] Missing ${INTRA_TEST}"
+      exit 1
+    fi
+  fi
+
+  if [[ "${RUN_LOW_LATENCY}" == "true" ]]; then
+    if [ ! -f "${LOW_LATENCY_TEST}" ]; then
+      echo "[Error] Missing ${LOW_LATENCY_TEST}"
+      exit 1
+    fi
+  fi
+
+  local hosts_file_effective
+  hosts_file_effective="${HOSTS_FILE}"
+  if [[ "${RUN_INTERNODE}" == "true" ]] && [[ -n "${HOSTS_FILE}" ]] && [[ "${HOSTS_FILE}" != /* ]]; then
+    hosts_file_effective="$(pwd)/${HOSTS_FILE}"
+  fi
+
+  if [[ "${RUN_INTERNODE}" == "true" ]] && [[ -n "${hosts_file_effective}" ]] && [[ ! -f "${hosts_file_effective}" ]]; then
+    echo "[Error] Missing HOSTS_FILE=${hosts_file_effective}"
+    exit 1
+  fi
+
+  if ! have_cmd jq; then
+    echo "[Error] jq missing."
+    exit 1
+  fi
+
+  local node
+  node=$(hostname 2>/dev/null || echo "unknown")
+
+  local ts
+  ts=$(date -Iseconds)
+
+  echo "=== [DeepEP Benchmark] ==="
+  echo "  - TEST_DIR:     ${TEST_DIR}"
+  echo "  - RAW_LOG:      ${RAW_LOG}"
+  echo "  - REPORT_FILE:  ${REPORT_FILE}"
+  echo "  - NODE:         ${node}"
+
+  {
+    echo "=== [CONFIG] $(date -Iseconds) ==="
+    echo "NODE=${node}"
+    echo "PYTHON_EXEC=${PYTHON_EXEC}"
+    echo "TEST_DIR=${TEST_DIR}"
+    echo "REPORT_FILE=${REPORT_FILE}"
+    echo "RAW_LOG=${RAW_LOG}"
+    echo "TIMEOUT_INTRA_SEC=${TIMEOUT_INTRA_SEC}"
+    echo "TIMEOUT_LOW_LATENCY_SEC=${TIMEOUT_LOW_LATENCY_SEC}"
+
+    if have_cmd nvidia-smi; then
+      echo "--- nvidia-smi ---"
+      nvidia-smi || true
+      echo "--- nvidia-smi (query) ---"
+      nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader 2>/dev/null || true
+    fi
+
+    echo "--- python ---"
+    "${PYTHON_EXEC}" -V || true
+    echo "--- torch ---"
+    "${PYTHON_EXEC}" - <<'PY' || true
+import torch
+print("torch=", torch.__version__)
+print("torch_cuda=", torch.version.cuda)
+print("cuda_available=", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("gpu_name=", torch.cuda.get_device_name(0))
+PY
+
+    echo "--- env (selected) ---"
+    env | grep -E '^(NVSHMEM|UCX|NCCL|CUDA|TORCH|OMPI|PMI)_' || true
+
+    echo "=== [CONFIG END] ==="
+  } >>"${RAW_LOG}" 2>&1
+
+  cd "${TEST_DIR}" || exit 1
+
+  local intra_duration intra_rc intra_log intra_status
+  intra_duration=0
+  intra_rc=0
+  intra_log=""
+  intra_status="skip"
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    echo ">>> Executing ${FILE_INTRA} (${TIMEOUT_INTRA_SEC}s timeout)..."
+    local intra_out
+    intra_out=$(run_one_test "${FILE_INTRA}" "${INTRA_TEST}" "${TIMEOUT_INTRA_SEC}")
+    intra_duration=$(echo "${intra_out}" | awk '{print $1}')
+    intra_rc=$(echo "${intra_out}" | awk '{print $2}')
+  else
+    echo ">>> Skipping ${FILE_INTRA} (RUN_INTRANODE=false)"
+  fi
+
+  local ll_duration ll_rc ll_log ll_status
+  ll_duration=0
+  ll_rc=0
+  ll_log=""
+  ll_status="skip"
+  if [[ "${RUN_LOW_LATENCY}" == "true" ]]; then
+    echo ">>> Executing ${FILE_LOW_LATENCY} (${TIMEOUT_LOW_LATENCY_SEC}s timeout)..."
+    local ll_out
+    ll_out=$(run_one_test "${FILE_LOW_LATENCY}" "${LOW_LATENCY_TEST}" "${TIMEOUT_LOW_LATENCY_SEC}")
+    ll_duration=$(echo "${ll_out}" | awk '{print $1}')
+    ll_rc=$(echo "${ll_out}" | awk '{print $2}')
+  else
+    echo ">>> Skipping ${FILE_LOW_LATENCY} (RUN_LOW_LATENCY=false)"
+  fi
+
+  sync || true
+
+  if [[ ! -s "${RAW_LOG}" ]]; then
+    echo "[Error] No data in ${RAW_LOG}. Tests likely failed to run."
+    exit 1
+  fi
+
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    intra_log=$(extract_block "${FILE_INTRA}")
+  fi
+  if [[ "${RUN_LOW_LATENCY}" == "true" ]]; then
+    ll_log=$(extract_block "${FILE_LOW_LATENCY}")
+  fi
+
+  local internode_status internode_duration internode_rc internode_world_size internode_master_host internode_master_port internode_master_log_path internode_num_procs_used internode_log_dir_effective internode_per_host
+  internode_status="skip"
+  internode_duration=0
+  internode_rc=0
+  internode_world_size=0
+  internode_master_host=""
+  internode_master_port=0
+  internode_master_log_path=""
+  internode_num_procs_used=0
+  internode_log_dir_effective=""
+  internode_per_host='[]'
+
+  if [[ "${RUN_INTERNODE}" == "true" ]]; then
+    if [[ -z "${hosts_file_effective}" ]]; then
+      echo "[Error] RUN_INTERNODE=true but HOSTS_FILE is empty"
+      exit 1
+    fi
+    if [ ! -f "${INTERNODE_TEST}" ]; then
+      echo "[Error] Missing ${INTERNODE_TEST}"
+      exit 1
+    fi
+    echo ">>> Executing ${FILE_INTERNODE} (internode; ${TIMEOUT_INTERNODE_SEC}s timeout)..."
+    local internode_out
+    if [[ "${DEBUG}" == "true" ]]; then
+      internode_out=$(run_internode_cluster "${hosts_file_effective}" "${INTERNODE_NUM_PROCESSES}" "${TIMEOUT_INTERNODE_SEC}" 2> >(tee -a "${RAW_LOG}" >&2) || true)
+    else
+      internode_out=$(run_internode_cluster "${hosts_file_effective}" "${INTERNODE_NUM_PROCESSES}" "${TIMEOUT_INTERNODE_SEC}" 2>>"${RAW_LOG}" || true)
+    fi
+    if [[ -z "${internode_out}" ]]; then
+      echo "[Error] Internode runner returned no output (hosts_file=${hosts_file_effective})." >>"${RAW_LOG}"
+      internode_status="fail"
+      internode_rc=2
+    else
+      IFS=$'\t' read -r internode_status internode_duration internode_rc internode_world_size internode_master_host internode_master_port internode_master_log_path internode_num_procs_used internode_log_dir_effective internode_per_host <<<"${internode_out}" || {
+        echo "[Error] Failed to parse internode runner output: ${internode_out}" >>"${RAW_LOG}"
+        internode_status="fail"
+        internode_rc=2
+      }
+    fi
+  fi
+
+  local internode_dispatch_rdma_gbps internode_dispatch_nvl_gbps
+  internode_dispatch_rdma_gbps=0
+  internode_dispatch_nvl_gbps=0
+  local internode_combine_rdma_gbps internode_combine_nvl_gbps
+  internode_combine_rdma_gbps=0
+  internode_combine_nvl_gbps=0
+
+  local intra_kernel
+  intra_kernel=0
+  local intra_passed intra_failed intra_total
+  intra_passed=0
+  intra_failed=0
+  intra_total=0
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    intra_kernel=$(echo "${intra_log}" | awk '/Kernel performance:/ {gsub(/[^0-9.]/, "", $4); print $4; exit}')
+    intra_kernel=$(num_or_zero "${intra_kernel}")
+    intra_passed=$(echo "${intra_log}" | grep -c " passed" || true)
+    intra_failed=$(echo "${intra_log}" | grep -c " failed" || true)
+    intra_total=$((intra_passed + intra_failed))
+  fi
+
+  local sms_fp8 chunk_fp8 bw_fp8 lat_fp8
+  sms_fp8=0
+  chunk_fp8=0
+  bw_fp8=0
+  lat_fp8=0
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    read -r sms_fp8 chunk_fp8 bw_fp8 lat_fp8 < <(
+      echo "${intra_log}" | awk '
+      function clean(x){gsub(/[^0-9.]/,"",x); return x}
+      /Best dispatch \(FP8\):/ {
+        for(i=1;i<=NF;i++){
+          if($i=="SMs") sms=clean($(i+1));
+          if($(i+1)=="GB/s") bw=clean($i);
+          if($i=="chunk") chunk=clean($(i+1));
+          if($i=="t:" || $i=="t") lat=clean($(i+1));
+        }
+        printf "%s %s %s %s\n", sms, chunk, bw, lat;
+        exit
+      }'
+    )
+    sms_fp8=$(num_or_zero "${sms_fp8}")
+    chunk_fp8=$(num_or_zero "${chunk_fp8}")
+    bw_fp8=$(num_or_zero "${bw_fp8}")
+    lat_fp8=$(num_or_zero "${lat_fp8}")
+  fi
+
+  local sms_bf16 chunk_bf16 bw_bf16 lat_bf16
+  sms_bf16=0
+  chunk_bf16=0
+  bw_bf16=0
+  lat_bf16=0
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    read -r sms_bf16 chunk_bf16 bw_bf16 lat_bf16 < <(
+      echo "${intra_log}" | awk '
+      function clean(x){gsub(/[^0-9.]/,"",x); return x}
+      /Best dispatch \(BF16\):/ {
+        for(i=1;i<=NF;i++){
+          if($i=="SMs") sms=clean($(i+1));
+          if($(i+1)=="GB/s") bw=clean($i);
+          if($i=="chunk") chunk=clean($(i+1));
+          if($i=="t:" || $i=="t") lat=clean($(i+1));
+        }
+        printf "%s %s %s %s\n", sms, chunk, bw, lat;
+        exit
+      }'
+    )
+    sms_bf16=$(num_or_zero "${sms_bf16}")
+    chunk_bf16=$(num_or_zero "${chunk_bf16}")
+    bw_bf16=$(num_or_zero "${bw_bf16}")
+    lat_bf16=$(num_or_zero "${lat_bf16}")
+  fi
+
+  local sms_combine chunk_combine bw_combine lat_combine
+  sms_combine=0
+  chunk_combine=0
+  bw_combine=0
+  lat_combine=0
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    read -r sms_combine chunk_combine bw_combine lat_combine < <(
+      echo "${intra_log}" | awk '
+      function clean(x){gsub(/[^0-9.]/,"",x); return x}
+      /Best combine:/ {
+        for(i=1;i<=NF;i++){
+          if($i=="SMs") sms=clean($(i+1));
+          if($i=="chunk") chunk=clean($(i+1));
+          if($(i+1)=="GB/s") bw=clean($i);
+          if($i=="t:" || $i=="t") lat=clean($(i+1));
+        }
+        printf "%s %s %s %s\n", sms, chunk, bw, lat;
+        exit
+      }'
+    )
+    sms_combine=$(num_or_zero "${sms_combine}")
+    chunk_combine=$(num_or_zero "${chunk_combine}")
+    bw_combine=$(num_or_zero "${bw_combine}")
+    lat_combine=$(num_or_zero "${lat_combine}")
+  fi
+
+  if [[ "${RUN_INTRANODE}" == "true" ]]; then
+    intra_status="pass"
+    if [ "${intra_rc}" -ne 0 ] || [ "${intra_failed}" -ne 0 ]; then
+      intra_status="fail"
+    fi
+    if [ "${intra_rc}" -eq 124 ]; then
+      intra_status="timeout"
+    fi
+  fi
+
+  local ll_buffer_mb
+  ll_buffer_mb=0
+  if [[ "${RUN_LOW_LATENCY}" == "true" ]]; then
+    ll_buffer_mb=$(echo "${ll_log}" | awk '/Allocating buffer size:/ {gsub(/[^0-9.]/, "", $4); print $4; exit}')
+    ll_buffer_mb=$(num_or_zero "${ll_buffer_mb}")
+  fi
+
+  local ll_per_rank_raw
+  ll_per_rank_raw=""
+  if [[ "${RUN_LOW_LATENCY}" == "true" ]]; then
+    ll_per_rank_raw=$(printf '%s\n' "${ll_log}" | awk '
+    function clean(x){gsub(/[^0-9.]/, "", x); return x}
+    /^\[rank [0-9]+\] Dispatch \+ combine bandwidth:/ {
+      r=$2; gsub(/[^0-9]/, "", r);
+      bw=clean($7);
+      avg=clean($9);
+      min=clean($11);
+      max=clean($13);
+      printf "{\"rank\":%s,\"dispatch_combine_bandwidth_gbps\":%s,\"avg_us\":%s,\"min_us\":%s,\"max_us\":%s}\n", r, bw, avg, min, max;
+    }')
+  fi
+
+  local ll_per_rank
+  if [[ -n "${ll_per_rank_raw}" ]]; then
+    ll_per_rank=$(printf '%s\n' "${ll_per_rank_raw}" | jq -s '.' 2>/dev/null || echo '[]')
+  else
+    ll_per_rank='[]'
+  fi
+
+  local ll_bw_avg ll_lat_avg ll_count
+  ll_count=$(echo "${ll_per_rank}" | jq 'length' 2>/dev/null || echo 0)
+  if [ "${ll_count}" -gt 0 ]; then
+    ll_bw_avg=$(echo "${ll_per_rank}" | jq '[.[].dispatch_combine_bandwidth_gbps] | add/length' 2>/dev/null || echo 0)
+    ll_lat_avg=$(echo "${ll_per_rank}" | jq '[.[].avg_us] | add/length' 2>/dev/null || echo 0)
+  else
+    ll_bw_avg=0
+    ll_lat_avg=0
+  fi
+
+  ll_bw_avg=$(num_or_zero "${ll_bw_avg}")
+  ll_lat_avg=$(num_or_zero "${ll_lat_avg}")
+
+  local ll_passed ll_failed ll_total
+  ll_passed=0
+  ll_failed=0
+  ll_total=0
+  if [[ "${RUN_LOW_LATENCY}" == "true" ]]; then
+    ll_passed=$(echo "${ll_log}" | grep -c "\[rank" || true)
+    ll_failed=0
+    ll_total=1
+
+    ll_status="pass"
+    if [ "${ll_rc}" -ne 0 ] || [ "${ll_count}" -eq 0 ]; then
+      ll_status="fail"
+    fi
+    if [ "${ll_rc}" -eq 124 ]; then
+      ll_status="timeout"
+    fi
+  fi
+
+  local overall_status
+  overall_status="pass"
+  if [ "${intra_status}" = "fail" ] || [ "${intra_status}" = "timeout" ] || [ "${ll_status}" = "fail" ] || [ "${ll_status}" = "timeout" ] || [ "${internode_status}" = "fail" ] || [ "${internode_status}" = "timeout" ]; then
+    overall_status="fail"
+  fi
+
+  local tags_json
+  tags_json=$(jq -n '["deepep", "cuda"]')
+
+  local intra_fp8_json intra_bf16_json intra_combine_json
+  intra_fp8_json=$(jq -n --argjson sms "${sms_fp8}" --argjson nvl_chunk "${chunk_fp8}" --argjson bandwidth_gbps "${bw_fp8}" --argjson avg_us "${lat_fp8}" '{sms:$sms, nvl_chunk:$nvl_chunk, bandwidth_gbps:$bandwidth_gbps, avg_us:$avg_us}')
+  intra_bf16_json=$(jq -n --argjson sms "${sms_bf16}" --argjson nvl_chunk "${chunk_bf16}" --argjson bandwidth_gbps "${bw_bf16}" --argjson avg_us "${lat_bf16}" '{sms:$sms, nvl_chunk:$nvl_chunk, bandwidth_gbps:$bandwidth_gbps, avg_us:$avg_us}')
+  intra_combine_json=$(jq -n --argjson sms "${sms_combine}" --argjson nvl_chunk "${chunk_combine}" --argjson bandwidth_gbps "${bw_combine}" --argjson avg_us "${lat_combine}" '{sms:$sms, nvl_chunk:$nvl_chunk, bandwidth_gbps:$bandwidth_gbps, avg_us:$avg_us}')
+
+  local test_intra_json test_ll_json
+  local test_internode_json
+  test_intra_json=$(jq -n \
+    --arg name "${FILE_INTRA}" \
+    --arg scope "intranode" \
+    --arg status "${intra_status}" \
+    --argjson duration_sec "${intra_duration}" \
+    --argjson cases_total "${intra_total}" \
+    --argjson cases_passed "${intra_passed}" \
+    --argjson cases_failed "${intra_failed}" \
+    --argjson kernel_performance_ms "${intra_kernel}" \
+    --argjson best_dispatch_fp8_gbps "${bw_fp8}" \
+    --argjson best_dispatch_bf16_gbps "${bw_bf16}" \
+    --argjson best_combine_gbps "${bw_combine}" \
+    '{
+      name: $name,
+      scope: $scope,
+      status: $status,
+      duration_sec: $duration_sec,
+      correctness: {cases_total: $cases_total, cases_passed: $cases_passed, cases_failed: $cases_failed},
+      metrics: {
+        kernel_performance_ms: $kernel_performance_ms,
+        best_dispatch_fp8_gbps: $best_dispatch_fp8_gbps,
+        best_dispatch_bf16_gbps: $best_dispatch_bf16_gbps,
+        best_combine_gbps: $best_combine_gbps
+      }
+    }')
+
+  test_ll_json=$(jq -n \
+    --arg name "${FILE_LOW_LATENCY}" \
+    --arg scope "intranode" \
+    --arg status "${ll_status}" \
+    --argjson duration_sec "${ll_duration}" \
+    --argjson cases_total "${ll_total}" \
+    --argjson cases_passed "${ll_total}" \
+    --argjson cases_failed "${ll_failed}" \
+    --argjson buffer_size_mb "${ll_buffer_mb}" \
+    --argjson dispatch_combine_bandwidth_gbps_avg "${ll_bw_avg}" \
+    --argjson dispatch_combine_latency_us_avg "${ll_lat_avg}" \
+    '{
+      name: $name,
+      scope: $scope,
+      status: $status,
+      duration_sec: $duration_sec,
+      correctness: {cases_total: $cases_total, cases_passed: $cases_passed, cases_failed: $cases_failed},
+      metrics: {
+        buffer_size_mb: $buffer_size_mb,
+        dispatch_combine_bandwidth_gbps_avg: $dispatch_combine_bandwidth_gbps_avg,
+        dispatch_combine_latency_us_avg: $dispatch_combine_latency_us_avg
+      }
+    }')
+
+  local internode_master_log
+  internode_master_log=""
+  if [[ -n "${internode_master_log_path}" ]] && [[ -f "${internode_master_log_path}" ]]; then
+    internode_master_log=$(cat "${internode_master_log_path}" 2>/dev/null || echo "")
+  fi
+
+  local internode_ibgda_any internode_ibgda_all
+  internode_ibgda_any=$(echo "${internode_per_host}" | jq '[.[].has_ibgda] | any(.==1)' 2>/dev/null || echo false)
+  internode_ibgda_all=$(echo "${internode_per_host}" | jq '[.[].has_ibgda] | all(.==1)' 2>/dev/null || echo false)
+
+  local internode_master_log_tail_json
+  internode_master_log_tail_json=$(tail_log_lines_json "${internode_master_log_path}" 60)
+
+  local internode_failure_logs_json
+  internode_failure_logs_json=$(build_internode_failure_logs_json "${internode_per_host}")
+  if [[ -z "${internode_failure_logs_json}" ]] || [[ "${internode_failure_logs_json}" = "null" ]]; then
+    internode_failure_logs_json='[]'
+  fi
+
+  local internode_best_dispatch_line internode_best_combine_line
+  internode_best_dispatch_line=$(printf '%s\n' "${internode_master_log}" | grep -E "Best dispatch" | head -n 1 || true)
+  internode_best_combine_line=$(printf '%s\n' "${internode_master_log}" | grep -E "Best combine" | head -n 1 || true)
+
+  local internode_dispatch_rdma_gbps internode_dispatch_nvl_gbps
+  internode_dispatch_rdma_gbps=$(printf '%s\n' "${internode_best_dispatch_line}" | sed -n 's/.*BW: \([0-9.][0-9.]*\)[[:space:]]*GB\/s[[:space:]]*(RDMA).*/\1/p' | head -n 1)
+  internode_dispatch_nvl_gbps=$(printf '%s\n' "${internode_best_dispatch_line}" | sed -n 's/.*BW: [^,]*, \([0-9.][0-9.]*\)[[:space:]]*GB\/s[[:space:]]*(NVL).*/\1/p' | head -n 1)
+  internode_dispatch_rdma_gbps=$(num_or_zero "${internode_dispatch_rdma_gbps}")
+  internode_dispatch_nvl_gbps=$(num_or_zero "${internode_dispatch_nvl_gbps}")
+
+  local internode_combine_rdma_gbps internode_combine_nvl_gbps
+  internode_combine_rdma_gbps=$(printf '%s\n' "${internode_best_combine_line}" | sed -n 's/.*BW: \([0-9.][0-9.]*\)[[:space:]]*GB\/s[[:space:]]*(RDMA).*/\1/p' | head -n 1)
+  internode_combine_nvl_gbps=$(printf '%s\n' "${internode_best_combine_line}" | sed -n 's/.*BW: [^,]*, \([0-9.][0-9.]*\)[[:space:]]*GB\/s[[:space:]]*(NVL).*/\1/p' | head -n 1)
+  internode_combine_rdma_gbps=$(num_or_zero "${internode_combine_rdma_gbps}")
+  internode_combine_nvl_gbps=$(num_or_zero "${internode_combine_nvl_gbps}")
+
+  if [[ "${RUN_INTRANODE}" != "true" ]] && [[ "${RUN_LOW_LATENCY}" != "true" ]] && [[ "${RUN_INTERNODE}" == "true" ]]; then
+    one_line=$(json_escape_one_line "DeepEP internode 状态 ${internode_status}；Best dispatch: RDMA ${internode_dispatch_rdma_gbps} GB/s, NVL ${internode_dispatch_nvl_gbps} GB/s；Best combine: RDMA ${internode_combine_rdma_gbps} GB/s, NVL ${internode_combine_nvl_gbps} GB/s。")
+  else
+    one_line=$(json_escape_one_line "DeepEP test_intranode 测试${intra_status}（BF16/FP8、top-k、async 覆盖）；NVLink 吞吐最高约 ${bw_fp8}-${bw_bf16} GB/s，low_latency 端到端平均约 ${ll_lat_avg} us、综合带宽约 ${ll_bw_avg} GB/s；internode 状态 ${internode_status}。")
+  fi
+
+  internode_total_procs=$((internode_world_size * internode_num_procs_used))
+
+  internode_per_host_min=$(echo "${internode_per_host}" | jq 'map({host,rank,status})' 2>/dev/null || echo '[]')
+
+  test_internode_json=$(jq -n \
+    --arg name "${FILE_INTERNODE}" \
+    --arg scope "internode" \
+    --arg status "${internode_status}" \
+    --argjson duration_sec "${internode_duration}" \
+    --argjson world_size "${internode_world_size}" \
+    --arg master_host "${internode_master_host}" \
+    --argjson master_port "${internode_master_port}" \
+    --argjson gpus_per_host "${internode_num_procs_used}" \
+    --argjson total_gpus "${internode_total_procs}" \
+    --argjson ibgda_any "${internode_ibgda_any}" \
+    --argjson ibgda_all "${internode_ibgda_all}" \
+    --argjson dispatch_rdma_gbps "${internode_dispatch_rdma_gbps}" \
+    --argjson dispatch_nvl_gbps "${internode_dispatch_nvl_gbps}" \
+    --argjson combine_rdma_gbps "${internode_combine_rdma_gbps}" \
+    --argjson combine_nvl_gbps "${internode_combine_nvl_gbps}" \
+    --argjson per_host "${internode_per_host_min}" \
+    --arg log_dir "${internode_log_dir_effective}" \
+    --arg master_log_path "${internode_master_log_path}" \
+    --argjson master_log_tail "${internode_master_log_tail_json}" \
+    --argjson failure_summary "${internode_failure_logs_json}" \
+    ' {
+      name: $name,
+      scope: $scope,
+      status: $status,
+      duration_sec: $duration_sec,
+      metrics: {
+        world_size: $world_size,
+        gpus_per_host: $gpus_per_host,
+        total_gpus: $total_gpus,
+        master: {host: $master_host, port: $master_port},
+        log_dir: $log_dir,
+        master_log_path: $master_log_path,
+        transports: {ibgda_any: $ibgda_any, ibgda_all: $ibgda_all},
+        best_dispatch: {rdma_gbps: $dispatch_rdma_gbps, nvl_gbps: $dispatch_nvl_gbps},
+        best_combine: {rdma_gbps: $combine_rdma_gbps, nvl_gbps: $combine_nvl_gbps},
+        master_log_tail: $master_log_tail
+      },
+      per_host: $per_host,
+      failure_summary: $failure_summary
+    }')
+
+  local highlights_json
+  if [[ "${RUN_INTRANODE}" != "true" ]] && [[ "${RUN_LOW_LATENCY}" != "true" ]] && [[ "${RUN_INTERNODE}" == "true" ]]; then
+    highlights_json=$(jq -n \
+      --argjson h1 "$(jq -n --arg metric internode_dispatch_rdma_gbps --argjson value "${internode_dispatch_rdma_gbps:-0}" --arg unit "GB/s" '{metric:$metric,value:$value,unit:$unit}')" \
+      --argjson h2 "$(jq -n --arg metric internode_dispatch_nvl_gbps --argjson value "${internode_dispatch_nvl_gbps:-0}" --arg unit "GB/s" '{metric:$metric,value:$value,unit:$unit}')" \
+      --argjson h3 "$(jq -n --arg metric internode_combine_rdma_gbps --argjson value "${internode_combine_rdma_gbps:-0}" --arg unit "GB/s" '{metric:$metric,value:$value,unit:$unit}')" \
+      --argjson h4 "$(jq -n --arg metric internode_combine_nvl_gbps --argjson value "${internode_combine_nvl_gbps:-0}" --arg unit "GB/s" '{metric:$metric,value:$value,unit:$unit}')" \
+      '$ARGS.named | [.h1,.h2,.h3,.h4]')
+  else
+    highlights_json=$(jq -n \
+      --argjson h1 "$(jq -n --arg metric intranode_best_dispatch_fp8_gbps --argjson value "${bw_fp8}" --arg unit "GB/s" '{metric:$metric,value:$value,unit:$unit}')" \
+      --argjson h2 "$(jq -n --arg metric intranode_best_dispatch_bf16_gbps --argjson value "${bw_bf16}" --arg unit "GB/s" '{metric:$metric,value:$value,unit:$unit}')" \
+      --argjson h3 "$(jq -n --arg metric low_latency_avg_us --argjson value "${ll_lat_avg}" --arg unit "us" '{metric:$metric,value:$value,unit:$unit}')" \
+      '$ARGS.named | [.h1,.h2,.h3]')
+  fi
+
+  jq -n \
+    --arg schema_version "1.0" \
+    --arg generated_at "${ts}" \
+    --arg run_id "deepep-${node}-intranode-$(date +%Y%m%d_%H%M%S)" \
+    --arg node "${node}" \
+    --argjson tags "${tags_json}" \
+    --argjson test_intra "${test_intra_json}" \
+    --argjson test_ll "${test_ll_json}" \
+    --argjson test_internode "${test_internode_json}" \
+    --arg overall_status "${overall_status}" \
+    --arg one_line "${one_line}" \
+    --argjson highlights "${highlights_json}" \
+    '{
+      meta: {
+        schema_version: $schema_version,
+        generated_at: $generated_at,
+        run_id: $run_id,
+        tags: $tags,
+        node: $node
+      },
+      tests: [$test_intra, $test_ll, $test_internode],
+      summary: {
+        overall_status: $overall_status,
+        one_line: $one_line,
+        highlights: $highlights
+      }
+    }' | jq '.' >"${REPORT_FILE}"
+
+  if [[ "${RUN_INTERNODE}" == "true" ]] && { [[ "${internode_status}" == "fail" ]] || [[ "${internode_status}" == "timeout" ]]; }; then
+    echo "==================== DeepEP INTERNODE DEBUG ===================="
+    echo "  - internode_log_dir:    ${internode_log_dir_effective}"
+    echo "  - master_log_path:      ${internode_master_log_path}"
+    echo "  - master:               ${internode_master_host}:${internode_master_port}"
+    echo "  - num_procs_per_host:   ${internode_num_procs_used}"
+    if [[ -f "${internode_master_log_path}" ]]; then
+      echo "--- master log tail (${internode_master_log_path}) ---"
+      tail -n 60 "${internode_master_log_path}" 2>/dev/null || true
+    fi
+    if [[ -n "${internode_failure_logs_json}" ]] && [[ "${internode_failure_logs_json}" != "[]" ]]; then
+      echo "--- failed host log tails ---"
+      while IFS= read -r item; do
+        [[ -n "${item}" ]] || continue
+        local fh_host fh_status fh_path
+        fh_host=$(printf '%s' "${item}" | jq -r '.host // ""' 2>/dev/null || echo "")
+        fh_status=$(printf '%s' "${item}" | jq -r '.status // ""' 2>/dev/null || echo "")
+        fh_path=$(printf '%s' "${item}" | jq -r '.log_path // ""' 2>/dev/null || echo "")
+        echo "--- host=${fh_host} status=${fh_status} log=${fh_path} ---"
+        if [[ -f "${fh_path}" ]]; then
+          tail -n 60 "${fh_path}" 2>/dev/null || true
+        else
+          echo "(log file not found)"
+        fi
+      done < <(echo "${internode_failure_logs_json}" | jq -c '.[]' 2>/dev/null || true)
+    fi
+    echo "============================================================="
+  fi
+
+  echo "======================= DeepEP REPORT ======================="
+  cat "${REPORT_FILE}"
+  echo "============================================================="
+  echo "RESULTS SUMMARY:"
+  echo "  - JSON Report Path: ${REPORT_FILE}"
+  echo "  - Raw Log Path:     ${RAW_LOG}"
+  echo "============================================================="
+}
+
+main "$@"
