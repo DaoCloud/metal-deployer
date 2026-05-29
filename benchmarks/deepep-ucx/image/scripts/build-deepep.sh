@@ -21,7 +21,17 @@ PIP_TIMEOUT=${PIP_TIMEOUT:-600}
 
 python3 -m pip install --upgrade pip --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}"
 TORCH_WHL_INDEX_URL=${TORCH_WHL_INDEX_URL:-"https://download.pytorch.org/whl/cu${CU_VER}"}
-pip3 install torch numpy packaging --extra-index-url "${TORCH_WHL_INDEX_URL}" --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --no-cache-dir
+pip3 install numpy packaging --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --no-cache-dir
+pip3 install torch --index-url "${TORCH_WHL_INDEX_URL}" --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --no-cache-dir
+python3 - <<PY
+import sys
+import torch
+
+expected = "${CUDA_SHORT}"
+actual = torch.version.cuda
+if actual != expected:
+    sys.exit(f"PyTorch CUDA version mismatch: expected {expected}, got {actual}")
+PY
 
 NVSHMEM_VERSION_RAW=${ENV_NVSHMEM_VERSION:-"v3.4.5-0"}
 NVSHMEM_VERSION=${NVSHMEM_VERSION_RAW#v}

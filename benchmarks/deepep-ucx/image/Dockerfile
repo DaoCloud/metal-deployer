@@ -113,7 +113,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies for DeepEP
-RUN pip3 install --no-cache-dir torch numpy packaging
+RUN CUDA_SHORT="$(echo "${ENV_BASEIMAGE_CUDA_VERISON}" | cut -d. -f1,2)" \
+    && CU_VER="$(echo "${CUDA_SHORT}" | tr -d .)" \
+    && pip3 install --no-cache-dir numpy packaging \
+    && pip3 install --no-cache-dir torch --index-url "https://download.pytorch.org/whl/cu${CU_VER}" \
+    && python3 -c "import sys, torch; expected='${CUDA_SHORT}'; actual=torch.version.cuda; sys.exit(f'PyTorch CUDA version mismatch: expected {expected}, got {actual}') if actual != expected else None"
 
 # Move tools to system path and make executable
 RUN chmod +x /tools/* && mv /tools/* /usr/sbin && rm -rf /tools
