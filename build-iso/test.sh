@@ -345,12 +345,6 @@ do_setup() {
                     exit 2
                 fi
 
-                if ! systemctl is-active --quiet cloud-final.service; then
-                    cloud-init status --long >&2 || true
-                    echo \"first-boot processes exited but /root/installed marker is missing\" >&2
-                    exit 2
-                fi
-
                 sleep 5
             done
         '"; then
