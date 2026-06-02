@@ -10,11 +10,11 @@ on:
       cuda_profile:
         description: CUDA manifest profile
         required: true
-        default: 'cuda13'
+        default: 'cuda12'
         type: choice
         options:
-          - 'cuda13'
           - 'cuda12'
+          - 'cuda13'
       version:
         description: Release version, used in ISO filename (metal-deployer-vX.Y.Z-...)
         required: true

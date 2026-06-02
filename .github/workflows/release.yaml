@@ -14,11 +14,11 @@ on:
       cuda_profile:
         description: CUDA manifest profile
         required: true
-        default: 'cuda13'
+        default: 'cuda12'
         type: choice
         options:
-          - 'cuda13'
           - 'cuda12'
+          - 'cuda13'
       destination_url:
         description: Destination URL/path for ISO upload
         required: true
@@ -53,7 +53,7 @@ jobs:
     uses: ./.github/workflows/call-release-iso.yaml
     with:
       nvidia_driver_branch: ${{ github.event_name == 'push' && 'default' || inputs.nvidia_driver_branch }}
-      cuda_profile: ${{ github.event_name == 'push' && 'cuda13' || inputs.cuda_profile }}
+      cuda_profile: ${{ github.event_name == 'push' && 'cuda12' || inputs.cuda_profile }}
       version: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
       destination_url: ${{ github.event_name == 'push' && 'http://10.64.40.200:5000/iso/GPU' || inputs.destination_url }}
       cleanup_after_run: ${{ github.event_name == 'push' && 'false' || inputs.cleanup_after_run }}

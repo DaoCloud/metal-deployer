@@ -25,6 +25,9 @@ fi
 NVIDIA_DRIVER_BRANCH="${NVIDIA_DRIVER_BRANCH:-default}"
 CUDA_TOOLKIT_PACKAGE="${CUDA_TOOLKIT_PACKAGE:-cuda-toolkit-13-2}"
 NVIDIA_DRIVER_VERSION="${NVIDIA_DRIVER_VERSION:-}"
+GPU_DRIVER_DEBS=()
+GPU_LIBRARY_DEBS=()
+DCGM_DEBS=()
 
 log() {
     echo "[$(date '+%F %T')] $*" | tee -a "$SUMMARY_LOG"
@@ -54,8 +57,17 @@ install_base_packages() {
         build-essential gcc make dkms \
         cmake git pkg-config libglvnd-dev autoconf automake \
         libpmix-dev libboost-program-options-dev libnuma1 libnuma-dev libsubunit0 \
-        libpci-dev libtool devscripts debhelper fakeroot check openmpi-bin libopenmpi-dev \
-        rdma-core ibverbs-utils infiniband-diags
+        libpci-dev libudev-dev libtool libtool-bin devscripts debhelper fakeroot check openmpi-bin libopenmpi-dev
+
+    # RDMA userspace tools are installed best-effort and intentionally kept out
+    # of the atomic install above. The inbox rdma-core/infiniband-diags debs pull
+    # libibmad5/libibnetdisc5t64, which are not part of the offline set, so a
+    # single atomic transaction would fail and take the essential build toolchain
+    # (libtool/autoconf/automake) down with it. The proper OFED versions of these
+    # tools are installed later by the doca_install stage.
+    apt-get install -y --no-install-recommends \
+        rdma-core ibverbs-utils infiniband-diags || \
+        log "Skip inbox RDMA tools in base_packages (unmet offline deps); provided later by doca_install."
 
     apt-get install -y --no-install-recommends "linux-headers-$(uname -r)" || \
         log "Skip matching kernel headers install: linux-headers-$(uname -r) is unavailable."
@@ -117,10 +129,10 @@ install_offline_debs() {
 
     local repo_debs=()
     local direct_debs=()
-    local gpu_driver_debs=()
-    local gpu_library_debs=()
-    local dcgm_debs=()
     local deb pkg
+    GPU_DRIVER_DEBS=()
+    GPU_LIBRARY_DEBS=()
+    DCGM_DEBS=()
     for deb in "$PACKAGE_DIR"/*.deb; do
         pkg="$(dpkg-deb -f "$deb" Package 2>/dev/null || basename "$deb")"
         case "$pkg" in
@@ -128,13 +140,13 @@ install_offline_debs() {
                 repo_debs+=("$deb")
                 ;;
             cuda-drivers|nvidia-driver*|nvidia-fabricmanager*|nvidia-persistenced)
-                gpu_driver_debs+=("$deb")
+                GPU_DRIVER_DEBS+=("$deb")
                 ;;
             libnccl*)
-                gpu_library_debs+=("$deb")
+                GPU_LIBRARY_DEBS+=("$deb")
                 ;;
             datacenter-gpu-manager*)
-                dcgm_debs+=("$deb")
+                DCGM_DEBS+=("$deb")
                 ;;
             *)
                 direct_debs+=("$deb")
@@ -155,8 +167,10 @@ install_offline_debs() {
 
     # CUDA toolkit is software-only and can be validated in a VM; driver/DCGM/NCCL
     # packages are GPU-dependent and are installed only when hardware is present.
-    apt-get install -y --allow-downgrades "$CUDA_TOOLKIT_PACKAGE" || true
+    apt-get install -y --allow-downgrades "$CUDA_TOOLKIT_PACKAGE"
+}
 
+install_gpu_debs() {
     if lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'; then
         if [ "$NVIDIA_DRIVER_BRANCH" = "580-server" ]; then
             log "NVIDIA_DRIVER_BRANCH=580-server; installing Ubuntu R580 server driver."
@@ -164,8 +178,8 @@ install_offline_debs() {
                 nvidia-driver-580-server \
                 nvidia-utils-580-server
         elif [ "$NVIDIA_DRIVER_BRANCH" = "default" ]; then
-            if [ "${#gpu_driver_debs[@]}" -gt 0 ]; then
-                apt-get install -y --allow-downgrades "${gpu_driver_debs[@]}"
+            if [ "${#GPU_DRIVER_DEBS[@]}" -gt 0 ]; then
+                apt-get install -y --allow-downgrades "${GPU_DRIVER_DEBS[@]}"
             fi
 
             if [ -n "$NVIDIA_DRIVER_VERSION" ]; then
@@ -184,13 +198,13 @@ install_offline_debs() {
             return 1
         fi
 
-        if [ "${#gpu_library_debs[@]}" -gt 0 ]; then
-            apt-get install -y --allow-downgrades "${gpu_library_debs[@]}"
+        if [ "${#GPU_LIBRARY_DEBS[@]}" -gt 0 ]; then
+            apt-get install -y --allow-downgrades "${GPU_LIBRARY_DEBS[@]}"
         fi
         apt-get install -y --allow-downgrades libnccl2 libnccl-dev
 
-        if [ "${#dcgm_debs[@]}" -gt 0 ]; then
-            apt-get install -y --allow-downgrades "${dcgm_debs[@]}" || log "Skip DCGM local deb install: dependency resolution failed."
+        if [ "${#DCGM_DEBS[@]}" -gt 0 ]; then
+            apt-get install -y --allow-downgrades "${DCGM_DEBS[@]}" || log "Skip DCGM local deb install: dependency resolution failed."
         fi
         apt-get install -y --allow-downgrades \
             datacenter-gpu-manager-4-core \
@@ -256,6 +270,7 @@ main() {
     run_stage offline_debs install_offline_debs
 
     run_stage doca_install run_optional_script install_doca.sh
+    run_stage gpu_debs install_gpu_debs
     run_stage rdma_modules run_optional_script configure_rdma_modules.sh
 
     run_stage ssh_keys run_optional_script configure_ssh.sh

@@ -67,6 +67,7 @@ mkdir -p "$TARGET_RES_DIR/packages"
 [ -d "$SCRIPT_DIR" ] && { cp -r "$SCRIPT_DIR" "$TARGET_RES_DIR/scripts"; chmod -R +x "$TARGET_RES_DIR/scripts"; }
 [ -d "$CONFIG_DIR" ] && cp -r "$CONFIG_DIR" "$TARGET_RES_DIR/config"
 mkdir -p "$TARGET_RES_DIR/config"
+find "$TARGET_RES_DIR/packages" -type f -name '*.tmp' -delete
 if find "$TARGET_RES_DIR/packages" -maxdepth 1 -name '*.deb' -print -quit | grep -q .; then
     (
         cd "$TARGET_RES_DIR/packages"

@@ -33,7 +33,7 @@ on:
           - 'cuda13'
           - 'cuda12'
       cleanup_after_run:
-        description: Remove CI working directory after uploading logs
+        description: Remove CI working directory after printing failure logs
         required: true
         default: 'false'
         type: choice
@@ -174,12 +174,18 @@ jobs:
           fi
           df -h
 
+      - name: Pre-clean stale ISO test workspace
+        run: |
+          set +e
+          cd build-iso
+          CI_WORK_DIR="$ISO_CI_WORK_DIR" PRESERVE_TEST_LOGS=0 ./test.sh clean
+
       - name: Restore ISO/package cache
         uses: actions/cache@v4
         with:
           path: |
-            build-iso/.ci-work/iso
-            build-iso/.ci-work/packages
+            build-iso/.ci-work/${{ env.CUDA_PROFILE }}/iso
+            build-iso/.ci-work/${{ env.CUDA_PROFILE }}/packages
           key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
           restore-keys: |
             iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-
@@ -214,7 +220,8 @@ jobs:
         run: |
           set -euxo pipefail
           cd build-iso
-          ./test.sh setup
+          CI_WORK_DIR="$TEST_WORK_DIR" PRESERVE_TEST_LOGS=0 ./test.sh clean
+          DUMP_FAILURE_LOGS=0 ./test.sh setup
 
       - name: Collect QEMU logs from VM
         if: ${{ failure() }}
@@ -233,25 +240,20 @@ jobs:
               -p 5555 admin@localhost \
               'echo admin | sudo -S bash -c "
                 set +e
-                cloud-init status --long || true
-                tail -n 200 /var/log/cloud-init-output.log || true
-                tail -n 120 /var/log/cloud-init.log || true
-                tail -n 200 /var/log/scripts.log || true
-                cat /var/log/metal-deployer/install-summary.log || true
                 tar -C / -czf /tmp/metal-deployer-logs.tgz var/log/scripts.log var/log/metal-deployer var/log/cloud-init-output.log var/log/cloud-init.log 2>/dev/null
-              "'
+              "' >/dev/null 2>&1 || true
             sshpass -p admin scp \
               -o StrictHostKeyChecking=no \
               -o UserKnownHostsFile=/dev/null \
               -P 5555 \
-              admin@localhost:/tmp/metal-deployer-logs.tgz "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz"
+              admin@localhost:/tmp/metal-deployer-logs.tgz "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz" >/dev/null 2>&1 || true
             tar -C "$ISO_CI_WORK_DIR/failure-logs" -xzf "$ISO_CI_WORK_DIR/metal-deployer-logs.tgz" 2>/dev/null || true
           else
             echo "VM SSH is not reachable; skip VM log collection."
           fi
 
       - name: Stop QEMU
-        if: ${{ always() }}
+        if: ${{ success() }}
         run: |
           set +e
           cd build-iso
@@ -264,10 +266,10 @@ jobs:
           {
             echo "## ISO CI failure logs"
             echo
-            echo "Full logs are also uploaded as artifact \`iso-ci-logs\`."
+            echo "Only failed first-boot stage logs are printed here."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          print_tail() {
+          append_tail() {
             local title="$1"
             local file="$2"
             local lines="${3:-200}"
@@ -275,10 +277,6 @@ jobs:
             if [ ! -f "$file" ]; then
               return 0
             fi
-
-            echo "::group::${title}"
-            tail -n "$lines" "$file" || true
-            echo "::endgroup::"
 
             {
               echo
@@ -289,27 +287,38 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           }
 
-          print_tail "QEMU serial log" "$TEST_WORK_DIR/qemu.log" 300
-          print_tail "cloud-init output" "$ISO_CI_WORK_DIR/failure-logs/var/log/cloud-init-output.log" 200
-          print_tail "cloud-init log" "$ISO_CI_WORK_DIR/failure-logs/var/log/cloud-init.log" 120
-          print_tail "scripts log" "$ISO_CI_WORK_DIR/failure-logs/var/log/scripts.log" 200
-          print_tail "install summary" "$ISO_CI_WORK_DIR/failure-logs/var/log/metal-deployer/install-summary.log" 200
+          found_failed_stage=0
+          found_summary=0
+          for summary in \
+            "$ISO_CI_WORK_DIR/failure-logs/var/log/metal-deployer/install-summary.log" \
+            "$TEST_WORK_DIR/failure-logs/var/log/metal-deployer/install-summary.log"; do
+            [ "$found_summary" -eq 0 ] || break
+            [ -f "$summary" ] || continue
+            found_summary=1
+            append_tail "install summary" "$summary" 120
+            while read -r stage; do
+              [ -n "$stage" ] || continue
+              found_failed_stage=1
+              stage_log="$(dirname "$summary")/${stage}.log"
+              append_tail "failed stage: ${stage}" "$stage_log" 300
+            done < <(sed -n 's/.*========== FAIL  \([^ ]*\) rc=.*/\1/p' "$summary" | sort -u)
+          done
 
-      - name: Upload CI logs
-        if: ${{ failure() }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: iso-ci-logs
-          if-no-files-found: ignore
-          include-hidden-files: true
-          path: |
-            build-iso/.ci-work/**/qemu.log
-            build-iso/.ci-work/**/iso-resource-files.txt
-            build-iso/.ci-work/**/metal-deployer-logs.tgz
-            build-iso/.ci-work/**/*.log
+          if [ "$found_failed_stage" -eq 0 ]; then
+            append_tail "QEMU serial log" "$TEST_WORK_DIR/qemu.log" 300
+            append_tail "cloud-init output" "$ISO_CI_WORK_DIR/failure-logs/var/log/cloud-init-output.log" 200
+          fi
+
+          for log_dir in "$ISO_CI_WORK_DIR/failure-logs/var/log/metal-deployer" "$TEST_WORK_DIR/failure-logs/var/log/metal-deployer"; do
+            [ -d "$log_dir" ] || continue
+            for log_file in "$log_dir"/*-failure.log; do
+              [ -f "$log_file" ] || continue
+              append_tail "failure log: $(basename "$log_file")" "$log_file" 200
+            done
+          done
 
       - name: Clean ISO test artifacts
-        if: ${{ always() }}
+        if: ${{ success() }}
         run: |
           set +e
           cd build-iso
@@ -323,7 +332,11 @@ jobs:
             "$ISO_CI_WORK_DIR/iso-resource-files.txt"
 
       - name: Clean CI working directory
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.cleanup_after_run == 'true' }}
+        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.cleanup_after_run == 'true' }}
         run: |
           set -euxo pipefail
-          rm -rf "$ISO_CI_WORK_DIR"
+          [ -d "$ISO_CI_WORK_DIR" ] || exit 0
+          find "$ISO_CI_WORK_DIR" -mindepth 1 -maxdepth 1 \
+            ! -name iso \
+            ! -name packages \
+            -exec rm -rf {} +

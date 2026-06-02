@@ -12,6 +12,47 @@ log() {
     echo "[install_test_tools] $*" >&2
 }
 
+has_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+ensure_apt_packages() {
+    local missing=()
+    local package_name
+
+    for package_name in "$@"; do
+        if ! dpkg-query -W -f='${Status}' "$package_name" 2>/dev/null | grep -q 'install ok installed'; then
+            missing+=("$package_name")
+        fi
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    log "Installing missing build packages from configured local APT sources: ${missing[*]}"
+    apt-get update
+    apt-get install -y --allow-downgrades --no-install-recommends "${missing[@]}"
+}
+
+ensure_package_for_command() {
+    local command_name="$1"
+    local package_name="${2:-$1}"
+
+    if has_command "$command_name"; then
+        return 0
+    fi
+
+    log "${command_name} missing; installing ${package_name} from configured local APT sources."
+    apt-get update
+    apt-get install -y --allow-downgrades --no-install-recommends "$package_name"
+
+    if ! has_command "$command_name"; then
+        log "${command_name} still missing after installing ${package_name}."
+        return 1
+    fi
+}
+
 has_nvidia_gpu() {
     lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'
 }
@@ -111,8 +152,8 @@ build_nccl_tests() {
     tar -xzf "$archive" -C "$BUILD_DIR/nccl-tests" --strip-components=1
     mpi_home="$(detect_mpi_home)"
     if [ -z "$mpi_home" ] || [ ! -f "${mpi_home}/include/mpi.h" ]; then
-        log "Skip nccl-tests: MPI headers are missing."
-        return 0
+        log "MPI headers are missing after installing libopenmpi-dev."
+        return 1
     fi
     nvcc_gencode="$(detect_nccl_tests_gencode)"
     if [ -n "$nvcc_gencode" ]; then
@@ -168,6 +209,14 @@ build_perftest() {
     if ! has_rdma_adapter; then
         log "No RDMA adapter detected; building perftest for artifact validation only."
     fi
+
+    ensure_apt_packages libtool libtool-bin autoconf automake make gcc
+    # perftest ./configure requires the RDMA development headers
+    # (infiniband/verbs.h, rdma/rdma_cma.h, infiniband/umad.h) plus the pciutils
+    # headers (pci/pci.h from libpci-dev). The OFED RDMA -dev versions are
+    # provided by the DOCA local repo registered in the doca_install stage, which
+    # runs before test_tools_build.
+    ensure_apt_packages libibverbs-dev librdmacm-dev libibumad-dev libpci-dev
 
     rm -rf "$BUILD_DIR/perftest"
     mkdir -p "$BUILD_DIR/perftest"
@@ -227,6 +276,17 @@ build_cuda_bandwidthtest() {
     fi
     find "$sample_dir" -maxdepth 1 -type f -perm -111 -exec cp {} "$INSTALL_DIR/bin/" \;
 }
+
+ensure_apt_packages \
+    cmake \
+    libboost-program-options-dev \
+    openmpi-bin \
+    libopenmpi-dev \
+    libpmix-dev \
+    libtool-bin \
+    libpci-dev \
+    libudev-dev
+ensure_package_for_command cmake cmake
 
 build_nccl_tests
 build_nvbandwidth

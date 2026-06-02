@@ -11,6 +11,18 @@ log() {
     echo "[install_gdrcopy] $*" >&2
 }
 
+dump_module_diagnostics() {
+    log "kernel: $(uname -r)"
+    log "nvidia packages:"
+    dpkg -l | awk '$1=="ii" && $2 ~ /^(nvidia|cuda|libnvidia)/ {print "  " $2, $3}' >&2 || true
+    log "rdma/doca packages:"
+    dpkg -l | awk '$1=="ii" && $2 ~ /^(doca|rdma|ibverbs|infiniband|mlnx|ofed|libibverbs|librdmacm)/ {print "  " $2, $3}' >&2 || true
+    log "loaded modules:"
+    lsmod | awk '$1 ~ /^(nvidia|nvidia_peermem|gdrdrv|mlx5|ib_|rdma|nv_peer_mem)/ {print "  " $0}' >&2 || true
+    log "NVIDIA/RDMA PCI devices:"
+    lspci -nn | grep -iE 'nvidia|mellanox|connectx|bluefield' >&2 || true
+}
+
 has_nvidia_gpu() {
     lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'
 }
@@ -54,7 +66,21 @@ if [ -x "${CUDA_HOME}/bin/nvcc" ]; then
 fi
 
 depmod -a
-modprobe nvidia_peermem || true
+dump_module_diagnostics
+
+# nvidia_peermem implements the legacy InfiniBand PeerDirect
+# (ib_register_peer_memory_client) path. Recent DOCA/MLNX OFED (>= 25.x) and
+# mainline kernels no longer export that API; GPUDirect RDMA is provided through
+# the dma-buf path (ib_umem_dmabuf_get) instead. On those stacks nvidia_peermem
+# returns EINVAL and is simply not needed, so treat its load as best-effort and
+# do not fail the GDRCopy install (which only requires gdrdrv).
+peermem_loaded=0
+if modprobe nvidia_peermem 2>/dev/null; then
+    peermem_loaded=1
+    log "nvidia_peermem loaded (legacy PeerDirect GPUDirect RDMA path)."
+else
+    log "Skip nvidia_peermem: PeerDirect API unavailable (modern OFED/kernel uses dma-buf GPUDirect RDMA); not required."
+fi
 modprobe gdrdrv
 
 ldconfig
@@ -68,6 +94,10 @@ if [ -n "$major" ]; then
     chmod 0666 /dev/gdrdrv
 fi
 
-printf 'gdrdrv\n' > "$MODULE_LOAD_FILE"
-
-log "GDRCopy installed and gdrdrv loaded."
+if [ "$peermem_loaded" -eq 1 ]; then
+    printf 'nvidia_peermem\ngdrdrv\n' > "$MODULE_LOAD_FILE"
+    log "GDRCopy installed; nvidia_peermem and gdrdrv loaded."
+else
+    printf 'gdrdrv\n' > "$MODULE_LOAD_FILE"
+    log "GDRCopy installed; gdrdrv loaded (nvidia_peermem skipped, dma-buf GPUDirect RDMA in use)."
+fi

@@ -71,6 +71,13 @@ basic:
     required: true
     filename: docker-compose-plugin-5.0.0-ubuntu2404.deb
     install_method: apt
+  - name: rdma-core
+    description: RDMA core userspace infrastructure（ibverbs/rdmacm 运行时,Ubuntu 24.04）
+    url: http://archive.ubuntu.com/ubuntu/pool/main/r/rdma-core/rdma-core_50.0-2ubuntu0.2_amd64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: rdma-core_50.0-2ubuntu0.2_amd64.deb
+    install_method: apt
   - name: librdmacm-dev
     description: RDMA CM development headers（perftest 构建依赖,Ubuntu 24.04）
     url: http://archive.ubuntu.com/ubuntu/pool/main/r/rdma-core/librdmacm-dev_50.0-2ubuntu0.2_amd64.deb
@@ -105,6 +112,13 @@ basic:
     version: 3.3.0
     required: true
     filename: doca-host_3.3.0-088000-26.01-ubuntu2404_amd64.deb
+    install_method: apt
+  - name: libfuse2
+    description: legacy FUSE2 runtime for DOCA rshim compatibility（offline compatibility）
+    url: http://archive.ubuntu.com/ubuntu/pool/main/f/fuse/libfuse2_2.9.9-3_amd64.deb
+    version: 2.9.9-3
+    required: true
+    filename: libfuse2_2.9.9-3_amd64.deb
     install_method: apt
   - name: gdrdrv-dkms
     description: GDRCopy 内核驱动 DKMS（Ubuntu 24.04,GPU 显存零拷贝）
@@ -174,6 +188,8 @@ basic:
     - lldpd
     - unzip
     - tar
+    - bzip2
+    - lbzip2
     - xz-utils
     - ca-certificates
     - gnupg
@@ -204,13 +220,39 @@ basic:
     - libnuma-dev
     - libsubunit0
     - libpci-dev
+    - libudev-dev
     - libtool
+    - libtool-bin
+    - default-jre
+    - libasound2
+    - libwayland-server0
+    - libxcb-cursor0
+    - libxtst6
+    - xserver-xorg-core
     - devscripts
     - debhelper
     - fakeroot
     - check
     - openmpi-bin
     - libopenmpi-dev
+    install_method: apt
+    required: true
+  - name: doca-offline-deps
+    description: DOCA offline install dependencies from Ubuntu 24.04 archives
+    packages:
+    - libunbound8
+    - libyaml-dev
+    - libssl-dev
+    - libelf-dev
+    - libglib2.0-dev
+    - libzip-dev
+    - libbz2-dev
+    - libbsd-dev
+    - libmnl-dev
+    - libpcap-dev
+    - libjansson-dev
+    - libboost-random1.83.0
+    - libzip4t64
     install_method: apt
     required: true
   - name: perftest
@@ -226,6 +268,9 @@ basic:
     - libibumad-dev
     - automake
     - libtool
+    - libtool-bin
+    - libpci-dev
+    - libudev-dev
     - make
   - name: nccl-tests
     description: NCCL Tests（GPU 集合通信性能测试）
@@ -597,7 +642,7 @@ user_data:
         gnupg curl wget vim htop tmux rsync chrony build-essential gcc make dkms linux-headers-generic
         linux-cloud-tools-generic cmake git pkg-config libglvnd-dev autoconf automake
         libpmix-dev libboost-program-options-dev libnuma1 libnuma-dev libsubunit0
-        libpci-dev libtool devscripts debhelper fakeroot check openmpi-bin libopenmpi-dev
+        libpci-dev libudev-dev libtool libtool-bin devscripts debhelper fakeroot check openmpi-bin libopenmpi-dev
       enabled: true
       log: "/var/log/diagnostic-tools.log"
     - name: kernel_packages

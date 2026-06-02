@@ -20,13 +20,16 @@ fi
 
 apt-get update
 
-# DOCA package names differ across releases. Follow NVIDIA host install path.
-read -r -a doca_packages <<< "${DOCA_PACKAGES:-doca-networking}"
+# Install the OFED kernel stack and RDMA userspace directly instead of the
+# broad doca-networking meta package. doca-networking pulls
+# python3-doca-openvswitch -> python3-prometheus-client/python3-sortedcontainers,
+# which are Ubuntu universe packages unavailable offline; that breaks the whole
+# apt transaction and silently skips mlnx-ofed-kernel-dkms. The kernel DKMS
+# package provides the PeerDirect-enabled ib_core required by nvidia_peermem
+# (GPUDirect RDMA). --no-install-recommends keeps the closure offline-installable.
+read -r -a doca_packages <<< "${DOCA_PACKAGES:-mlnx-ofed-kernel-dkms mlnx-ofed-kernel-utils ibverbs-providers libibverbs1 ibverbs-utils librdmacm1 infiniband-diags}"
 
-if ! apt-get install -y --allow-downgrades "${doca_packages[@]}"; then
-    apt-get install -y --allow-downgrades doca-all || \
-    apt-get install -y --allow-downgrades doca-runtime doca-tools || true
-fi
+apt-get install -y --no-install-recommends --allow-downgrades "${doca_packages[@]}"
 
 modprobe mlx5_core || true
 modprobe mlx5_ib || true

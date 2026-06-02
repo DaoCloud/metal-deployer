@@ -14,7 +14,8 @@ DOWNLOAD_IMAGES="${DOWNLOAD_IMAGES:-true}"
 DRY_RUN="${DRY_RUN:-false}"
 FORCE="${FORCE:-false}"
 SSH_PUBLIC_KEY_FILE="${SSH_PUBLIC_KEY_FILE:-}"
-CACHE_BASE_DIR="${CACHE_BASE_DIR:-}"
+CACHE_BASE_DIR="${CACHE_BASE_DIR:-${CACHE_DIR:-/home/runner/actions-runner/_work/metal-deployer-cache}}"
+CACHE_DIR="$CACHE_BASE_DIR"
 
 usage() {
     cat <<EOF
@@ -40,7 +41,7 @@ Environment:
   DOWNLOAD_IMAGES=true|false
   FORCE=true|false
   DRY_RUN=true|false
-  CACHE_BASE_DIR              Local cache directory (e.g. /home/runner/cache)
+  CACHE_DIR or CACHE_BASE_DIR Local cache directory (e.g. /home/runner/cache)
                               Subdirs: iso/, base-packages/, cuda12/, cuda13/
 EOF
 }
@@ -161,6 +162,7 @@ try_cache_copy() {
 # Store downloaded file into CACHE_BASE_DIR
 store_to_cache() {
     local cache_path="$1"
+    local output="$2"
     if [ -n "$CACHE_BASE_DIR" ]; then
         mkdir -p "$(dirname "$cache_path")"
         cp "$output" "$cache_path"
@@ -190,6 +192,12 @@ download_file() {
     # Check local output first
     if [ -f "$output" ] && [ "$FORCE" != "true" ]; then
         echo "Skip existing: ${output}"
+        if [ -n "$cache_subdir" ]; then
+            cache_path="${CACHE_BASE_DIR}/${cache_subdir}/${filename}"
+            if [ -n "$CACHE_BASE_DIR" ] && [ ! -f "$cache_path" ]; then
+                store_to_cache "$cache_path" "$output"
+            fi
+        fi
         return 0
     fi
 
@@ -212,7 +220,7 @@ download_file() {
 
     # Store to runner-local cache for future runs
     if [ -n "$cache_subdir" ]; then
-        store_to_cache "$cache_path"
+        store_to_cache "$cache_path" "$output"
     fi
 }
 
@@ -324,12 +332,36 @@ prepare_apt_package_closure() {
             [ -n "$package" ] || continue
             if ls "${PACKAGE_DIR}/${package}_"*.deb >/dev/null 2>&1; then
                 echo "Skip existing APT package: ${package}"
+                for deb in "${PACKAGE_DIR}/${package}_"*.deb; do
+                    [ -f "$deb" ] || continue
+                    cache_path="${CACHE_BASE_DIR}/base-packages/$(basename "$deb")"
+                    if [ -n "$CACHE_BASE_DIR" ] && [ ! -f "$cache_path" ]; then
+                        store_to_cache "$cache_path" "$deb"
+                    fi
+                done
+                continue
+            fi
+            cache_hit=false
+            cache_dirs=(base-packages)
+            if [ -n "${CUDA_PROFILE:-}" ]; then
+                cache_dirs+=("cuda${CUDA_PROFILE#cuda}")
+            fi
+            for cache_dir in "${cache_dirs[@]}"; do
+                if ls "${CACHE_BASE_DIR}/${cache_dir}/${package}_"*.deb >/dev/null 2>&1; then
+                    echo "Cache hit APT package: ${package}"
+                    cp "${CACHE_BASE_DIR}/${cache_dir}/${package}_"*.deb "$PACKAGE_DIR"/
+                    cache_hit=true
+                    break
+                fi
+            done
+            if [ "$cache_hit" = "true" ]; then
                 continue
             fi
             echo "Download APT package: ${package}"
             if [ "$DRY_RUN" = "true" ]; then
                 echo "[dry-run] apt-get download ${package}"
             else
+                before_files="$(find "$PACKAGE_DIR" -maxdepth 1 -name "${package}_*.deb" -printf '%f\n' 2>/dev/null || true)"
                 local success=false
                 for attempt in {1..3}; do
                     if (cd "$PACKAGE_DIR" && apt-get -o Acquire::Retries=5 download "$package"); then
@@ -343,6 +375,12 @@ prepare_apt_package_closure() {
                     echo "❌ Failed to download ${package} after 3 attempts."
                     exit 1
                 fi
+                find "$PACKAGE_DIR" -maxdepth 1 -name "${package}_*.deb" -print | while read -r deb; do
+                    [ -n "$deb" ] || continue
+                    if ! grep -qxF "$(basename "$deb")" <<< "$before_files"; then
+                        store_to_cache "${CACHE_BASE_DIR}/base-packages/$(basename "$deb")" "$deb"
+                    fi
+                done
             fi
         done
 }

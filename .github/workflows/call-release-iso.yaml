@@ -11,7 +11,7 @@ on:
       cuda_profile:
         description: CUDA manifest profile
         required: true
-        default: 'cuda13'
+        default: 'cuda12'
         type: string
       version:
         description: Release version, used in ISO filename (metal-deployer-vX.Y.Z-...)
@@ -38,6 +38,8 @@ jobs:
     name: Build and publish ISO
     runs-on: [self-hosted, linux, x64, 10-64-65-31]
     timeout-minutes: 80
+    permissions:
+      contents: write
 
     env:
       DEBIAN_FRONTEND: noninteractive
@@ -46,6 +48,7 @@ jobs:
       CUDA_PROFILE: ${{ inputs.cuda_profile }}
       MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
       RELEASE_ISO_DESTINATION_URL: ${{ inputs.destination_url }}
+      CACHE_BASE_DIR: /home/runner/actions-runner/_work/metal-deployer-cache
       ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}
       ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/iso
       PACKAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/${{ inputs.cuda_profile }}/packages
@@ -78,8 +81,8 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            build-iso/.ci-work/iso
-            build-iso/.ci-work/packages
+            build-iso/.ci-work/${{ inputs.cuda_profile }}/iso
+            build-iso/.ci-work/${{ inputs.cuda_profile }}/packages
           key: iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
           restore-keys: |
             iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-
@@ -172,17 +175,119 @@ jobs:
         if: ${{ env.RELEASE_ISO_DESTINATION_URL != '' }}
         run: |
           set -euxo pipefail
+          destination_for() {
+            local file="$1"
+            local destination="$2"
+            local basename
+            basename="$(basename "$file")"
+
+            if [[ "$destination" == */ ]]; then
+              printf '%s%s\n' "$destination" "$basename"
+            elif [[ "$destination" == *.iso && "$file" == *.info.txt ]]; then
+              printf '%s.info.txt\n' "${destination%.iso}"
+            elif [[ "$destination" == *.info.txt || "$destination" == *.iso ]]; then
+              printf '%s\n' "$destination"
+            else
+              printf '%s/%s\n' "$destination" "$basename"
+            fi
+          }
+
+          ISO_DESTINATION="$(destination_for "$OUTPUT_ISO" "$RELEASE_ISO_DESTINATION_URL")"
+          INFO_DESTINATION="$(destination_for "$OUTPUT_ISO_INFO" "$RELEASE_ISO_DESTINATION_URL")"
+
           curl -fL --retry 3 --retry-delay 2 \
             --upload-file "$OUTPUT_ISO" \
-            "$RELEASE_ISO_DESTINATION_URL"
+            "$ISO_DESTINATION"
+          curl -fL --retry 3 --retry-delay 2 \
+            --upload-file "$OUTPUT_ISO_INFO" \
+            "$INFO_DESTINATION"
+
+          {
+            echo "RELEASE_ISO_REMOTE_URL=$ISO_DESTINATION"
+            echo "RELEASE_ISO_INFO_REMOTE_URL=$INFO_DESTINATION"
+          } >> "$GITHUB_ENV"
 
       - name: Destination not configured
         if: ${{ env.RELEASE_ISO_DESTINATION_URL == '' }}
         run: |
           echo "RELEASE_ISO_DESTINATION_URL is empty; skip ISO publish."
+          {
+            echo "RELEASE_ISO_REMOTE_URL="
+            echo "RELEASE_ISO_INFO_REMOTE_URL="
+          } >> "$GITHUB_ENV"
+
+      - name: Add ISO info to GitHub release notes
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const infoFile = process.env.OUTPUT_ISO_INFO;
+            const isoRemoteUrl = process.env.RELEASE_ISO_REMOTE_URL || '';
+            const infoRemoteUrl = process.env.RELEASE_ISO_INFO_REMOTE_URL || '';
+            const infoText = fs.readFileSync(infoFile, 'utf8').trimEnd();
+            const infoName = path.basename(infoFile);
+            const marker = `iso-info:${infoName}`;
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: tag,
+                body: '',
+                draft: false,
+                prerelease: false
+              });
+            }
+
+            const previousBody = release.data.body || '';
+            const start = `<!-- ${marker}:start -->`;
+            const end = `<!-- ${marker}:end -->`;
+            const escapedStart = start.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const sectionPattern = new RegExp(`\\n*${escapedStart}[\\s\\S]*?${escapedEnd}\\n*`, 'g');
+            const bodyWithoutOldSection = previousBody.replace(sectionPattern, '\n').trimEnd();
+
+            const links = [];
+            if (isoRemoteUrl) links.push(`ISO: ${isoRemoteUrl}`);
+            if (infoRemoteUrl) links.push(`ISO info: ${infoRemoteUrl}`);
+
+            const section = [
+              start,
+              '## ISO Build Info',
+              '',
+              `File: ${infoName}`,
+              ...links,
+              '',
+              '```text',
+              infoText,
+              '```',
+              end
+            ].join('\n');
+
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: release.data.id,
+              body: [bodyWithoutOldSection, section].filter(Boolean).join('\n\n')
+            });
 
       - name: Clean CI working directory
         if: ${{ always() && inputs.cleanup_after_run == 'true' }}
         run: |
           set -euxo pipefail
-          rm -rf "$ISO_CI_WORK_DIR"
+          [ -d "$ISO_CI_WORK_DIR" ] || exit 0
+          find "$ISO_CI_WORK_DIR" -mindepth 1 -maxdepth 1 \
+            ! -name iso \
+            ! -name packages \
+            -exec rm -rf {} +

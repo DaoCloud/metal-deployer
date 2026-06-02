@@ -17,6 +17,8 @@ DISK_IMG="${DISK_IMG:-${TEST_WORK_DIR}/test_disk.qcow2}"
 PID_FILE="${PID_FILE:-${TEST_WORK_DIR}/qemu.pid}"
 LOG_FILE="${LOG_FILE:-${TEST_WORK_DIR}/qemu.log}"
 PRESERVE_TEST_LOGS="${PRESERVE_TEST_LOGS:-false}"
+FAILURE_LOG_DIR="${FAILURE_LOG_DIR:-${TEST_WORK_DIR}/failure-logs}"
+DUMP_FAILURE_LOGS="${DUMP_FAILURE_LOGS:-true}"
 SSH_PORT=5555
 SSH_USER="admin"
 SSH_PASS="admin" # Note: Ensure this matches the password in config/cloud-init/user-data
@@ -34,6 +36,36 @@ SSH_PROBE_TIMEOUT=15
 ssh_vm() {
     sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -p "$SSH_PORT" "$SSH_USER@localhost" "$@"
+}
+
+export_failure_logs() {
+    mkdir -p "$FAILURE_LOG_DIR"
+
+    if [ -f "$LOG_FILE" ]; then
+        cp -f "$LOG_FILE" "$FAILURE_LOG_DIR/qemu.log" 2>/dev/null || true
+    fi
+
+    if ssh_vm "echo ready" >/dev/null 2>&1; then
+        sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -p "$SSH_PORT" "$SSH_USER@localhost" "echo '$SSH_PASS' | sudo -S bash -c '
+                set +e
+                tar -C / -czf /tmp/metal-deployer-failure-logs.tgz \
+                    var/log/scripts.log \
+                    var/log/metal-deployer \
+                    var/log/cloud-init-output.log \
+                    var/log/cloud-init.log \
+                    2>/dev/null || true
+            '" >/dev/null 2>&1 || true
+
+        sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -P "$SSH_PORT" "$SSH_USER@localhost:/tmp/metal-deployer-failure-logs.tgz" \
+            "$FAILURE_LOG_DIR/metal-deployer-failure-logs.tgz" >/dev/null 2>&1 || true
+
+        if [ -f "$FAILURE_LOG_DIR/metal-deployer-failure-logs.tgz" ]; then
+            tar -C "$FAILURE_LOG_DIR" -xzf "$FAILURE_LOG_DIR/metal-deployer-failure-logs.tgz" >/dev/null 2>&1 || true
+            chmod -R u+rwX,go+rX "$FAILURE_LOG_DIR" >/dev/null 2>&1 || true
+        fi
+    fi
 }
 
 dump_first_boot_logs() {
@@ -70,6 +102,65 @@ dump_first_boot_logs() {
     '" || true
 }
 
+dump_vm_install_state() {
+    echo "📊 VM install state："
+    ssh_vm "echo '$SSH_PASS' | sudo -S bash -c '
+        set +e
+        echo \"===== hostname =====\"
+        hostname
+
+        echo \"===== cloud-init status =====\"
+        cloud-init status --long || true
+
+        echo \"===== /root/installed =====\"
+        ls -l /root/installed || true
+
+        echo \"===== install-summary tail =====\"
+        tail -n 120 /var/log/metal-deployer/install-summary.log || true
+
+        echo \"===== scripts tail =====\"
+        tail -n 120 /var/log/scripts.log || true
+
+        echo \"===== stage status =====\"
+        for stage in apt_sources base_packages offline_debs doca_install gpu_debs rdma_modules ssh_keys container_runtime docker_images cpu_performance nvidia_setup hpcx_install gdrcopy_build test_tools_build gpu_burn; do
+            stage_line=\$(grep -E \"= (START|DONE |FAIL ) +\${stage}( | =| rc=)\" /var/log/metal-deployer/install-summary.log 2>/dev/null | tail -n 1 || true)
+            case \"\$stage_line\" in
+                *\"= FAIL  \"*) echo \"\${stage}: FAIL\" ;;
+                *\"= DONE  \"*) echo \"\${stage}: DONE\" ;;
+                *\"= START \"*) echo \"\${stage}: RUNNING\" ;;
+                *) echo \"\${stage}: SKIP/ABSENT\" ;;
+            esac
+        done
+
+        echo \"===== key packages =====\"
+        dpkg -l | awk '\\''\$1==\"ii\" && (\$2 ~ /^(nvidia|cuda|rdma|docker|containerd|ibverbs|infiniband|doca|libnvidia-container|nvidia-container-toolkit)/) {print \$2, \$3}'\\'' | sort || true
+
+        echo \"===== key commands =====\"
+        for cmd in cloud-init docker containerd dockerd nvidia-smi ibv_devinfo ibstat hpcx_load gcc make dkms; do
+            if [ \"\$cmd\" = \"hpcx_load\" ] && [ -f /etc/profile.d/hpcx.sh ]; then
+                # hpcx_load comes from hpcx-init.sh, source profile first.
+                # shellcheck disable=SC1091
+                . /etc/profile.d/hpcx.sh >/dev/null 2>&1 || true
+            fi
+            if command -v \"\$cmd\" >/dev/null 2>&1; then
+                echo \"\$cmd: present -> \$(command -v \"\$cmd\")\"
+            else
+                echo \"\$cmd: missing\"
+            fi
+        done
+
+        echo \"===== hpcx files =====\"
+        ls -l /opt/hpcx/hpcx-init.sh /etc/profile.d/hpcx.sh 2>/dev/null || true
+        if [ -n \"\${HPCX_HOME:-}\" ]; then
+            echo \"HPCX_HOME=\${HPCX_HOME}\"
+        fi
+
+        echo \"===== service status =====\"
+        systemctl is-active docker 2>/dev/null || true
+        systemctl is-active containerd 2>/dev/null || true
+    '" || true
+}
+
 dump_qemu_log() {
     if [ -f "$LOG_FILE" ]; then
         echo "📄 QEMU Serial log tail："
@@ -77,6 +168,14 @@ dump_qemu_log() {
     else
         echo "📄 QEMU Serial logdoes not exist: ${LOG_FILE}"
     fi
+}
+
+dump_failure_logs_if_enabled() {
+    if ! is_truthy "$DUMP_FAILURE_LOGS"; then
+        return 0
+    fi
+
+    "$@"
 }
 
 is_truthy() {
@@ -196,46 +295,161 @@ check_vm_running() {
     fi
 }
 
+find_test_qemu_pids() {
+    local proc pid cmdline exe
+    local port_arg="hostfwd=tcp::${SSH_PORT}-:22"
+
+    for proc in /proc/[0-9]*; do
+        pid="${proc##*/}"
+        [ -r "$proc/cmdline" ] || continue
+
+        cmdline="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+        [ -n "$cmdline" ] || continue
+
+        exe="${cmdline%% *}"
+        [ -n "$exe" ] || continue
+        [ "${exe##*/}" = "qemu-system-x86_64" ] || continue
+
+        if [[ "$cmdline" == *"$DISK_IMG"* ]] ||
+           [[ "$cmdline" == *"$ISO_FILE"* ]] ||
+           [[ "$cmdline" == *"$port_arg"* ]]; then
+            echo "$pid"
+        fi
+    done
+}
+
+find_ci_qemu_pids() {
+    local proc pid cmdline exe pid_file pid_from_file
+    local port_arg="hostfwd=tcp::${SSH_PORT}-:22"
+
+    for pid_file in "$PID_FILE"; do
+        if [ -f "$pid_file" ]; then
+            pid_from_file="$(cat "$pid_file" 2>/dev/null || true)"
+            if [ -n "$pid_from_file" ] && kill -0 "$pid_from_file" 2>/dev/null; then
+                echo "$pid_from_file"
+            fi
+        fi
+    done
+
+    if [ -d "$CI_WORK_DIR" ]; then
+        while IFS= read -r pid_file; do
+            pid_from_file="$(cat "$pid_file" 2>/dev/null || true)"
+            if [ -n "$pid_from_file" ] && kill -0 "$pid_from_file" 2>/dev/null; then
+                echo "$pid_from_file"
+            fi
+        done < <(find "$CI_WORK_DIR" -type f -name qemu.pid 2>/dev/null)
+    fi
+
+    for proc in /proc/[0-9]*; do
+        pid="${proc##*/}"
+        [ -r "$proc/cmdline" ] || continue
+
+        cmdline="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+        [ -n "$cmdline" ] || continue
+
+        exe="${cmdline%% *}"
+        [ -n "$exe" ] || continue
+        [ "${exe##*/}" = "qemu-system-x86_64" ] || continue
+
+        if [[ "$cmdline" == *"$CI_WORK_DIR"* ]] ||
+           [[ "$cmdline" == *"$DISK_IMG"* ]] ||
+           [[ "$cmdline" == *"$ISO_FILE"* ]] ||
+           [[ "$cmdline" == *"$port_arg"* ]]; then
+            echo "$pid"
+        fi
+    done
+}
+
+stop_pids() {
+    local pids=("$@")
+    local pid alive=()
+
+    [ "${#pids[@]}" -gt 0 ] || return 0
+
+    for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
+
+    sleep 2
+
+    for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            alive+=("$pid")
+        fi
+    done
+
+    if [ "${#alive[@]}" -gt 0 ]; then
+        echo "   -> [Force] QEMU still running, force kill: ${alive[*]}"
+        for pid in "${alive[@]}"; do
+            kill -9 "$pid" 2>/dev/null || true
+        done
+    fi
+}
+
+clean_ci_work_dir() {
+    local dir="$CI_WORK_DIR"
+    local resolved_base resolved_dir
+
+    if [ -z "$dir" ] || [ "$dir" = "/" ]; then
+        echo "❌ Refuse to remove unsafe CI_WORK_DIR: ${dir:-<empty>}" >&2
+        exit 1
+    fi
+
+    if ! resolved_dir="$(realpath -m -- "$dir" 2>/dev/null)"; then
+        echo "❌ Refuse to remove unresolved CI_WORK_DIR: $dir" >&2
+        exit 1
+    fi
+
+    resolved_base="$(cd "$BASE_DIR" && pwd -P)"
+    if [ "$resolved_dir" = "$resolved_base" ] || [ "$resolved_dir" = "$(dirname "$resolved_base")" ]; then
+        echo "❌ Refuse to remove unsafe CI_WORK_DIR: $resolved_dir" >&2
+        exit 1
+    fi
+
+    if [ -d "$resolved_dir" ]; then
+        echo "   -> Delete CI work directory $resolved_dir"
+        rm -rf "$resolved_dir"
+    fi
+}
+
 # --- Subcommand: CLEAN (cleanup) ---
 do_clean() {
     echo "🧹 [Clean] Start cleaning environment..."
+    local PID
+    local QEMU_PIDS=()
     
     # 1. Try killing process via PID file
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if kill -0 "$PID" 2>/dev/null; then
             echo "   -> [PID] Stop QEMU process (PID: $PID)..."
-            kill -9 "$PID" 2>/dev/null
+            QEMU_PIDS+=("$PID")
         fi
         rm -f "$PID_FILE"
     fi
 
-    # 2. [New] Double insurance: kill by disk image filename
-    # Prevent PID file recording error (e.g. recording tee's PID), causing QEMU to not die
-    # pgrep -f matches full command line parameters, find processes using current disk image
-    if pgrep -f "$DISK_IMG" >/dev/null; then
-        echo "   -> [Force] Detected residual QEMU process, force clearing..."
-        pkill -f "$DISK_IMG"
+    # 2. Double insurance: find QEMU by CI work dir, disk, ISO, PID files, or forwarded SSH port.
+    # This handles missing/stale PID files and different TEST_WORK_DIR values.
+    while read -r PID; do
+        [ -n "$PID" ] || continue
+        QEMU_PIDS+=("$PID")
+    done < <(find_ci_qemu_pids)
+
+    if [ "${#QEMU_PIDS[@]}" -gt 0 ]; then
+        mapfile -t QEMU_PIDS < <(printf '%s\n' "${QEMU_PIDS[@]}" | sort -u)
+        echo "   -> Stop QEMU process(es): ${QEMU_PIDS[*]}"
+        stop_pids "${QEMU_PIDS[@]}"
     fi
 
-    # 3. Delete disk file
-    if [ -f "$DISK_IMG" ]; then
-        echo "   -> Delete virtual disk $DISK_IMG"
-        rm -f "$DISK_IMG"
+    # 3. Delete all artifacts for the current CI workspace unless caller wants
+    # logs/artifacts preserved for post-failure reporting.
+    if is_truthy "$PRESERVE_TEST_LOGS"; then
+        echo "   -> Preserve test logs and CI work directory."
+    else
+        clean_ci_work_dir
     fi
-
-    # 4. Delete local QEMU test artifacts, but allow CI to keep logs until artifact upload.
-    if [ -f "$LOG_FILE" ]; then
-        if is_truthy "$PRESERVE_TEST_LOGS"; then
-            echo "   -> Preserve QEMU log $LOG_FILE"
-        else
-            echo "   -> Delete QEMU log $LOG_FILE"
-            rm -f "$LOG_FILE"
-        fi
-    fi
-
-    # 5. Remove empty test work directories, including .ci-work when only test artifacts existed.
-    remove_empty_work_dirs
     
     echo "✅ Environment cleanup complete."
 }
@@ -306,14 +520,16 @@ do_setup() {
         
         if [ "$ELAPSED" -gt "$TIMEOUT" ]; then
             echo "❌ [Timeout] Installation timeout!"
-            dump_qemu_log
+            export_failure_logs
+            dump_failure_logs_if_enabled dump_qemu_log
             exit 1
         fi
         
         # Process alive check
         if ! kill -0 "$QEMU_PID" 2>/dev/null; then 
             echo "❌ [Error] QEMU process exited unexpectedly! Please check logs."
-            dump_qemu_log
+            export_failure_logs
+            dump_failure_logs_if_enabled dump_qemu_log
             exit 1
         fi
 
@@ -327,6 +543,7 @@ do_setup() {
     done
 
     echo "⏳ Wait for cloud-init/first-boot scripts to complete..."
+    FIRST_BOOT_WAIT_START=$(date +%s)
     # init_system.sh runs in cloud-init's final stage (scripts-user / runcmd),
     # which starts only after sshd is reachable. cloud-init can report done before
     # the runcmd child creates /root/installed, so poll the marker directly.
@@ -349,9 +566,14 @@ do_setup() {
             done
         '"; then
         echo "❌ first-boot script did not complete normally, please check /var/log/cloud-init-output.log and /var/log/scripts.log."
-        dump_first_boot_logs
+        export_failure_logs
+        dump_failure_logs_if_enabled dump_first_boot_logs
         exit 1
     fi
+    FIRST_BOOT_WAIT_END=$(date +%s)
+    echo "✅ first-boot wait done in $((FIRST_BOOT_WAIT_END - FIRST_BOOT_WAIT_START))s"
+
+    dump_vm_install_state
 
     echo "🔍 Execute automated verification..."
     # More detailed verification logic added here
@@ -372,17 +594,70 @@ do_setup() {
     else
         echo \"   [Check] Packages count abnormal: FAIL (\${package_count} files)\"; exit 1
     fi
-    if grep -q 'Metal deployer first boot initialization started' /var/log/metal-deployer/install-summary.log; then
+    if echo '$SSH_PASS' | sudo -S grep -q 'Metal deployer first boot initialization started' /var/log/metal-deployer/install-summary.log; then
         echo '   [Check] First-boot script executed: OK'
     else
         echo '   [Check] First-boot script not executed: FAIL'; exit 1
+    fi
+    if echo '$SSH_PASS' | sudo -S test -f /root/installed; then
+        echo '   [Check] First-boot completion marker: OK'
+    else
+        echo '   [Check] First-boot completion marker missing: FAIL'; exit 1
+    fi
+    if echo '$SSH_PASS' | sudo -S grep -q 'Metal deployer first boot initialization finished' /var/log/metal-deployer/install-summary.log; then
+        echo '   [Check] First-boot finished log: OK'
+    else
+        echo '   [Check] First-boot finished log missing: FAIL'; exit 1
+    fi
+    for cmd in docker containerd dockerd gcc make dkms ibv_devinfo ibstat nvidia-smi; do
+        if command -v \"\$cmd\" >/dev/null 2>&1; then
+            echo \"   [Check] Command \$cmd: OK\"
+        else
+            echo \"   [Check] Command \$cmd missing: FAIL\"; exit 1
+        fi
+    done
+    if systemctl is-active --quiet docker; then
+        echo '   [Check] docker service active: OK'
+    else
+        echo '   [Check] docker service inactive: FAIL'; exit 1
+    fi
+    if systemctl is-active --quiet containerd; then
+        echo '   [Check] containerd service active: OK'
+    else
+        echo '   [Check] containerd service inactive: FAIL'; exit 1
+    fi
+    if lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'; then
+        if nvidia-smi -L >/dev/null 2>&1; then
+            echo '   [Check] NVIDIA GPU usable by nvidia-smi: OK'
+        else
+            echo '   [Check] NVIDIA GPU present but nvidia-smi failed: FAIL'; exit 1
+        fi
+        if echo '$SSH_PASS' | sudo -S modprobe nvidia_peermem 2>/dev/null; then
+            echo '   [Check] nvidia_peermem module load: OK'
+        else
+            echo '   [Check] nvidia_peermem module load: WARN (optional on dma-buf GPUDirect RDMA stacks)'
+        fi
+    else
+        echo '   [Check] NVIDIA GPU absent: SKIP'
+    fi
+    if [ -d /opt/hpcx ] || [ -f /etc/profile.d/hpcx.sh ]; then
+        # shellcheck disable=SC1091
+        . /etc/profile.d/hpcx.sh >/dev/null 2>&1 || true
+        if command -v hpcx_load >/dev/null 2>&1; then
+            echo '   [Check] HPC-X environment: OK'
+        else
+            echo '   [Check] HPC-X installed but hpcx_load missing: FAIL'; exit 1
+        fi
+    else
+        echo '   [Check] HPC-X absent: SKIP'
     fi
     "
     if ssh_vm "$TEST_CMD"; then
         echo "✅✅✅ Verification passed! ✅✅✅"
     else
         echo "❌❌❌ Verification failed ❌❌❌"
-        dump_first_boot_logs
+        export_failure_logs
+        dump_failure_logs_if_enabled dump_first_boot_logs
         exit 1
     fi
 }

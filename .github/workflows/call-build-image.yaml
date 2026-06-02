@@ -8,6 +8,11 @@ on:
         required: false
         default: all
         type: string
+      images:
+        description: 'JSON matrix include list for images to build'
+        required: false
+        default: ''
+        type: string
       push:
         description: Push image to registry
         required: false
@@ -39,8 +44,39 @@ env:
   ENV_TORCH_CUDA_ARCH_LIST: "9.0"
 
 jobs:
+  prepare-matrix:
+    name: Prepare image matrix
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+    steps:
+      - name: Select image matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          all_images='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"},{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+          sbcli_image='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"}]'
+          deepep_ucx_image='[{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+
+          if [ -n '${{ inputs.images }}' ]; then
+            images='${{ inputs.images }}'
+          else
+            case '${{ inputs.image }}' in
+              all) images="$all_images" ;;
+              sbcli) images="$sbcli_image" ;;
+              deepep-ucx) images="$deepep_ucx_image" ;;
+              *) echo "Unsupported image: ${{ inputs.image }}" >&2; exit 1 ;;
+            esac
+          fi
+
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
   build-image:
     name: Build ${{ matrix.image }}
+    needs: [prepare-matrix]
+    if: ${{ needs.prepare-matrix.outputs.images != '[]' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,29 +85,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: sbcli
-            context: ./benchmarks/superbenchmark/image
-            image_name: sbcli
-          - image: deepep-ucx
-            context: ./benchmarks/deepep-ucx/image
-            image_name: deepep-ucx
+        include: ${{ fromJSON(needs.prepare-matrix.outputs.images) }}
 
     steps:
-      - name: Skip unselected image
-        if: ${{ inputs.image != 'all' && inputs.image != matrix.image }}
-        run: echo "Skip ${{ matrix.image }}"
-
       - name: Checkout repository
-        if: ${{ inputs.image == 'all' || inputs.image == matrix.image }}
         uses: actions/checkout@v4
 
       - name: Set up Docker Buildx
-        if: ${{ inputs.image == 'all' || inputs.image == matrix.image }}
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Container Registry
-        if: ${{ (inputs.image == 'all' || inputs.image == matrix.image) && inputs.push }}
+        if: ${{ inputs.push }}
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
@@ -79,7 +103,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract metadata
-        if: ${{ inputs.image == 'all' || inputs.image == matrix.image }}
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -92,7 +115,7 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
 
       - name: Build sbcli image
-        if: ${{ matrix.image == 'sbcli' && (inputs.image == 'all' || inputs.image == matrix.image) }}
+        if: ${{ matrix.image == 'sbcli' }}
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -103,7 +126,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build deepep-ucx image
-        if: ${{ matrix.image == 'deepep-ucx' && (inputs.image == 'all' || inputs.image == matrix.image) }}
+        if: ${{ matrix.image == 'deepep-ucx' }}
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
