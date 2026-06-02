@@ -328,16 +328,31 @@ do_setup() {
 
     echo "⏳ Wait for cloud-init/first-boot scripts to complete..."
     # init_system.sh runs in cloud-init's final stage (scripts-user / runcmd),
-    # which starts only after sshd is reachable. Block on `cloud-init status --wait`
-    # so we don't race the not-yet-started first-boot script, then verify the marker.
+    # which starts only after sshd is reachable. cloud-init can report done before
+    # the runcmd child creates /root/installed, so poll the marker directly.
     if ! sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
         -p $SSH_PORT $SSH_USER@localhost \
         "echo '$SSH_PASS' | sudo -S timeout \"$FIRST_BOOT_TIMEOUT\" bash -c '
             cloud-init status --wait >/dev/null 2>&1 || true
-            if [ ! -f /root/installed ]; then
-                echo \"cloud-init finished but /root/installed marker is missing\" >&2
-                exit 2
-            fi
+
+            while true; do
+                if [ -f /root/installed ]; then
+                    exit 0
+                fi
+
+                if grep -q \"========== FAIL\" /var/log/metal-deployer/install-summary.log 2>/dev/null; then
+                    echo \"first-boot stage failed before /root/installed marker was created\" >&2
+                    exit 2
+                fi
+
+                if ! systemctl is-active --quiet cloud-final.service; then
+                    cloud-init status --long >&2 || true
+                    echo \"first-boot processes exited but /root/installed marker is missing\" >&2
+                    exit 2
+                fi
+
+                sleep 5
+            done
         '"; then
         echo "❌ first-boot script did not complete normally, please check /var/log/cloud-init-output.log and /var/log/scripts.log."
         dump_first_boot_logs
