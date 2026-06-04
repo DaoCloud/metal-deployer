@@ -16,7 +16,26 @@
 - 如需 QEMU 本地验证，还需要 `qemu-system-x86_64`、`qemu-img`、`sshpass`、`openssh-client`
 - 如需打包 Docker 测试镜像，还需要 Docker
 
-## 2. 获取代码
+## 2. 获取 ISO
+
+有两种常见方式。
+
+### 2.1 本地构建
+
+适合需要修改 `manifest.yaml`、`user-data`、离线包或初始化脚本的场景。后续章节按本地构建展开。
+
+### 2.2 下载预构建 ISO
+
+- 发版后进入 GitHub Releases：<https://github.com/DaoCloud/metal-deployer/releases>
+- Release Notes 会写明镜像拉取命令、内网 ISO 下载直链、同名 `.info.txt` 直链
+- 默认 ISO 发布地址前缀：`http://10.64.40.200:5000/iso/GPU/`
+- `Release ISO` workflow 会生成版本化文件名，格式类似 `metal-deployer-vX.Y.Z-ubuntu2404-YYYYMMDDHHMM-cuda13.iso`
+- `.info.txt` 和 Release Notes 内嵌文本会列出 ISO 内全部 packages 与 versions
+- 如果仓库还没有 Release Notes，或该次运行未上传到内网地址，可到 Actions 运行页面下载 artifact `custom-ubuntu-iso`
+
+下载后的 ISO 可直接跳到 [第 8 节](#8-安装到物理服务器) 使用。
+
+## 3. 获取代码
 
 ```bash
 git clone <REPO_URL> metal-deployer
@@ -29,17 +48,17 @@ cd metal-deployer
 cd build-iso
 ```
 
-## 3. 修改常用参数
+## 4. 修改常用参数
 
 主要配置文件是：
 
 - `build-iso/manifest.yaml`：统一配置文件，包含通用 basic 配置和 CUDA profile 配置
-- `build-iso/user-data`：Cloud-Init/autoinstall 模板，保留资源复制和首次启动入口
+- `build-iso/config/cloud-init/user-data`：Cloud-Init/autoinstall 模板，保留资源复制和首次启动入口
 - `build-iso/config/ssh_authorized_keys`：可选，写入需要安装到目标机的 SSH 公钥
 
 一般优先改 `manifest.yaml` 中的 `basic` 或 `cuda.profiles`，不要直接改安装流程脚本。两套 profile 的驱动、CUDA Toolkit、NCCL、CUDA samples 等版本应保持一致，避免安装或测试工具编译失败。
 
-### 3.1 基础 ISO 来源
+### 4.1 基础 ISO 来源
 
 编辑统一 manifest，例如 `build-iso/manifest.yaml`：
 
@@ -49,9 +68,9 @@ base_iso:
   local_path: "iso/ubuntu-24.04-base.iso"
 ```
 
-如果现场有内网镜像，可以把 `source` 改为内网 URL。`prepare.sh` 会下载到 `build-iso/iso/ubuntu-24.04-base.iso`。
+如果现场有内网镜像，可以把 `source` 改为内网 URL。`prepare.sh` 默认会下载到 `build-iso/.ci-work/iso/ubuntu-24.04-base.iso`。
 
-### 3.2 账号、主机名、密码
+### 4.2 账号、主机名、密码
 
 编辑所选 manifest 中的 `user_data.autoinstall.identity`：
 
@@ -73,7 +92,7 @@ openssl passwd -6 admin
 
 上面的示例会生成密码为 `admin` 的 hash。
 
-### 3.3 磁盘安装目标和分区
+### 4.3 磁盘安装目标和分区
 
 默认配置会安装到最大磁盘，降低误装到 USB 启动盘的风险：
 
@@ -114,7 +133,7 @@ user_data:
 
 注意：安装会清空目标磁盘。固定 `path` 前必须确认目标机器上的盘符。
 
-### 3.4 语言、时区、键盘
+### 4.4 语言、时区、键盘
 
 编辑：
 
@@ -134,7 +153,7 @@ user_data:
 timezone: Asia/Shanghai
 ```
 
-### 3.5 网络
+### 4.5 网络
 
 默认使用 DHCP，匹配 `e*` 网卡：
 
@@ -153,7 +172,7 @@ user_data:
 
 如果现场需要静态 IP，可以把 `network` 改成标准 netplan/autoinstall 网络配置。
 
-### 3.6 SSH 登录
+### 4.6 SSH 登录
 
 默认开启 SSH 服务和密码登录：
 
@@ -180,12 +199,12 @@ build-iso/config/ssh_authorized_keys
 
 目标机首次启动时，`configure_ssh.sh` 会把这些公钥写入 `admin` 和 `root` 的 `authorized_keys`。
 
-### 3.7 离线包和安装阶段
+### 4.7 离线包和安装阶段
 
 离线包清单在所选 manifest 的 `packages` 中。`prepare.sh` 会根据 `url` 和 `filename` 下载到：
 
 ```text
-build-iso/packages/
+build-iso/.ci-work/packages/
 ```
 
 首次启动安装阶段在：
@@ -203,7 +222,7 @@ user_data:
   enabled: false
 ```
 
-## 4. 准备构建资源
+## 5. 准备构建资源
 
 在 `build-iso/` 目录执行：
 
@@ -213,8 +232,8 @@ user_data:
 
 这会准备：
 
-- 基础 Ubuntu ISO：`build-iso/iso/ubuntu-24.04-base.iso`
-- manifest 中列出的离线包：`build-iso/packages/`
+- 基础 Ubuntu ISO：`build-iso/.ci-work/iso/ubuntu-24.04-base.iso`
+- manifest 中列出的离线包：`build-iso/.ci-work/packages/`
 - SSH 公钥：`build-iso/config/ssh_authorized_keys`
 
 如果需要同时拉取并保存 Docker 镜像 tar 包，去掉 `--skip-images`：
@@ -231,8 +250,8 @@ user_data:
 
 如果目标环境不能访问外网，也可以手动准备文件：
 
-- 把 Ubuntu live server ISO 放到 `build-iso/iso/`
-- 把 `.deb`、`.tar.gz`、`.tbz` 等离线包放到 `build-iso/packages/`
+- 把 Ubuntu live server ISO 放到 `build-iso/.ci-work/iso/`
+- 把 `.deb`、`.tar.gz`、`.tbz` 等离线包放到 `build-iso/.ci-work/packages/`
 - 把 SSH 公钥写入 `build-iso/config/ssh_authorized_keys`
 
 CI 或临时构建环境可以把下载缓存和中间产物统一放到一个目录，例如：
@@ -247,18 +266,12 @@ export IMAGE_DIR="$ISO_WORK_DIR/packages/images"
 
 `prepare.sh` 会优先使用这些环境变量；本地未设置时仍使用默认目录。构建 CUDA 12.8 ISO 时设置 `CUDA_PROFILE=cuda12`。
 
-## 5. 生成 ISO
+## 6. 生成 ISO
 
 在 `build-iso/` 目录执行：
 
 ```bash
 sudo ./build.sh
-```
-
-或在项目根目录执行：
-
-```bash
-sudo make build-iso
 ```
 
 构建过程会：
@@ -269,16 +282,16 @@ sudo make build-iso
 4. 修改 GRUB，加入 autoinstall 和串口日志参数
 5. 重新打包为可启动 ISO
 
-生成结果：
+默认生成结果：
 
 ```text
-build-iso/custom-ubuntu.iso
+build-iso/.ci-work/custom-ubuntu.iso
 ```
 
 中间工作目录：
 
 ```text
-build-iso/build_workspace/
+build-iso/.ci-work/build_workspace/
 ```
 
 CI/release 构建可通过环境变量改写输出位置：
@@ -289,14 +302,20 @@ export OUTPUT_ISO="$PWD/build-iso/.ci-work/custom-ubuntu.iso"
 sudo --preserve-env=BUILD_WORK_DIR,OUTPUT_ISO,ISO_DIR,PACKAGE_DIR ./build-iso/build.sh
 ```
 
-使用 Makefile 时可以指定 profile：
+显式指定 profile 时：
 
 ```bash
-make prepare-iso CUDA_PROFILE=cuda12
-sudo make build-iso CUDA_PROFILE=cuda12
+CUDA_PROFILE=cuda12 ./prepare.sh --ssh-public-key ~/.ssh/id_ed25519.pub --skip-images
+sudo CUDA_PROFILE=cuda12 ./build.sh
 ```
 
-## 6. 本地 QEMU 验证
+Release/CI 场景如果覆盖了 `OUTPUT_ISO`，产物文件名通常会变成：
+
+```text
+metal-deployer-vX.Y.Z-ubuntu2404-YYYYMMDDHHMM-cuda13.iso
+```
+
+## 7. 本地 QEMU 验证
 
 在 `build-iso/` 目录执行：
 
@@ -304,12 +323,12 @@ sudo make build-iso CUDA_PROFILE=cuda12
 ./test.sh setup
 ```
 
-脚本会创建测试磁盘并启动虚拟机自动安装。常用文件：
+脚本会创建测试磁盘并启动虚拟机自动安装。默认常用文件：
 
 ```text
-build-iso/test_disk.qcow2
-build-iso/qemu.log
-build-iso/qemu.pid
+build-iso/.ci-work/test_disk.qcow2
+build-iso/.ci-work/qemu.log
+build-iso/.ci-work/qemu.pid
 ```
 
 如需把 QEMU 测试遗留物放到统一目录：
@@ -346,34 +365,34 @@ sudo cat /var/log/metal-deployer/install-summary.log
 ./test.sh clean
 ```
 
-## 7. 安装到物理服务器
+## 8. 安装到物理服务器
 
 有三种常见方式。
 
-### 7.1 通过 BMC/IPMI 虚拟光驱安装
+### 8.1 通过 BMC/IPMI 虚拟光驱安装
 
-1. 上传或挂载 `build-iso/custom-ubuntu.iso` 到服务器 BMC 的虚拟介质
+1. 上传或挂载 `build-iso/.ci-work/custom-ubuntu.iso`，或下载好的发布版 `.iso`，到服务器 BMC 的虚拟介质
 2. 设置服务器从虚拟 CD/DVD 启动
 3. 重启服务器
 4. Ubuntu autoinstall 会自动分区、安装系统、复制资源并重启
 5. 首次启动后会执行 `/opt/resource/scripts/init_system.sh`
 
-### 7.2 写入 USB 启动盘
+### 8.2 写入 USB 启动盘
 
 在 Linux/macOS 上确认 USB 设备名后执行：
 
 ```bash
-sudo dd if=build-iso/custom-ubuntu.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=build-iso/.ci-work/custom-ubuntu.iso of=/dev/sdX bs=4M status=progress oflag=sync
 ```
 
 把 `/dev/sdX` 替换为真实 USB 设备，例如 `/dev/sdb`。不要写成分区路径如 `/dev/sdb1`。
 
-### 7.3 PXE 或其他平台
+### 8.3 PXE 或其他平台
 
 如果现场平台支持 ISO 网络启动，可以直接使用：
 
 ```text
-build-iso/custom-ubuntu.iso
+build-iso/.ci-work/custom-ubuntu.iso
 ```
 
 内核启动参数已在 ISO 中写入：
@@ -382,7 +401,7 @@ build-iso/custom-ubuntu.iso
 autoinstall ds=nocloud;s=/cdrom/nocloud/
 ```
 
-## 8. 安装后的默认行为
+## 9. 安装后的默认行为
 
 安装完成后：
 
@@ -414,7 +433,7 @@ dkms status
 lspci | grep -i -E 'nvidia|mellanox'
 ```
 
-## 9. 常见问题
+## 10. 常见问题
 
 ### prepare.sh 下载失败
 

@@ -146,3 +146,80 @@ jobs:
             ENV_NVSHMEM_VERSION=${{ env.ENV_NVSHMEM_VERSION }}
             ENV_BUILD_AND_DOWNLOAD_PARALLEL=${{ env.ENV_BUILD_AND_DOWNLOAD_PARALLEL }}
             ENV_TORCH_CUDA_ARCH_LIST=${{ env.ENV_TORCH_CUDA_ARCH_LIST }}
+
+  update-release-notes:
+    name: Update image release notes
+    needs: [prepare-matrix, build-image]
+    if: ${{ inputs.push && inputs.version != '' && needs.prepare-matrix.outputs.images != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Add image download info to GitHub release notes
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+          IMAGES_JSON: ${{ needs.prepare-matrix.outputs.images }}
+          REGISTRY: ${{ env.REGISTRY }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const images = JSON.parse(process.env.IMAGES_JSON || '[]');
+            const registryRepo = `${owner}/${repo}`.toLowerCase();
+            const marker = 'release-images';
+            const semverMatch = tag.match(/^v?(\d+)\.(\d+)\.(\d+)$/);
+            const compatTag = semverMatch ? `v${semverMatch[1]}.${semverMatch[2]}` : '';
+
+            let release;
+            try {
+              release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              release = await github.rest.repos.createRelease({
+                owner,
+                repo,
+                tag_name: tag,
+                name: tag,
+                body: '',
+                draft: false,
+                prerelease: false
+              });
+            }
+
+            const previousBody = release.data.body || '';
+            const start = `<!-- ${marker}:start -->`;
+            const end = `<!-- ${marker}:end -->`;
+            const escapedStart = start.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const escapedEnd = end.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const sectionPattern = new RegExp(`\\n*${escapedStart}[\\s\\S]*?${escapedEnd}\\n*`, 'g');
+            const bodyWithoutOldSection = previousBody.replace(sectionPattern, '\n').trimEnd();
+
+            const lines = [
+              start,
+              '## Container Image Download',
+              '',
+              `Registry: \`${process.env.REGISTRY}/${registryRepo}\``,
+              '',
+              '| Image | Exact tag | Compatibility tag | Pull command |',
+              '| --- | --- | --- | --- |'
+            ];
+
+            for (const image of images) {
+              const imageRef = `${process.env.REGISTRY}/${registryRepo}/${image.image_name}`;
+              const compat = compatTag || '-';
+              const pull = `docker pull ${imageRef}:${tag}`;
+              lines.push(`| ${image.image_name} | \`${tag}\` | \`${compat}\` | \`${pull}\` |`);
+            }
+
+            lines.push('');
+            lines.push('Use exact release tag for reproducible deployments. Compatibility tag keeps same major.minor line.');
+            lines.push(end);
+
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: release.data.id,
+              body: [bodyWithoutOldSection, lines.join('\n')].filter(Boolean).join('\n\n')
+            });

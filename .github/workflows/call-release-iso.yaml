@@ -228,11 +228,12 @@ jobs:
             const { owner, repo } = context.repo;
             const tag = process.env.RELEASE_TAG;
             const infoFile = process.env.OUTPUT_ISO_INFO;
+            const cudaProfile = process.env.CUDA_PROFILE;
             const isoRemoteUrl = process.env.RELEASE_ISO_REMOTE_URL || '';
             const infoRemoteUrl = process.env.RELEASE_ISO_INFO_REMOTE_URL || '';
             const infoText = fs.readFileSync(infoFile, 'utf8').trimEnd();
             const infoName = path.basename(infoFile);
-            const marker = `iso-info:${infoName}`;
+            const marker = `iso-info:${cudaProfile}`;
 
             let release;
             try {
@@ -258,16 +259,27 @@ jobs:
             const sectionPattern = new RegExp(`\\n*${escapedStart}[\\s\\S]*?${escapedEnd}\\n*`, 'g');
             const bodyWithoutOldSection = previousBody.replace(sectionPattern, '\n').trimEnd();
 
-            const links = [];
-            if (isoRemoteUrl) links.push(`ISO: ${isoRemoteUrl}`);
-            if (infoRemoteUrl) links.push(`ISO info: ${infoRemoteUrl}`);
+            const downloadLines = [];
+            if (isoRemoteUrl) {
+              downloadLines.push(`ISO download: ${isoRemoteUrl}`);
+              if (infoRemoteUrl) downloadLines.push(`ISO package matrix: ${infoRemoteUrl}`);
+              downloadLines.push('');
+              downloadLines.push('```bash');
+              downloadLines.push(`curl -fLO "${isoRemoteUrl}"`);
+              if (infoRemoteUrl) downloadLines.push(`curl -fLO "${infoRemoteUrl}"`);
+              downloadLines.push('```');
+            } else {
+              downloadLines.push('ISO download: GitHub Actions artifact `custom-ubuntu-iso` from this workflow run.');
+            }
 
             const section = [
               start,
-              '## ISO Build Info',
+              `## ISO Download and Package Matrix (${cudaProfile})`,
               '',
               `File: ${infoName}`,
-              ...links,
+              ...downloadLines,
+              '',
+              'The `.info.txt` file and block below list exact packages and versions baked into this ISO.',
               '',
               '```text',
               infoText,
