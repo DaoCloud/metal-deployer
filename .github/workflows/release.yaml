@@ -45,7 +45,7 @@ jobs:
       latest: false
     secrets: inherit
     permissions:
-      contents: read
+      contents: write
       packages: write
 
   release-iso:
@@ -58,3 +58,5 @@ jobs:
       destination_url: ${{ github.event_name == 'push' && 'http://10.64.40.200:5000/iso/GPU' || inputs.destination_url }}
       cleanup_after_run: ${{ github.event_name == 'push' && 'false' || inputs.cleanup_after_run }}
     secrets: inherit
+    permissions:
+      contents: write

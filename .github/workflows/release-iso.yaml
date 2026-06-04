@@ -42,3 +42,5 @@ jobs:
       destination_url: ${{ inputs.destination_url }}
       cleanup_after_run: ${{ inputs.cleanup_after_run }}
     secrets: inherit
+    permissions:
+      contents: write
