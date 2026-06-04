@@ -1,0 +1,44 @@
+[Unit]
+Description=Set CPU governor to performance on boot
+Description=CPU performance mode optimization service (for maximizing AI training performance)
+Documentation=https://www.kernel.org/doc/Documentation/cpu-freq/governors.txt
+After=systemd-modules-load.service syslog.target network.target
+
+[Service]
+Type=oneshot
+# Set all CPU cores to performance mode
+ExecStart=/bin/bash -c 'for cpu in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do echo performance > $cpu 2>/dev/null || true; done'
+
+# Set CPU frequency to maximum (optional, some systems support)
+ExecStart=/bin/bash -c 'if command -v cpupower >/dev/null 2>&1; then cpupower -c all frequency-set -g performance 2>/dev/null || true; fi'
+
+# Disable CPU power-saving states (C-states), keep in C0/C1 state
+# Note: This significantly increases power consumption, but provides the most stable AI training performance
+ExecStart=/bin/bash -c 'if [ -f /sys/module/processor/parameters/max_cstate ]; then echo 1 > /sys/module/processor/parameters/max_cstate 2>/dev/null || true; fi'
+
+# Set performance-related kernel parameters
+ExecStart=/bin/bash -c 'echo 0 > /proc/sys/kernel/numa_balancing 2>/dev/null || true'
+ExecStart=/bin/bash -c 'echo 0 > /sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs 2>/dev/null || true'
+
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+# Log configuration
+SyslogIdentifier=cpu-performance
+
+[Install]
+WantedBy=multi-user.target
+
+# Extra info
+# View current CPU frequency and status:
+#   cat /proc/cpuinfo | grep MHz
+#   cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+#
+# Manually switch CPU mode:
+#   sudo systemctl start cpu-performance.service   # Enable performance mode
+#   sudo systemctl stop cpu-performance.service    # Restore default mode
+#
+# Note: This service significantly increases system power consumption.
+#       Recommended to enable on data center GPU servers,
+#       disable on laptops or environments requiring power saving.

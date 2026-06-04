@@ -1,4 +1,5 @@
-*.iso
-*.deb
-build_workspace/
-qemu.log
+# Build artifacts are kept under .ci-work/
+.ci-work/
+
+# Generated credentials
+config/ssh_authorized_keys

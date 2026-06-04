@@ -1,7 +1,13 @@
 #cloud-config
 autoinstall:
   version: 1
-  interactive: false
+
+  apt:
+    fallback: offline-install
+    preserve_sources_list: false
+
+  kernel:
+    package: linux-generic
 
   # [优化 1] 增加 reboot 策略，安装完自动拔盘重启，无需人工干预
   shutdown: reboot
@@ -27,6 +33,11 @@ autoinstall:
     password: "$6$tY22hWWMnPlGHjLQ$Oz16kbvmSDYccQVUiFBP5jlqRktAQVebHmEDcuhooC9Yh189GJ1L.VAQOJxwXkghejh9fVOc1l2piYJ2vWo0K0"
 
   # [优化 4] SSH 增强（允许密码登录，方便内网调试）
+  # 公钥入口：
+  #   1. 将一行一个 SSH 公钥写入 build-iso/config/ssh_authorized_keys
+  #   2. build.sh 会将其打包到 ISO 的 /resource/config/ssh_authorized_keys
+  #   3. 首次启动时 configure_ssh.sh 会写入 admin/root 的 authorized_keys
+  # 注意：不要把 SSH 私钥打进 ISO。
   ssh:
     install-server: true
     allow-pw: true
@@ -41,10 +52,12 @@ autoinstall:
     # 2. 搬运文件
     - cp -r /cdrom/resource/packages /target/opt/resource/
     - cp -r /cdrom/resource/scripts  /target/opt/resource/
+    - cp -r /cdrom/resource/config   /target/opt/resource/
     # 3. [关键优化] 修正权限
     # ISO 里的文件通常是只读(444/555)的。cp 过去后可能还是只读，导致脚本无法执行或被修改。
     # 这里强制改为可读写可执行。
     - chmod -R 755 /target/opt/resource/scripts
+    - chmod -R a+rX /target/opt/resource/config /target/opt/resource/packages
 
   # ====================================================
   # 阶段 2: User Data (第一次启动 ) （以下 全部都是以 root 身份执行）
@@ -53,37 +66,19 @@ autoinstall:
     runcmd:
         - |
             #!/bin/bash
-            set -e  # 遇到错误立即停止 (可选，取决于你是否希望出错继续)
+            set -e
             LOG_FILE="/var/log/scripts.log"
-            OFFLINE_LOG="/var/log/install-deb.log"
 
-            # 1. 设置静默安装环境
             export DEBIAN_FRONTEND=noninteractive
 
-            # 2. 开始记录 (使用 -a 追加模式，或者 >>)
-            echo "========== [Phase 1] Installing offline packages ==========" | tee -a "$LOG_FILE"
-            
-            cd /opt/resource/packages
-            
-            # 将 apt 的详细嘈杂日志重定向到专用文件，主日志只记录进度
-            if apt-get install -y --allow-downgrades ./*.deb > "$OFFLINE_LOG" 2>&1; then
-                echo "✅ Packages installed successfully." | tee -a "$LOG_FILE"
-            else
-                echo "❌ Package installation failed! Check $OFFLINE_LOG" | tee -a "$LOG_FILE"
-                # exit 1 # 如果希望安装失败就中断，取消注释这一行
-            fi
-
-            # 3. 执行脚本
-            echo "========== [Phase 2] Running init script ==========" | tee -a "$LOG_FILE"
+            echo "========== [First Boot] Running metal-deployer init ==========" | tee -a "$LOG_FILE"
             
             if [ -x /opt/resource/scripts/init_system.sh ]; then
-                # 将脚本的输出追加到主日志中
                 /opt/resource/scripts/init_system.sh >> "$LOG_FILE" 2>&1
-                echo "✅ Init script executed." | tee -a "$LOG_FILE"
+                echo "Init script executed." | tee -a "$LOG_FILE"
             else
-                echo "⚠️  Warning: init_system.sh not found or not executable." | tee -a "$LOG_FILE"
+                echo "Warning: init_system.sh not found or not executable." | tee -a "$LOG_FILE"
+                exit 1
             fi
 
-            # 4. 标记完成
             echo "========== Setup finished at $(date) ==========" | tee -a "$LOG_FILE"
-

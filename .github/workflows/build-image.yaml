@@ -1,0 +1,132 @@
+name: Build Image
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - 'benchmarks/superbenchmark/image/**'
+      - 'benchmarks/deepep-ucx/image/**'
+  push:
+    branches:
+      - main
+    paths:
+      - 'benchmarks/superbenchmark/image/**'
+      - 'benchmarks/deepep-ucx/image/**'
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Image to build
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - sbcli
+          - deepep-ucx
+      push:
+        description: Push image to registry
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      version:
+        description: Release version for semver image tags, for example v0.1.0
+        required: false
+        default: ''
+      latest:
+        description: Tag image as latest
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  detect-images:
+    name: Detect image changes
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.detect.outputs.images }}
+    steps:
+      - name: Checkout repository
+        if: ${{ github.event_name != 'workflow_dispatch' }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select image matrix
+        id: detect
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          all_images='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"},{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+          sbcli_image='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"}]'
+          deepep_ucx_image='[{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            case "${{ inputs.image }}" in
+              all) images="$all_images" ;;
+              sbcli) images="$sbcli_image" ;;
+              deepep-ucx) images="$deepep_ucx_image" ;;
+              *) echo "Unsupported image: ${{ inputs.image }}" >&2; exit 1 ;;
+            esac
+            echo "images=$images" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            changed_files="$(git diff-tree --no-commit-id --name-only -r "$head")"
+          else
+            changed_files="$(git diff --name-only "$base" "$head")"
+          fi
+
+          printf 'Changed files:\n%s\n' "$changed_files"
+
+          sbcli_changed=false
+          deepep_ucx_changed=false
+
+          if printf '%s\n' "$changed_files" | grep -Eq '^benchmarks/superbenchmark/image/'; then
+            sbcli_changed=true
+          fi
+          if printf '%s\n' "$changed_files" | grep -Eq '^benchmarks/deepep-ucx/image/'; then
+            deepep_ucx_changed=true
+          fi
+
+          if [ "$sbcli_changed" = true ] && [ "$deepep_ucx_changed" = true ]; then
+            images="$all_images"
+          elif [ "$sbcli_changed" = true ]; then
+            images="$sbcli_image"
+          elif [ "$deepep_ucx_changed" = true ]; then
+            images="$deepep_ucx_image"
+          else
+            images='[]'
+          fi
+
+          echo "Selected image matrix: $images"
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  build-image:
+    needs: [detect-images]
+    if: ${{ needs.detect-images.outputs.images != '[]' }}
+    uses: ./.github/workflows/call-build-image.yaml
+    with:
+      images: ${{ needs.detect-images.outputs.images }}
+      push: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.push == 'true') }}
+      version: ${{ github.event_name == 'workflow_dispatch' && inputs.version || '' }}
+      latest: ${{ github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && inputs.latest == 'true') }}
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write

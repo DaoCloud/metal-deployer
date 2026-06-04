@@ -1,0 +1,148 @@
+name: Call Build Image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: 'Image to build: all, sbcli, or deepep-ucx'
+        required: false
+        default: all
+        type: string
+      images:
+        description: 'JSON matrix include list for images to build'
+        required: false
+        default: ''
+        type: string
+      push:
+        description: Push image to registry
+        required: false
+        default: true
+        type: boolean
+      version:
+        description: Release version for semver image tags, for example v0.1.0
+        required: false
+        default: ''
+        type: string
+      latest:
+        description: Tag image as latest
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+
+  ENV_BUILD_TOOLS_IMAGE_NAME: nvidia/cuda:12.8.1-devel-ubuntu22.04
+  ENV_BASEIMAGE_FULL_NAME: nvidia/cuda:12.8.1-runtime-ubuntu22.04
+  ENV_BASEIMAGE_CUDA_VERISON: 12.8
+  ENV_BASEIMAGE_OS_VERISON: ubuntu22.04
+  ENV_DEEPEP_VERSION: v1.2.1
+  ENV_DEEPGEMM_VERSION: v2.1.1.post3
+  ENV_UCX_VERSION: v1.20.0
+  ENV_NVSHMEM_VERSION: v3.4.5-0
+  ENV_BUILD_AND_DOWNLOAD_PARALLEL: 4
+  ENV_TORCH_CUDA_ARCH_LIST: "9.0"
+
+jobs:
+  prepare-matrix:
+    name: Prepare image matrix
+    runs-on: ubuntu-latest
+    outputs:
+      images: ${{ steps.matrix.outputs.images }}
+    steps:
+      - name: Select image matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          all_images='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"},{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+          sbcli_image='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"}]'
+          deepep_ucx_image='[{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+
+          if [ -n '${{ inputs.images }}' ]; then
+            images='${{ inputs.images }}'
+          else
+            case '${{ inputs.image }}' in
+              all) images="$all_images" ;;
+              sbcli) images="$sbcli_image" ;;
+              deepep-ucx) images="$deepep_ucx_image" ;;
+              *) echo "Unsupported image: ${{ inputs.image }}" >&2; exit 1 ;;
+            esac
+          fi
+
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  build-image:
+    name: Build ${{ matrix.image }}
+    needs: [prepare-matrix]
+    if: ${{ needs.prepare-matrix.outputs.images != '[]' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.prepare-matrix.outputs.images) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        if: ${{ inputs.push }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.image_name }}
+          tags: |
+            type=ref,event=pr
+            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ inputs.latest }}
+            type=semver,pattern={{version}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ inputs.version }},enable=${{ inputs.version != '' }}
+
+      - name: Build sbcli image
+        if: ${{ matrix.image == 'sbcli' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build deepep-ucx image
+        if: ${{ matrix.image == 'deepep-ucx' }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            ENV_BUILD_TOOLS_IMAGE_NAME=${{ env.ENV_BUILD_TOOLS_IMAGE_NAME }}
+            ENV_BASEIMAGE_FULL_NAME=${{ env.ENV_BASEIMAGE_FULL_NAME }}
+            ENV_BASEIMAGE_CUDA_VERISON=${{ env.ENV_BASEIMAGE_CUDA_VERISON }}
+            ENV_BASEIMAGE_OS_VERISON=${{ env.ENV_BASEIMAGE_OS_VERISON }}
+            ENV_DEEPEP_VERSION=${{ env.ENV_DEEPEP_VERSION }}
+            ENV_DEEPGEMM_VERSION=${{ env.ENV_DEEPGEMM_VERSION }}
+            ENV_UCX_VERSION=${{ env.ENV_UCX_VERSION }}
+            ENV_NVSHMEM_VERSION=${{ env.ENV_NVSHMEM_VERSION }}
+            ENV_BUILD_AND_DOWNLOAD_PARALLEL=${{ env.ENV_BUILD_AND_DOWNLOAD_PARALLEL }}
+            ENV_TORCH_CUDA_ARCH_LIST=${{ env.ENV_TORCH_CUDA_ARCH_LIST }}

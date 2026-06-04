@@ -1,0 +1,44 @@
+name: Release ISO
+
+on:
+  workflow_dispatch:
+    inputs:
+      nvidia_driver_branch:
+        description: NVIDIA driver branch to bake into install.env
+        required: true
+        default: default
+      cuda_profile:
+        description: CUDA manifest profile
+        required: true
+        default: 'cuda12'
+        type: choice
+        options:
+          - 'cuda12'
+          - 'cuda13'
+      version:
+        description: Release version, used in ISO filename (metal-deployer-vX.Y.Z-...)
+        required: true
+        default: 'v0.1.0'
+      destination_url:
+        description: Destination URL/path for ISO upload; leave empty to skip publish
+        required: false
+        default: 'http://10.64.40.200:5000/iso/GPU'
+      cleanup_after_run:
+        description: Remove CI working directory after uploading artifacts
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+jobs:
+  release-iso:
+    uses: ./.github/workflows/call-release-iso.yaml
+    with:
+      nvidia_driver_branch: ${{ inputs.nvidia_driver_branch }}
+      cuda_profile: ${{ inputs.cuda_profile }}
+      version: ${{ inputs.version }}
+      destination_url: ${{ inputs.destination_url }}
+      cleanup_after_run: ${{ inputs.cleanup_after_run }}
+    secrets: inherit

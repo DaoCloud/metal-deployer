@@ -1,0 +1,60 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, for example v0.1.0
+        required: true
+        default: 'v0.1.0'
+      nvidia_driver_branch:
+        description: NVIDIA driver branch to bake into install.env
+        required: true
+        default: default
+      cuda_profile:
+        description: CUDA manifest profile
+        required: true
+        default: 'cuda12'
+        type: choice
+        options:
+          - 'cuda12'
+          - 'cuda13'
+      destination_url:
+        description: Destination URL/path for ISO upload
+        required: true
+        default: 'http://10.64.40.200:5000/iso/GPU'
+      cleanup_after_run:
+        description: Remove CI working directory after uploading artifacts
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build-image:
+    uses: ./.github/workflows/call-build-image.yaml
+    with:
+      image: all
+      push: true
+      version: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+      latest: false
+    secrets: inherit
+    permissions:
+      contents: read
+      packages: write
+
+  release-iso:
+    needs: [build-image]
+    uses: ./.github/workflows/call-release-iso.yaml
+    with:
+      nvidia_driver_branch: ${{ github.event_name == 'push' && 'default' || inputs.nvidia_driver_branch }}
+      cuda_profile: ${{ github.event_name == 'push' && 'cuda12' || inputs.cuda_profile }}
+      version: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+      destination_url: ${{ github.event_name == 'push' && 'http://10.64.40.200:5000/iso/GPU' || inputs.destination_url }}
+      cleanup_after_run: ${{ github.event_name == 'push' && 'false' || inputs.cleanup_after_run }}
+    secrets: inherit

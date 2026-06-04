@@ -10,19 +10,37 @@ set -e
 if [ "$(id -u)" -ne 0 ]; then echo "❌ Must run as root (sudo)"; exit 1; fi
 
 BASE_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-WORK_DIR="${BASE_DIR}/build_workspace"
-ISO_SRC_DIR="${BASE_DIR}/iso"
-PKG_DIR="${BASE_DIR}/packages"
+CI_WORK_DIR="${CI_WORK_DIR:-${BASE_DIR}/.ci-work}"
+WORK_DIR="${BUILD_WORK_DIR:-${CI_WORK_DIR}/build_workspace}"
+ISO_SRC_DIR="${ISO_DIR:-${CI_WORK_DIR}/iso}"
+PKG_DIR="${PACKAGE_DIR:-${CI_WORK_DIR}/packages}"
 SCRIPT_DIR="${BASE_DIR}/scripts"
-USER_DATA_FILE="${BASE_DIR}/user-data"
-OUTPUT_ISO="${BASE_DIR}/custom-ubuntu.iso"
+CONFIG_DIR="${CONFIG_DIR:-${BASE_DIR}/config}"
+USER_DATA_FILE="${BASE_DIR}/config/cloud-init/user-data"
+MANIFEST_FILE="${MANIFEST_FILE:-${BASE_DIR}/manifest.yaml}"
+RESOLVE_MANIFEST="${BASE_DIR}/tools/resolve_manifest.rb"
+RENDER_USER_DATA="${BASE_DIR}/tools/render_user_data.rb"
+
+# Generate effective manifest (merges basic + CUDA profile)
+EFFECTIVE_MANIFEST="${WORK_DIR}/effective-manifest.yaml"
+resolve_manifest() {
+    local profile="${1:-${CUDA_PROFILE:-}}"
+    if [ -f "$RESOLVE_MANIFEST" ] && [ -f "$MANIFEST_FILE" ]; then
+        ruby "$RESOLVE_MANIFEST" "$MANIFEST_FILE" "$profile" yaml > "$EFFECTIVE_MANIFEST"
+        echo "$EFFECTIVE_MANIFEST"
+    else
+        echo "$MANIFEST_FILE"
+    fi
+}
+OUTPUT_ISO="${OUTPUT_ISO:-${CI_WORK_DIR}/custom-ubuntu.iso}"
 
 # 2. Dependency Check
-REQUIRED_TOOLS="xorriso sed find mtools mkfs.vfat"
+REQUIRED_TOOLS="xorriso sed find mtools mkfs.vfat ruby dpkg-scanpackages"
 for tool in $REQUIRED_TOOLS; do
     if ! command -v $tool &> /dev/null; then
         echo "🔧 Installing dependency: $tool"
         if [ "$tool" == "mkfs.vfat" ]; then apt-get update -qq && apt-get install -y -qq dosfstools
+        elif [ "$tool" == "dpkg-scanpackages" ]; then apt-get update -qq && apt-get install -y -qq dpkg-dev
         else apt-get update -qq && apt-get install -y -qq $tool; fi
     fi
 done
@@ -36,6 +54,7 @@ echo "🚀 Starting Build: $(basename "$INPUT_ISO")"
 # 4. Clean & Extract
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR/iso-content"
+mkdir -p "$(dirname "$OUTPUT_ISO")"
 echo "📂 Extracting ISO..."
 xorriso -osirrox on -indev "$INPUT_ISO" -extract / "$WORK_DIR/iso-content" 2>/dev/null
 chmod -R u+w "$WORK_DIR/iso-content"
@@ -46,13 +65,49 @@ TARGET_RES_DIR="$WORK_DIR/iso-content/resource"
 mkdir -p "$TARGET_RES_DIR/packages"
 [ -d "$PKG_DIR" ] && cp -r "$PKG_DIR/." "$TARGET_RES_DIR/packages/"
 [ -d "$SCRIPT_DIR" ] && { cp -r "$SCRIPT_DIR" "$TARGET_RES_DIR/scripts"; chmod -R +x "$TARGET_RES_DIR/scripts"; }
+[ -d "$CONFIG_DIR" ] && cp -r "$CONFIG_DIR" "$TARGET_RES_DIR/config"
+mkdir -p "$TARGET_RES_DIR/config"
+find "$TARGET_RES_DIR/packages" -type f -name '*.tmp' -delete
+if find "$TARGET_RES_DIR/packages" -maxdepth 1 -name '*.deb' -print -quit | grep -q .; then
+    (
+        cd "$TARGET_RES_DIR/packages"
+        dpkg-scanpackages . /dev/null > Packages
+        gzip -9c Packages > Packages.gz
+    )
+fi
+
+# Generate effective manifest for current CUDA profile
+MANIFEST_EFFECTIVE=$(resolve_manifest)
+
+if [ -f "$MANIFEST_EFFECTIVE" ]; then
+    ruby -ryaml -rshellwords -e '
+      env = YAML.safe_load_file(ARGV.fetch(0), aliases: true).fetch("install_environment", {}) || {}
+      env.each do |key, value|
+        next unless key.match?(/\A[A-Z0-9_]+\z/)
+        puts "#{key}=#{value.to_s.shellescape}"
+      end
+    ' "$MANIFEST_EFFECTIVE" > "$TARGET_RES_DIR/config/install.env"
+fi
+if [ -n "${NVIDIA_DRIVER_BRANCH:-}" ]; then
+    printf 'NVIDIA_DRIVER_BRANCH=%q\n' "$NVIDIA_DRIVER_BRANCH" >> "$TARGET_RES_DIR/config/install.env"
+fi
+for env_key in MIRROR_SOURCE INTRANET_MIRROR; do
+    if [ -n "${!env_key:-}" ]; then
+        printf '%s=%q\n' "$env_key" "${!env_key}" >> "$TARGET_RES_DIR/config/install.env"
+    fi
+done
 
 if [ -f "$USER_DATA_FILE" ]; then
     mkdir -p "$WORK_DIR/iso-content/nocloud"
-    cp "$USER_DATA_FILE" "$WORK_DIR/iso-content/nocloud/user-data"
+    if [ -f "$MANIFEST_EFFECTIVE" ] && [ -f "$RENDER_USER_DATA" ]; then
+        ruby "$RENDER_USER_DATA" "$USER_DATA_FILE" "$MANIFEST_EFFECTIVE" "$WORK_DIR/iso-content/nocloud/user-data"
+    else
+        cp "$USER_DATA_FILE" "$WORK_DIR/iso-content/nocloud/user-data"
+    fi
     touch "$WORK_DIR/iso-content/nocloud/meta-data"
+    touch "$WORK_DIR/iso-content/nocloud/vendor-data"
 else
-    echo "❌ Missing user-data file"; exit 1
+    echo "❌ Missing cloud-init user-data file: ${USER_DATA_FILE}"; exit 1
 fi
 
 # 6. Modify GRUB (With Serial Console Fix)
