@@ -31,21 +31,34 @@ Metal Deployer 是一个用于裸金属服务器部署和性能测试的工具�
 ```bash
 cd build-iso/
 
-# 1. 下载官方 ISO 到 iso/ 目录
-wget -P iso/ https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso
+# 1. 下载基础 ISO、离线包，并注入 SSH 公钥
+./prepare.sh --ssh-public-key ~/.ssh/id_ed25519.pub --skip-images
 
-# 2. 准备离线包到 packages/ 目录
-
-# 3. 准备初始化脚本到 scripts/ 目录
-
-# 4. 构建 ISO
+# 2. 构建 ISO
 sudo ./build.sh
 
-# 5. 使用 QEMU 测试
-./test.sh setup    # 启动虚拟机自动安装
-./test.sh login    # SSH 登录虚拟机
-./test.sh clean    # 清理测试环境
+# 3. 使用 QEMU 做本地冒烟测试
+./test.sh setup
+./test.sh login
+./test.sh clean
 ```
+
+默认产物位置：`build-iso/.ci-work/custom-ubuntu.iso`
+
+### 下载发版 ISO
+
+- 发版后先看 GitHub Releases：<https://github.com/DaoCloud/metal-deployer/releases>
+- Release Notes 会写明内网 ISO 下载直链和同名 `.info.txt` 直链
+- 默认发布地址前缀：`http://10.64.40.200:5000/iso/GPU/`
+- 如果某次运行没有推送到内网地址，可去 Actions 运行页面下载 artifact `custom-ubuntu-iso`
+
+`.info.txt` 会列出该 ISO 内全部 basic/profile packages 与对应版本；相同内容也会写进 Release Notes
+
+### 如何使用 ISO
+
+- 物理机：把 `build-iso/.ci-work/custom-ubuntu.iso` 或下载好的发布版 ISO 挂载到 BMC/IPMI/iDRAC/iLO 虚拟光驱后重启安装
+- U 盘：`sudo dd if=build-iso/.ci-work/custom-ubuntu.iso of=/dev/sdX bs=4M status=progress oflag=sync`
+- 支持平台 ISO 网络启动时，也可直接使用生成或下载的 `.iso`
 
 ### 详细文档
 
@@ -146,30 +159,47 @@ make test-sbcli-interactive
 make clean
 ```
 
-### ISO 构建命令
+### ISO 常用命令
 
 ```bash
-# 构建 ISO 镜像（需要 root 权限）
-make build-iso
+# 准备基础 ISO、离线包、公钥
+cd build-iso && ./prepare.sh --ssh-public-key ~/.ssh/id_ed25519.pub --skip-images
+
+# 构建 ISO（需要 root 权限）
+cd build-iso && sudo ./build.sh
 
 # 使用 QEMU 测试 ISO
-make test-iso
-
-# 清理 ISO 构建环境
-make clean-iso
+cd build-iso && ./test.sh setup
+cd build-iso && ./test.sh login
+cd build-iso && ./test.sh clean
 ```
 
 ## 四、镜像构建 CI/CD
 
-本项目使用 GitHub Actions 自动构建 sbcli 镜像：
+本项目使用 GitHub Actions 自动构建镜像和 ISO：
 
 | 触发条件 | 行为 |
 |---------|------|
 | PR open/reopen | 构建镜像（不推送） |
 | main 分支 push | 构建并推送 `latest` 标签 |
 | release tag | 构建并推送版本标签 |
+| 手动触发 `Release ISO` | 构建版本化 ISO，上传 artifact，推送到内网 `destination_url`，并把下载方式与包版本写入 Release Notes |
 
-镜像地址：`ghcr.io/daocloud/metal-deployer/sbcli:latest`
+### 发版产物下载
+
+| 产物 | 发布位置 | 下载方式 |
+| --- | --- | --- |
+| `sbcli` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/sbcli:<version>` |
+| `deepep-ucx` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/deepep-ucx:<version>` |
+| ISO | 内网文件地址 | 去 Releases 页面查看 Release Notes 中的 ISO 直链，默认前缀 `http://10.64.40.200:5000/iso/GPU/` |
+| ISO 包清单 | 同名 `.info.txt` | 下载 Release Notes 里的 `.info.txt`，其中列出 ISO 内全部 packages 与 versions |
+
+发版时 Release Notes 会自动写入：
+
+1. GHCR 镜像拉取地址
+2. ISO 内网下载地址
+3. ISO 同名 `.info.txt` 下载地址
+4. ISO 内 packages/version 清单
 
 ---
 
@@ -184,9 +214,10 @@ metal-deployer/
 │   ├── build.sh                      # ISO 构建脚本
 │   ├── test.sh                       # QEMU 测试脚本
 │   ├── config/                       # 配置文件
-│   │   └── cloud-init/user-data      # Cloud-Init 配置
-│   ├── iso/                          # 存放官方 ISO
-│   ├── packages/                     # 离线 .deb 包
+│   │   └── cloud-init/user-data      # Cloud-Init 模板
+│   ├── manifest.yaml                 # ISO 构建清单
+│   ├── .ci-work/                     # 默认下载缓存、构建产物、QEMU 测试产物
+│   ├── packages/                     # 离线 .deb 包与镜像 tar 缓存
 │   └── scripts/                      # 初始化脚本
 ├── superbenchmark/                   # GPU 性能测试
 │   ├── README.md                     # 测试指南
