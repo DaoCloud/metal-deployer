@@ -104,9 +104,9 @@ jobs:
         run: |
           set -euxo pipefail
           INFO_FILE="$OUTPUT_ISO_INFO"
-          ruby - "$MANIFEST_FILE" "$CUDA_PROFILE" "$NVIDIA_DRIVER_BRANCH" "$INFO_FILE" <<'RUBY'
+          ruby - "$MANIFEST_FILE" "$CUDA_PROFILE" "$NVIDIA_DRIVER_BRANCH" "$INFO_FILE" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/${{ inputs.version }}/build-iso/manifest.yaml" <<'RUBY'
           require "yaml"
-          manifest_path, cuda_profile, driver_branch, out_path = ARGV
+          manifest_path, cuda_profile, driver_branch, out_path, manifest_url = ARGV
           m = YAML.safe_load_file(manifest_path, permitted_classes: [Symbol], aliases: true)
 
           profile_data = m.dig("cuda", "profiles", cuda_profile) || {}
@@ -120,7 +120,7 @@ jobs:
           lines = []
           lines << "=== ISO Build Info ==="
           lines << "Build time : #{Time.now.utc.strftime("%Y-%m-%d %H:%M:%S UTC")}"
-          lines << "Manifest   : #{manifest_path} (version #{m["manifest_version"]})"
+          lines << "Manifest   : #{manifest_url} (version #{m["manifest_version"]})"
           lines << "CUDA profile         : #{cuda_profile}"
           lines << "NVIDIA driver branch : #{driver_branch}"
           lines << ""
@@ -161,15 +161,13 @@ jobs:
           RUBY
           cat "$OUTPUT_ISO_INFO"
 
-      - name: Upload ISO artifact
+      - name: Upload ISO info artifact
         uses: actions/upload-artifact@v4
         with:
-          name: custom-ubuntu-iso
+          name: custom-ubuntu-iso-info
           if-no-files-found: error
           include-hidden-files: true
-          path: |
-            ${{ env.OUTPUT_ISO }}
-            ${{ env.OUTPUT_ISO_INFO }}
+          path: ${{ env.OUTPUT_ISO_INFO }}
 
       - name: Publish ISO to destination
         if: ${{ env.RELEASE_ISO_DESTINATION_URL != '' }}
@@ -234,6 +232,9 @@ jobs:
             const infoText = fs.readFileSync(infoFile, 'utf8').trimEnd();
             const infoName = path.basename(infoFile);
             const marker = `iso-info:${cudaProfile}`;
+            const nextSectionIndex = infoText.indexOf('\n\n=== Base OS ===');
+            const buildInfoText = nextSectionIndex === -1 ? infoText : infoText.slice(0, nextSectionIndex);
+            const packageMatrixText = nextSectionIndex === -1 ? '' : infoText.slice(nextSectionIndex).trimStart();
 
             let release;
             try {
@@ -269,7 +270,7 @@ jobs:
               if (infoRemoteUrl) downloadLines.push(`curl -fLO "${infoRemoteUrl}"`);
               downloadLines.push('```');
             } else {
-              downloadLines.push('ISO download: GitHub Actions artifact `custom-ubuntu-iso` from this workflow run.');
+              downloadLines.push('ISO package matrix: GitHub Actions artifact `custom-ubuntu-iso-info` from this workflow run.');
             }
 
             const section = [
@@ -282,8 +283,14 @@ jobs:
               'The `.info.txt` file and block below list exact packages and versions baked into this ISO.',
               '',
               '```text',
-              infoText,
+              buildInfoText,
               '```',
+              ...(packageMatrixText ? [
+                '',
+                '```text',
+                packageMatrixText,
+                '```'
+              ] : []),
               end
             ].join('\n');
 
