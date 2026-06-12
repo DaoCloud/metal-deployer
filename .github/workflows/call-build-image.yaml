@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       image:
-        description: 'Image to build: all, sbcli, or deepep-ucx'
+        description: 'Image to build: all, sbcli, or gpu-rdma-bench'
         required: false
         default: all
         type: string
@@ -42,6 +42,11 @@ env:
   ENV_NVSHMEM_VERSION: v3.4.5-0
   ENV_BUILD_AND_DOWNLOAD_PARALLEL: 4
   ENV_TORCH_CUDA_ARCH_LIST: "9.0"
+  ENV_NIXL_REPO: https://github.com/ai-dynamo/nixl.git
+  ENV_NIXL_REF: main
+  ENV_LIBFABRIC_VERSION: v1.21.0
+  ENV_ABSL_TAG: lts_2025_08_14
+  ENV_GRPC_TAG: v1.73.0
 
 jobs:
   prepare-matrix:
@@ -56,9 +61,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          all_images='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"},{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+          all_images='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"},{"image":"gpu-rdma-bench","context":"./benchmarks/gpu-rdma-bench/image","image_name":"gpu-rdma-bench"}]'
           sbcli_image='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"}]'
-          deepep_ucx_image='[{"image":"deepep-ucx","context":"./benchmarks/deepep-ucx/image","image_name":"deepep-ucx"}]'
+          gpu_rdma_bench_image='[{"image":"gpu-rdma-bench","context":"./benchmarks/gpu-rdma-bench/image","image_name":"gpu-rdma-bench"}]'
 
           if [ -n '${{ inputs.images }}' ]; then
             images='${{ inputs.images }}'
@@ -66,7 +71,7 @@ jobs:
             case '${{ inputs.image }}' in
               all) images="$all_images" ;;
               sbcli) images="$sbcli_image" ;;
-              deepep-ucx) images="$deepep_ucx_image" ;;
+              gpu-rdma-bench) images="$gpu_rdma_bench_image" ;;
               *) echo "Unsupported image: ${{ inputs.image }}" >&2; exit 1 ;;
             esac
           fi
@@ -125,8 +130,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build deepep-ucx image
-        if: ${{ matrix.image == 'deepep-ucx' }}
+      - name: Build gpu-rdma-bench image
+        if: ${{ matrix.image == 'gpu-rdma-bench' }}
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -146,6 +151,11 @@ jobs:
             ENV_NVSHMEM_VERSION=${{ env.ENV_NVSHMEM_VERSION }}
             ENV_BUILD_AND_DOWNLOAD_PARALLEL=${{ env.ENV_BUILD_AND_DOWNLOAD_PARALLEL }}
             ENV_TORCH_CUDA_ARCH_LIST=${{ env.ENV_TORCH_CUDA_ARCH_LIST }}
+            ENV_NIXL_REPO=${{ env.ENV_NIXL_REPO }}
+            ENV_NIXL_REF=${{ env.ENV_NIXL_REF }}
+            ENV_LIBFABRIC_VERSION=${{ env.ENV_LIBFABRIC_VERSION }}
+            ENV_ABSL_TAG=${{ env.ENV_ABSL_TAG }}
+            ENV_GRPC_TAG=${{ env.ENV_GRPC_TAG }}
 
   update-release-notes:
     name: Update image release notes

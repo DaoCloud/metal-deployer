@@ -190,7 +190,7 @@ cd build-iso && ./test.sh clean
 | 产物 | 发布位置 | 下载方式 |
 | --- | --- | --- |
 | `sbcli` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/sbcli:<version>` |
-| `deepep-ucx` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/deepep-ucx:<version>` |
+| `gpu-rdma-bench` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:<version>` |
 | ISO | 内网文件地址 | 去 Releases 页面查看 Release Notes 中的 ISO 直链，默认前缀 `http://10.64.40.200:5000/iso/GPU/` |
 | ISO 包清单 | 同名 `.info.txt` | 下载 Release Notes 里的 `.info.txt`，其中列出 ISO 内全部 packages 与 versions |
 
