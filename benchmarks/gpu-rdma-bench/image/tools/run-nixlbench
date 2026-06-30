@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ETCD_ENDPOINTS="${ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
+RUN_ETCD="${RUN_ETCD:-false}"
+ETCD_DATA_DIR="${ETCD_DATA_DIR:-/tmp/nixlbench-etcd}"
+ETCD_CLEAN_PREFIX="${ETCD_CLEAN_PREFIX:-}"
+NIXLBENCH_DEFAULT_ARGS="${NIXLBENCH_DEFAULT_ARGS:---backend UCX --initiator_seg_type VRAM --target_seg_type VRAM}"
+
+if [ -z "${ETCD_CLEAN_PREFIX}" ]; then
+  if [ "${RUN_ETCD}" = "true" ]; then
+    ETCD_CLEAN_PREFIX="true"
+  else
+    ETCD_CLEAN_PREFIX="false"
+  fi
+fi
+
+if [ "${RUN_ETCD}" = "true" ]; then
+  rm -rf "${ETCD_DATA_DIR}"
+  mkdir -p "${ETCD_DATA_DIR}"
+  etcd \
+    --data-dir="${ETCD_DATA_DIR}" \
+    --listen-client-urls="http://0.0.0.0:2379" \
+    --advertise-client-urls="${ETCD_ENDPOINTS}" \
+    --listen-peer-urls="http://0.0.0.0:2380" \
+    --initial-advertise-peer-urls="http://0.0.0.0:2380" \
+    --initial-cluster="default=http://0.0.0.0:2380" &
+  etcd_pid="$!"
+  trap 'kill "${etcd_pid}" 2>/dev/null || true' EXIT
+
+  for _ in $(seq 1 60); do
+    if ETCDCTL_API=3 etcdctl --endpoints="${ETCD_ENDPOINTS}" endpoint health >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+fi
+
+if [ "${ETCD_CLEAN_PREFIX}" = "true" ]; then
+  ETCDCTL_API=3 etcdctl --endpoints="${ETCD_ENDPOINTS}" del "xferbench" --prefix=true >/dev/null 2>&1 || true
+fi
+
+if [ "$#" -eq 0 ]; then
+  # shellcheck disable=SC2086
+  exec nixlbench --etcd_endpoints "${ETCD_ENDPOINTS}" ${NIXLBENCH_DEFAULT_ARGS}
+fi
+
+case "$1" in
+  nixlbench)
+    shift
+    exec nixlbench "$@"
+    ;;
+  *)
+    exec "$@"
+    ;;
+esac

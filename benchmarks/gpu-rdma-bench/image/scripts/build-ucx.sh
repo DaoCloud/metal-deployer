@@ -19,7 +19,13 @@ rm -rf /tmp/ucx || true
 git clone -b ${ENV_UCX_VERSION} https://${ENV_GITHUB_ARTIFACTORY}/openucx/ucx.git /tmp/ucx
 cd /tmp/ucx
 ./autogen.sh
-./configure --prefix=/usr/local --with-cuda=/usr/local/cuda --with-verbs --with-rdmacm --enable-optimizations
+./contrib/configure-release \
+  --prefix=/usr/local \
+  --with-cuda=/usr/local/cuda \
+  --with-verbs \
+  --with-rdmacm \
+  --enable-mt \
+  --without-go
 make -j${ENV_BUILD_AND_DOWNLOAD_PARALLEL}
 make install DESTDIR=/buildUcxRootfs
 cd /
