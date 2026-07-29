@@ -64,7 +64,7 @@ UCX is built with CUDA, verbs, rdmacm, and multi-thread support:
 
 GDRCopy userspace library is built from source before DeepEP and libfabric so NIXL can enable GDRCopy dlopen support. Libfabric is built from source with CUDA and EFA enabled for NIXL libfabric backend.
 
-DeepEP defaults to `ENV_TORCH_CUDA_ARCH_LIST=9.0` because current kernels use Hopper-only PTX features.
+DeepEP defaults to `ENV_TORCH_CUDA_ARCH_LIST=9.0` (Hopper/SM90). For Ampere (SM80, A100/A800) rebuild with `--build-arg ENV_TORCH_CUDA_ARCH_LIST="8.0"`; `build-deepep.sh` then sets `DISABLE_SM90_FEATURES=1` automatically (disables FP8/TMA/Hopper launch methods). SM80 and SM90 cannot be combined in one image because `DISABLE_SM90_FEATURES` is a global compile-time switch.
 
 ## Image
 

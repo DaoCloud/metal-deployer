@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Use CUDA compat libraries only when the host driver libcuda is not injected
+# (e.g. running without GPU allocation). When the NVIDIA container runtime
+# injects the host driver, compat must NOT shadow it, otherwise cuInit fails
+# with "unsupported display driver / cuda driver combination".
+if ! ldconfig -p 2>/dev/null | grep -q 'libcuda\.so\.1' \
+   && [ -e /usr/local/cuda/compat/libcuda.so.1 ]; then
+  export LD_LIBRARY_PATH="/usr/local/cuda/compat${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+
 ETCD_ENDPOINTS="${ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
 RUN_ETCD="${RUN_ETCD:-false}"
 ETCD_DATA_DIR="${ETCD_DATA_DIR:-/tmp/nixlbench-etcd}"
