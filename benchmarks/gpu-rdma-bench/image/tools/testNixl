@@ -1,0 +1,586 @@
+#!/bin/bash
+# testNixl - NIXLBench acceptance smoke test driver.
+#
+# ============================== 测试逻辑 ==============================
+#
+# 模式（MODE）：
+#   single  在当前容器内跑单机测试（S1/S2，可选 S3L NIC 环回），无需 SSH。
+#   multi   driver 模式：读 HOSTS_FILE，按 TOPOLOGY 分组，通过 SSH 在各
+#           host 上起 gpu-rdma-bench 容器跑跨节点测试（S3-S6）。
+#   all     先对每台 host 跑单机测试（phase 1，全部 host 并行），再跑跨
+#           节点测试（phase 2，串行）。单机先跑：单机失败可直接定位本机
+#           GPU/驱动问题，跨节点再挂可用排除法定位到网络。
+#
+# 测试项：
+#   S1  VRAM<->VRAM WRITE（NVLink/cuda_ipc），4K-64M      —— 单机
+#   S2  VRAM<->VRAM READ + 一致性校验，4K-16M             —— 单机
+#   S3L DRAM RDMA NIC 环回（仅功能验证），4K-16M           —— 单机可选
+#   S3  DRAM<->DRAM 跨节点 RDMA WRITE，4K-64M             —— 多机
+#   S4  DRAM->VRAM 跨节点（单侧 GPU），4K-1M               —— 多机
+#   S5  VRAM<->VRAM 跨节点 + 一致性（GPUDirect），4K-1M    —— 多机
+#   S6  DRAM 大块带宽压测，64K-64M，iter 200               —— 多机
+#   小 block 看延迟，大 block 看带宽；READ/WRITE 各覆盖一个方向；
+#   一致性校验至少一轮（抓带宽正常但数据错误的链路/内存故障）。
+#
+# 拓扑（TOPOLOGY，multi/all 生效）：
+#   pairwise（默认，当前唯一取值）：hosts 按文件顺序两两分组，每组独立
+#   跑完整测试集；组内前者为 initiator，后者为 target。
+#     2 台: (h1,h2)
+#     3 台: (h1,h2) + (h1,h3)          —— 奇数时 h1 补测最后一台
+#     7 台: (h1,h2) (h3,h4) (h5,h6) + (h1,h7)
+#     1 台: 报错（跨节点无法测）
+#   phase 1 单机测试各 host 并行（每台容器内自起本地 etcd，
+#   127.0.0.1:12381，互不干扰，不依赖中心 etcd）；phase 2 跨节点分组
+#   串行执行（共享中心 etcd，串行避免 rank 冲突 + 避免争抢 NIC 污染带宽
+#   数据；每项测试前清空 etcd key）。
+#
+# etcd（跨节点 nixlbench rank 靠它汇合，multi/all phase 2 只有一个实例）：
+#   - START_ETCD=true（推荐）：在 driver（如 ansible 控制机）容器内启动镜像
+#     自带的 etcd 二进制（容器须 hostNetwork）。multi/all 时对外通告地址
+#     ETCD_ADVERTISE_IP 默认自动探测（ip route get <第一台 host> 的 src 地址），
+#     也可显式指定；其他被测节点主动连接该地址。MODE=single 监听 127.0.0.1。
+#   - 或 ETCD_ENDPOINTS=http://IP:PORT  使用外部 etcd。
+#   默认两者都不设置则报错。driver 可以是 controller 节点，也可以本身就是
+#   被测节点之一。
+#
+# 执行流程（multi/all 每项测试）：
+#   清 etcd -> SSH 到 initiator host 起容器（先注册 = rank 0）-> sleep 5 ->
+#   SSH 到 target host 起容器（rank 1）-> 轮询容器退出（TEST_TIMEOUT）->
+#   拉回两端日志 -> 删容器 -> 解析 initiator 日志表（首行延迟/末行带宽），
+#   grep 错误关键字判定 PASS/FAIL。失败不重试，继续跑后续测试/分组。
+#
+# 前置条件（multi/all）：
+#   - driver 容器内有 SSH 私钥，可免密登录所有 host（host 层 sshd）；
+#   - 所有 host 已提前导入 IMAGE（不自动拉取）；
+#   - host 上有 CONTAINER_RUNTIME（docker 或 nerdctl）。
+#
+# 已知限制：
+#   - pairwise 只测组内两两，不做全互联；DEVICE_LIST 默认 all（UCX 多轨聚合
+#     全部 RDMA 网卡），指定单卡（如 mlx5_0）可按网卡隔离定位；
+#   - 远端 VRAM 测试固定用 REMOTE_GPU 指定的 GPU，不自动挑空闲。
+# ======================================================================
+
+set -u
+
+export PATH="/usr/local/nixlbench/bin:${PATH}"
+
+# --- Configuration ---
+MODE=${MODE:-"single"}
+TOPOLOGY=${TOPOLOGY:-"pairwise"}
+TESTS=${TESTS:-""}                          # override, e.g. "s1 s2" / "s3 s6"
+
+ETCD_ENDPOINTS=${ETCD_ENDPOINTS:-""}
+START_ETCD=${START_ETCD:-"false"}
+ETCD_CLIENT_PORT=${ETCD_CLIENT_PORT:-12379}
+ETCD_PEER_PORT=${ETCD_PEER_PORT:-12380}
+ETCD_ADVERTISE_IP=${ETCD_ADVERTISE_IP:-""}  # required for multi/all + START_ETCD
+ETCD_DATA_DIR=${ETCD_DATA_DIR:-"/tmp/testNixl-etcd"}
+
+GPUS=${GPUS:-""}                            # e.g. "2,3"; empty = auto pick 2 free GPUs
+DEVICE_LIST=${DEVICE_LIST:-"all"}           # RDMA devices for DRAM/network tests; "all" = every device (UCX multirail), or e.g. "mlx5_0" to isolate one NIC
+RUN_S3_LOOPBACK=${RUN_S3_LOOPBACK:-"false"} # single mode: NIC loopback functional test
+
+HOSTS_FILE=${HOSTS_FILE:-""}
+SSH_USER=${SSH_USER:-"root"}
+SSH_PORT=${SSH_PORT:-22}
+CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-"docker"}   # docker | nerdctl
+IMAGE=${IMAGE:-"ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:latest"}
+GPU_FLAGS=${GPU_FLAGS:-"--gpus all"}
+REMOTE_GPU=${REMOTE_GPU:-"0"}               # CUDA device used on remote hosts for VRAM tests
+# Optional bind-mount for phase-1 containers, e.g. "-v /tmp/testNixl:/usr/sbin/testNixl:ro"
+# Useful when iterating on this script without rebuilding IMAGE (file must exist on each host).
+TESTNIXL_MOUNT=${TESTNIXL_MOUNT:-""}
+
+NUM_ITER=${NUM_ITER:-100}
+WARMUP_ITER=${WARMUP_ITER:-10}
+TEST_TIMEOUT=${TEST_TIMEOUT:-900}
+WORKDIR=${WORKDIR:-"/tmp/testNixl-$(date +%Y%m%d%H%M%S)"}
+REPORT_FILE=${REPORT_FILE:-"${WORKDIR}/report.txt"}
+DRY_RUN=${DRY_RUN:-"false"}                 # multi/all: print plan, run nothing
+DEBUG=${DEBUG:-"false"}
+
+ETCD_PID=""
+RESULT_KEYS=()
+declare -A RESULT_STATUS RESULT_DETAIL
+
+print_help() {
+    cat <<EOF
+Usage: testNixl [--help]
+
+NIXLBench acceptance smoke tests. Configuration via environment variables.
+详细测试逻辑见脚本头部注释。
+
+Modes:
+  MODE=single (default)   S1 VRAM WRITE / S2 VRAM READ+consistency in this
+                          container; RUN_S3_LOOPBACK=true adds S3L NIC loopback.
+  MODE=multi              Cross-node S3-S6 over host pairs from HOSTS_FILE.
+  MODE=all                Phase 1: single-node tests on every host;
+                          Phase 2: cross-node tests. All serial.
+
+Topology (multi/all):
+  TOPOLOGY=pairwise       (h1,h2)(h3,h4)...; odd count appends (h1,hN).
+
+ETCD (single instance for the whole run):
+  ETCD_ENDPOINTS=http://IP:PORT   Use external etcd.
+  START_ETCD=true                 Start etcd binary inside this driver container
+                                  (needs hostNetwork). multi/all advertise IP is
+                                  auto-detected via 'ip route get <first host>';
+                                  override with ETCD_ADVERTISE_IP if needed.
+
+Common variables:
+  TESTS="s1 s2" / "s3 s6"         Run a subset only.
+  GPUS=2,3                        GPU pair for local single mode (default: auto).
+  DEVICE_LIST=all                 RDMA devices; "all" (default) uses every
+                                  device (UCX multirail), or e.g. mlx5_0.
+  NUM_ITER=100 WARMUP_ITER=10 TEST_TIMEOUT=900
+  WORKDIR=/tmp/testNixl-...       Logs and report location.
+  DRY_RUN=true                    multi/all: print pairs/commands, run nothing.
+
+Multi/all variables:
+  HOSTS_FILE=/hosts               Management IPs, one per line (# comments OK).
+  SSH_USER=root SSH_PORT=22       SSH to hosts (host sshd, passwordless).
+  CONTAINER_RUNTIME=docker        docker | nerdctl (nerdctl uses -n k8s.io).
+  IMAGE=ghcr.io/.../gpu-rdma-bench:latest   Must be pre-loaded on all hosts.
+  GPU_FLAGS="--gpus all"          GPU flags for container runtime.
+  REMOTE_GPU=0                    CUDA device index on remote hosts for VRAM tests.
+
+Examples:
+  # single node, local etcd, auto GPU pick
+  START_ETCD=true testNixl
+
+  # single node, external etcd, explicit GPUs, include NIC loopback
+  ETCD_ENDPOINTS=http://10.0.0.1:2379 GPUS=2,3 RUN_S3_LOOPBACK=true testNixl
+
+  # full acceptance: per-host single tests + pairwise cross-node tests
+  # (etcd starts in this container; advertise IP auto-detected)
+  MODE=all HOSTS_FILE=/hosts START_ETCD=true \\
+    IMAGE=<image> CONTAINER_RUNTIME=nerdctl testNixl
+
+  # cross-node only, subset
+  MODE=multi HOSTS_FILE=/hosts ETCD_ENDPOINTS=http://10.0.0.1:2379 TESTS="s3 s6" testNixl
+EOF
+}
+
+log()   { echo "[testNixl] $*"; }
+dbg()   { [ "${DEBUG}" = "true" ] && echo "[debug] $*" >&2 || true; }
+fatal() { echo "[testNixl] FATAL: $*" >&2; cleanup; exit 1; }
+
+cleanup() {
+    if [ -n "${ETCD_PID}" ]; then
+        kill "${ETCD_PID}" >/dev/null 2>&1 || true
+    fi
+    pgrep -x nixlbench 2>/dev/null | xargs -r kill >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM
+
+record() { # record <key> <status> <detail>
+    RESULT_KEYS+=("$1")
+    RESULT_STATUS[$1]="$2"
+    RESULT_DETAIL[$1]="$3"
+}
+
+# --- etcd management ---
+ensure_etcd() {
+    if [ -n "${ETCD_ENDPOINTS}" ] && [ "${START_ETCD}" != "true" ]; then
+        log "Using external etcd: ${ETCD_ENDPOINTS}"
+    elif [ "${START_ETCD}" = "true" ]; then
+        local advertise="127.0.0.1"
+        if [ "${MODE}" != "single" ]; then
+            if [ -z "${ETCD_ADVERTISE_IP}" ]; then
+                # Auto-detect: the local source IP used to reach the first host
+                ETCD_ADVERTISE_IP=$(ip route get "${HOSTS[0]}" 2>/dev/null |
+                    awk '{for (i = 1; i < NF; i++) if ($i == "src") {print $(i+1); exit}}')
+                [ -n "${ETCD_ADVERTISE_IP}" ] || fatal "cannot auto-detect ETCD_ADVERTISE_IP via 'ip route get ${HOSTS[0]}'; set it explicitly"
+                log "Auto-detected ETCD_ADVERTISE_IP=${ETCD_ADVERTISE_IP} (route to ${HOSTS[0]})"
+            fi
+            advertise="${ETCD_ADVERTISE_IP}"
+        fi
+        ETCD_ENDPOINTS="http://${advertise}:${ETCD_CLIENT_PORT}"
+        log "Starting local etcd on ${ETCD_ENDPOINTS} (needs hostNetwork for multi/all)"
+        rm -rf "${ETCD_DATA_DIR}"
+        etcd --data-dir="${ETCD_DATA_DIR}" \
+            --listen-client-urls="http://0.0.0.0:${ETCD_CLIENT_PORT}" \
+            --advertise-client-urls="${ETCD_ENDPOINTS}" \
+            --listen-peer-urls="http://127.0.0.1:${ETCD_PEER_PORT}" \
+            --initial-advertise-peer-urls="http://127.0.0.1:${ETCD_PEER_PORT}" \
+            --initial-cluster="default=http://127.0.0.1:${ETCD_PEER_PORT}" \
+            >"${WORKDIR}/etcd.log" 2>&1 &
+        ETCD_PID=$!
+    else
+        fatal "No etcd configured. Set ETCD_ENDPOINTS=http://IP:PORT or START_ETCD=true"
+    fi
+
+    local i
+    for i in $(seq 1 30); do
+        if ETCDCTL_API=3 etcdctl --endpoints="${ETCD_ENDPOINTS}" endpoint health >/dev/null 2>&1; then
+            log "etcd healthy: ${ETCD_ENDPOINTS}"
+            return 0
+        fi
+        sleep 1
+    done
+    fatal "etcd not reachable at ${ETCD_ENDPOINTS}"
+}
+
+etcd_clean() {
+    ETCDCTL_API=3 etcdctl --endpoints="${ETCD_ENDPOINTS}" del "" --from-key=true >/dev/null 2>&1 || true
+}
+
+# --- GPU helpers ---
+pick_gpus() {
+    if [ -n "${GPUS}" ]; then
+        GPU_A=${GPUS%%,*}
+        GPU_B=${GPUS##*,}
+        [ "${GPU_A}" != "${GPU_B}" ] || fatal "GPUS must name two distinct GPUs, got '${GPUS}'"
+        return 0
+    fi
+    local free
+    free=$(nvidia-smi --query-gpu=index,memory.used --format=csv,noheader,nounits 2>/dev/null |
+        awk -F', *' '$2 < 1024 {print $1}' | head -2)
+    GPU_A=$(echo "${free}" | sed -n 1p)
+    GPU_B=$(echo "${free}" | sed -n 2p)
+    [ -n "${GPU_A}" ] && [ -n "${GPU_B}" ] || fatal "Need 2 free GPUs (memory.used<1GiB); found: $(echo ${free} | tr '\n' ' '). Set GPUS=i,j to override"
+    log "Auto-picked GPUs: initiator=${GPU_A} target=${GPU_B}"
+}
+
+# --- result parsing ---
+# nixlbench table rows: <block> <batch> <bw GB/s> <avg lat us> ...
+parse_and_judge() {
+    local key="$1" ilog="$2" tlog="$3" irc="$4"
+    local rows err
+    rows=$(awk '$1 ~ /^[0-9]+$/ && NF >= 4 {print}' "${ilog}")
+    err=$(grep -iE "mismatch|inconsist|error|fail" "${ilog}" "${tlog}" 2>/dev/null | grep -viE "large_blk_iter_ftr|_error_|Errors" | head -3)
+
+    if [ "${irc}" != "0" ] || [ -z "${rows}" ]; then
+        record "${key}" "FAIL" "initiator rc=${irc}; $(tail -1 "${ilog}" 2>/dev/null | cut -c1-120)"
+        return 1
+    fi
+    if [ -n "${err}" ]; then
+        record "${key}" "FAIL" "errors in log: $(echo "${err}" | head -1 | cut -c1-120)"
+        return 1
+    fi
+    local first last
+    first=$(echo "${rows}" | head -1)
+    last=$(echo "${rows}" | tail -1)
+    record "${key}" "PASS" "$(echo "${first}" | awk '{print $1}')B lat=$(echo "${first}" | awk '{print $4}')us | $(echo "${last}" | awk '{print $1}')B bw=$(echo "${last}" | awk '{print $3}')GB/s"
+    return 0
+}
+
+# --- local (single mode) pair runner ---
+run_local_pair() {
+    local key="$1" iargs="$2" targs="$3" ienv="$4" tenv="$5"
+    local slug; slug=$(echo "${key}" | tr '/>' '--')
+    local ilog="${WORKDIR}/${slug}-initiator.log" tlog="${WORKDIR}/${slug}-target.log"
+    log "=== ${key}: starting (timeout ${TEST_TIMEOUT}s) ==="
+    etcd_clean
+
+    # shellcheck disable=SC2086
+    env ${ienv} timeout "${TEST_TIMEOUT}" nixlbench ${iargs} >"${ilog}" 2>&1 &
+    local ipid=$!
+    sleep 5
+    # shellcheck disable=SC2086
+    env ${tenv} timeout "${TEST_TIMEOUT}" nixlbench ${targs} >"${tlog}" 2>&1 &
+    local tpid=$!
+
+    wait "${ipid}"; local irc=$?
+    # target may lag shortly after initiator finishes
+    local i
+    for i in $(seq 1 30); do kill -0 "${tpid}" 2>/dev/null || break; sleep 2; done
+    kill "${tpid}" >/dev/null 2>&1 || true
+    wait "${tpid}" 2>/dev/null
+
+    parse_and_judge "${key}" "${ilog}" "${tlog}" "${irc}"
+    log "${key}: ${RESULT_STATUS[${key}]} - ${RESULT_DETAIL[${key}]}"
+}
+
+# --- remote (multi/all mode) helpers ---
+ssh_run() {
+    local host="$1"; shift
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+        -p "${SSH_PORT}" "${SSH_USER}@${host}" "$@"
+}
+
+runtime_cmd() {
+    if [ "${CONTAINER_RUNTIME}" = "nerdctl" ]; then
+        echo "nerdctl -n k8s.io"
+    else
+        echo "docker"
+    fi
+}
+
+remote_start() { # remote_start <host> <cname> <extra docker env/flags> <command...>
+    local host="$1" cname="$2" cenv="$3"; shift 3
+    local rt; rt=$(runtime_cmd)
+    if [ "${DRY_RUN}" = "true" ]; then
+        log "DRY_RUN: ssh ${host} '${rt} run -d --name ${cname} --net=host --privileged ${GPU_FLAGS} ${cenv} ${IMAGE} $*'"
+        return 0
+    fi
+    ssh_run "${host}" "${rt} rm -f ${cname} >/dev/null 2>&1; ${rt} run -d --name ${cname} \
+        --net=host --privileged ${GPU_FLAGS} \
+        -v /dev/infiniband:/dev/infiniband \
+        ${cenv} ${IMAGE} $*" >/dev/null
+}
+
+remote_wait_collect() { # blocks until container exits (or TEST_TIMEOUT); echoes logs to file; returns exit code
+    local host="$1" cname="$2" out="$3"
+    local rt; rt=$(runtime_cmd)
+    local i rc=124
+    for i in $(seq 1 $((TEST_TIMEOUT / 10))); do
+        local st
+        st=$(ssh_run "${host}" "${rt} inspect -f '{{.State.Status}} {{.State.ExitCode}}' ${cname}" 2>/dev/null)
+        if [ "${st%% *}" = "exited" ]; then rc=${st##* }; break; fi
+        sleep 10
+    done
+    ssh_run "${host}" "${rt} logs ${cname} 2>&1" >"${out}" 2>/dev/null
+    ssh_run "${host}" "${rt} rm -f ${cname} >/dev/null 2>&1" || true
+    return "${rc}"
+}
+
+run_remote_pair() { # run_remote_pair <pair "hA->hB"> <test> <iargs> <targs> <ienv> <tenv>
+    local pair="$1" test="$2" iargs="$3" targs="$4" ienv="$5" tenv="$6"
+    local key="${pair}/${test}"
+    local ha="${pair%%->*}" hb="${pair##*->}"
+    local slug; slug=$(echo "${key}" | tr '/>' '--')
+    local ilog="${WORKDIR}/${slug}-initiator.log" tlog="${WORKDIR}/${slug}-target.log"
+    log "=== ${key}: ${ha} (initiator) -> ${hb} (target), timeout ${TEST_TIMEOUT}s ==="
+    if [ "${DRY_RUN}" = "true" ]; then
+        remote_start "${ha}" "nixl-${test}-i" "${ienv}" nixlbench ${iargs}
+        remote_start "${hb}" "nixl-${test}-t" "${tenv}" nixlbench ${targs}
+        record "${key}" "DRY" "-"
+        return 0
+    fi
+    etcd_clean
+
+    remote_start "${ha}" "nixl-${test}-i" "${ienv}" nixlbench ${iargs} || { record "${key}" "FAIL" "failed to start initiator container on ${ha}"; return 1; }
+    sleep 5
+    remote_start "${hb}" "nixl-${test}-t" "${tenv}" nixlbench ${targs} || { record "${key}" "FAIL" "failed to start target container on ${hb}"; return 1; }
+
+    remote_wait_collect "${ha}" "nixl-${test}-i" "${ilog}"; local irc=$?
+    remote_wait_collect "${hb}" "nixl-${test}-t" "${tlog}" || true
+
+    parse_and_judge "${key}" "${ilog}" "${tlog}" "${irc}"
+    log "${key}: ${RESULT_STATUS[${key}]} - ${RESULT_DETAIL[${key}]}"
+}
+
+# Phase 1 of MODE=all: run single-node tests on remote hosts in parallel by
+# invoking testNixl (this script, shipped in IMAGE) inside a container on
+# each host. Each container starts its own local etcd (127.0.0.1:12381, no
+# clash with the central etcd on 12379 even when the driver is a tested
+# host), so hosts are fully independent. Start all first, then collect.
+remote_single_start() {
+    local host="$1"
+    local cname="nixl-single"
+    log "=== single[${host}]: starting (timeout ${TEST_TIMEOUT}s) ==="
+    if [ "${DRY_RUN}" = "true" ]; then
+        remote_start "${host}" "${cname}" "${TESTNIXL_MOUNT} -e MODE=single -e START_ETCD=true -e ETCD_CLIENT_PORT=12381 -e ETCD_PEER_PORT=12382" testNixl
+        record "single[${host}]" "DRY" "-"
+        return 0
+    fi
+    remote_start "${host}" "${cname}" "${TESTNIXL_MOUNT} -e MODE=single -e START_ETCD=true -e ETCD_CLIENT_PORT=12381 -e ETCD_PEER_PORT=12382 -e NUM_ITER=${NUM_ITER} -e WARMUP_ITER=${WARMUP_ITER}" testNixl \
+        || record "${host}/s1" "FAIL" "failed to start container on ${host}"
+}
+
+remote_single_collect() {
+    local host="$1"
+    local cname="nixl-single"
+    local out="${WORKDIR}/single-${host}.log"
+    # skip hosts whose container failed to start
+    [ -n "${RESULT_STATUS[${host}/s1]:-}" ] && return 0
+    remote_wait_collect "${host}" "${cname}" "${out}"; local rc=$?
+
+    local found=false t
+    for t in s1 s2; do
+        local line
+        line=$(awk -v t="${t}" '$1 == t && ($2 == "PASS" || $2 == "FAIL") {print; exit}' "${out}")
+        if [ -n "${line}" ]; then
+            found=true
+            record "${host}/${t}" "$(echo "${line}" | awk '{print $2}')" "$(echo "${line}" | cut -d' ' -f3- | sed 's/^ *//')"
+        fi
+    done
+    if [ "${found}" = "false" ]; then
+        record "${host}/s1" "FAIL" "no report from container (rc=${rc}); $(tail -1 "${out}" 2>/dev/null | cut -c1-120)"
+    fi
+    log "single[${host}] done"
+}
+
+# --- topology ---
+build_pairs() { # sets PAIRS=() from HOSTS[@]; pairwise: (h1,h2)(h3,h4)...; odd -> +(h1,hN)
+    PAIRS=()
+    case "${TOPOLOGY}" in
+        pairwise)
+            local n=${#HOSTS[@]} i
+            for ((i = 0; i + 1 < n; i += 2)); do
+                PAIRS+=("${HOSTS[i]}->${HOSTS[i+1]}")
+            done
+            if ((n % 2 == 1)); then
+                PAIRS+=("${HOSTS[0]}->${HOSTS[n-1]}")
+            fi
+            ;;
+        *)
+            fatal "unknown TOPOLOGY '${TOPOLOGY}' (valid: pairwise)"
+            ;;
+    esac
+}
+
+# --- test definitions ---
+common_args() {
+    echo "--runtime_type=ETCD --etcd_endpoints=${ETCD_ENDPOINTS} --backend=UCX --num_iter=${NUM_ITER} --warmup_iter=${WARMUP_ITER}"
+}
+
+run_s1() {
+    local a="$(common_args) --initiator_seg_type=VRAM --target_seg_type=VRAM --total_buffer_size=268435456 --start_block_size=4096 --max_block_size=67108864"
+    run_local_pair "s1" "${a}" "${a}" "CUDA_VISIBLE_DEVICES=${GPU_A}" "CUDA_VISIBLE_DEVICES=${GPU_B}"
+}
+
+run_s2() {
+    local a="$(common_args) --initiator_seg_type=VRAM --target_seg_type=VRAM --op_type=READ --check_consistency=1 --total_buffer_size=67108864 --start_block_size=4096 --max_block_size=16777216"
+    run_local_pair "s2" "${a}" "${a}" "CUDA_VISIBLE_DEVICES=${GPU_A}" "CUDA_VISIBLE_DEVICES=${GPU_B}"
+}
+
+run_s3l() {
+    local a="$(common_args) --device_list=${DEVICE_LIST} --initiator_seg_type=DRAM --target_seg_type=DRAM --total_buffer_size=268435456 --start_block_size=4096 --max_block_size=16777216"
+    run_local_pair "s3l" "${a}" "${a}" "" ""
+}
+
+run_s3() {
+    local a="$(common_args) --device_list=${DEVICE_LIST} --initiator_seg_type=DRAM --target_seg_type=DRAM --total_buffer_size=1073741824 --start_block_size=4096 --max_block_size=67108864"
+    run_remote_pair "$1" "s3" "${a}" "${a}" "" ""
+}
+
+run_s4() {
+    local a="$(common_args) --device_list=${DEVICE_LIST} --initiator_seg_type=DRAM --target_seg_type=VRAM --total_buffer_size=67108864 --start_block_size=4096 --max_block_size=1048576"
+    run_remote_pair "$1" "s4" "${a}" "${a}" "" "-e CUDA_VISIBLE_DEVICES=${REMOTE_GPU}"
+}
+
+run_s5() {
+    local a="$(common_args) --device_list=${DEVICE_LIST} --initiator_seg_type=VRAM --target_seg_type=VRAM --check_consistency=1 --total_buffer_size=67108864 --start_block_size=4096 --max_block_size=1048576"
+    run_remote_pair "$1" "s5" "${a}" "${a}" "-e CUDA_VISIBLE_DEVICES=${REMOTE_GPU}" "-e CUDA_VISIBLE_DEVICES=${REMOTE_GPU}"
+}
+
+run_s6() {
+    local a="$(common_args) --device_list=${DEVICE_LIST} --initiator_seg_type=DRAM --target_seg_type=DRAM --total_buffer_size=1073741824 --start_block_size=65536 --max_block_size=67108864 --num_iter=200 --warmup_iter=${WARMUP_ITER}"
+    run_remote_pair "$1" "s6" "${a}" "${a}" "" ""
+}
+
+# --- report ---
+print_report() {
+    local pass=0 fail=0 fails="" k
+    for k in "${RESULT_KEYS[@]}"; do
+        case "${RESULT_STATUS[${k}]}" in
+            PASS|DRY) pass=$((pass + 1)) ;;
+            *) fail=$((fail + 1)); fails="${fails} ${k}" ;;
+        esac
+    done
+    {
+        echo ""
+        echo "==================== testNixl report ===================="
+        echo "mode=${MODE} topology=${TOPOLOGY} etcd=${ETCD_ENDPOINTS} device=${DEVICE_LIST}"
+        [ "${MODE}" = "single" ] && echo "gpus: initiator=${GPU_A:-} target=${GPU_B:-}"
+        if [ "${MODE}" != "single" ]; then
+            echo "hosts(${#HOSTS[@]}): ${HOSTS[*]}"
+            echo "pairs(${#PAIRS[@]}): ${PAIRS[*]}"
+            echo "image: ${IMAGE}"
+        fi
+        echo "logs: ${WORKDIR}"
+        echo "----------------------------------------------------------"
+        printf "%-24s %-6s %s\n" "TEST" "STATUS" "DETAIL"
+        for k in "${RESULT_KEYS[@]}"; do
+            printf "%-24s %-6s %s\n" "${k}" "${RESULT_STATUS[${k}]}" "${RESULT_DETAIL[${k}]}"
+        done
+        echo "----------------------------------------------------------"
+        echo "summary: ${pass}/$((pass + fail)) PASS$([ ${fail} -gt 0 ] && echo ", FAIL:${fails}")"
+        echo "=========================================================="
+    } | tee "${REPORT_FILE}"
+    [ ${fail} -eq 0 ]
+}
+
+run_single_local() {
+    RUN_LIST=${TESTS:-"s1 s2"}
+    if [ "${RUN_S3_LOOPBACK}" = "true" ] && [ -z "${TESTS}" ]; then
+        RUN_LIST="${RUN_LIST} s3l"
+    fi
+    echo "${RUN_LIST}" | grep -qE "s1|s2" && pick_gpus
+    local t
+    for t in ${RUN_LIST}; do
+        case "${t}" in
+            s1) run_s1 ;;
+            s2) run_s2 ;;
+            s3l) run_s3l ;;
+            *) fatal "unknown single-mode test '${t}' (valid: s1 s2 s3l)" ;;
+        esac
+    done
+}
+
+load_hosts_and_precheck() {
+    [ -n "${HOSTS_FILE}" ] && [ -f "${HOSTS_FILE}" ] || fatal "MODE=${MODE} requires HOSTS_FILE"
+    mapfile -t HOSTS < <(grep -vE '^\s*(#|$)' "${HOSTS_FILE}")
+    [ "${#HOSTS[@]}" -ge 2 ] || fatal "HOSTS_FILE must contain at least 2 hosts for cross-node tests"
+    build_pairs
+    log "hosts(${#HOSTS[@]}): ${HOSTS[*]}"
+    log "pairs(${#PAIRS[@]}): ${PAIRS[*]}"
+    [ "${DRY_RUN}" = "true" ] && return 0
+    local ok=true h
+    for h in "${HOSTS[@]}"; do
+        if ! ssh_run "${h}" "echo ok" >/dev/null 2>&1; then
+            log "SSH precheck failed for ${h}"
+            ok=false
+        fi
+    done
+    [ "${ok}" = "true" ] || fatal "SSH precheck failed (SSH_USER=${SSH_USER} SSH_PORT=${SSH_PORT})"
+}
+
+run_multi_pairs() {
+    RUN_LIST=${TESTS:-"s3 s4 s5 s6"}
+    local pair t
+    for pair in "${PAIRS[@]}"; do
+        for t in ${RUN_LIST}; do
+            case "${t}" in
+                s3) run_s3 "${pair}" ;;
+                s4) run_s4 "${pair}" ;;
+                s5) run_s5 "${pair}" ;;
+                s6) run_s6 "${pair}" ;;
+                *) fatal "unknown multi-mode test '${t}' (valid: s3 s4 s5 s6)" ;;
+            esac
+        done
+    done
+}
+
+# --- main ---
+case "${1:-}" in
+    --help|-h) print_help; exit 0 ;;
+esac
+
+mkdir -p "${WORKDIR}"
+log "workdir: ${WORKDIR}"
+
+case "${MODE}" in
+    single)
+        ensure_etcd
+        run_single_local
+        ;;
+    multi)
+        load_hosts_and_precheck
+        [ "${DRY_RUN}" = "true" ] || ensure_etcd
+        run_multi_pairs
+        ;;
+    all)
+        load_hosts_and_precheck
+        [ "${DRY_RUN}" = "true" ] || ensure_etcd
+        log "--- phase 1: single-node tests on each host (parallel, local etcd per host) ---"
+        for h in "${HOSTS[@]}"; do
+            remote_single_start "${h}"
+        done
+        if [ "${DRY_RUN}" != "true" ]; then
+            for h in "${HOSTS[@]}"; do
+                remote_single_collect "${h}"
+            done
+        fi
+        log "--- phase 2: cross-node pairwise tests (serial) ---"
+        run_multi_pairs
+        ;;
+    *)
+        fatal "unknown MODE '${MODE}' (valid: single, multi, all)"
+        ;;
+esac
+
+print_report
+exit $?

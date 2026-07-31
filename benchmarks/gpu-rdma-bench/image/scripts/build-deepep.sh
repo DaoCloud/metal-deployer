@@ -106,6 +106,11 @@ rm -rf /tmp/deepep
 cd /opt/DeepEP
 sed -i 's/#define NUM_CPU_TIMEOUT_SECS 100/#define NUM_CPU_TIMEOUT_SECS 1000/' csrc/kernels/configs.cuh
 export TORCH_CUDA_ARCH_LIST="${ENV_TORCH_CUDA_ARCH_LIST}"
+# Non-Hopper targets (e.g. 8.0 for A100/A800) require disabling SM90-only
+# features (FP8, TMA, launch methods); DeepEP setup.py handles the rest.
+if [ "${TORCH_CUDA_ARCH_LIST}" != "9.0" ] ; then
+  export DISABLE_SM90_FEATURES=1
+fi
 export NVSHMEM_DIR=/opt/nvshmem
 export CFLAGS="${CFLAGS:-} -fcommon"
 export CXXFLAGS="${CXXFLAGS:-} -fcommon"

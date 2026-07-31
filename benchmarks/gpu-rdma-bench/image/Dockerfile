@@ -290,6 +290,12 @@ RUN CUDA_SHORT="$(echo "${ENV_BASEIMAGE_CUDA_VERISON}" | cut -d. -f1,2)" \
     && pip3 install --no-cache-dir torch --index-url "https://download.pytorch.org/whl/cu${CU_VER}" \
     && python3 -c "import sys, torch; expected='${CUDA_SHORT}'; actual=torch.version.cuda; sys.exit(f'PyTorch CUDA version mismatch: expected {expected}, got {actual}') if actual != expected else None"
 
+# Register DeepEP/DeepGEMM on the default Python path via .pth so imports work
+# in every context, including non-login SSH sessions that drop PYTHONPATH
+RUN SITE_DIR="$(python3 -c 'import site; print(site.getsitepackages()[0])')" \
+    && printf '%s\n' /opt/DeepEP /opt/DeepGEMM > "${SITE_DIR}/deepep.pth" \
+    && python3 -c "import deep_ep" 2>/dev/null || true
+
 # Move tools to system path and make executable
 RUN chmod +x /tools/* && mv /tools/* /usr/sbin && rm -rf /tools
 

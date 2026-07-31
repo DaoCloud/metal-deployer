@@ -30,6 +30,15 @@ make build-gpu-rdma-bench
 
 ## DeepEP 测试
 
+架构与规模要求（不满足时测试无法运行，属预期而非环境故障）：
+
+| 约束 | 说明 |
+| --- | --- |
+| GPU 架构 | 默认镜像按 `TORCH_CUDA_ARCH_LIST=9.0`（Hopper/SM90，H100/H800）编译。A100/A800（SM80）需重建镜像：`--build-arg ENV_TORCH_CUDA_ARCH_LIST="8.0"`（构建脚本会自动启用 `DISABLE_SM90_FEATURES=1`，SM80 与 SM90 不能混编到同一镜像） |
+| 单节点（intranode/low_latency） | 每节点至少 2 张 GPU |
+| 多节点 internode 常规模式 | 总 ranks（节点数 × 每节点 GPU 数）必须大于 8，例如 2 节点 × 8 卡 |
+| 多节点 low_latency | 需要 GPUDirect RDMA（`nvidia_peermem` 内核模块已加载） |
+
 单节点：
 
 ```bash
@@ -114,6 +123,57 @@ docker run --rm --privileged \
 
 ## NIXLBench 测试
 
+### 自动化：testNixl（推荐）
+
+`testNixl` 是镜像内置的验收 smoke 测试驱动，自动编排 S1-S6 测试项并输出 PASS/FAIL 报告（测试项定义与判定标准见 [nixlbench-acceptance-smoke-suite.md](./nixlbench-acceptance-smoke-suite.md)）：
+
+- S1/S2：单机 VRAM↔VRAM WRITE/READ（NVLink/cuda_ipc）+ 一致性校验
+- S3-S6：跨节点 DRAM/VRAM RDMA 带宽、延迟、GPUDirect、一致性、大块压测
+
+单机模式（在被测节点直接运行，需 ≥2 张空闲 GPU）：
+
+```bash
+docker run --rm --gpus all --network host --privileged \
+  -e MODE=single -e START_ETCD=true \
+  ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:latest \
+  testNixl
+```
+
+多机模式（driver 节点运行，通过 SSH 在各 host 上起容器；hosts 文件一行一个地址）：
+
+```bash
+docker run --rm --network host --privileged \
+  -v /path/to/hosts:/hosts -v /root/.ssh:/root/.ssh:ro \
+  -e MODE=multi -e HOSTS_FILE=/hosts \
+  -e START_ETCD=true \
+  ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:latest \
+  testNixl
+```
+
+`MODE=all` 先并行跑每台 host 的单机测试（各容器自起本地 etcd，互不干扰），再串行跑跨节点 pairwise 测试。
+
+常用变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `MODE` | `single` | `single` / `multi` / `all` |
+| `HOSTS_FILE` | - | 节点列表（multi/all 必须，≥2 台） |
+| `TOPOLOGY` | `pairwise` | 两两分组；奇数台时 h1 补测最后一台 |
+| `TESTS` | 按模式 | 覆盖测试项，如 `"s1 s2"` / `"s3 s6"` |
+| `START_ETCD` | `false` | driver 容器内启动 etcd（需 hostNetwork）；multi/all 通告地址自动探测 |
+| `ETCD_ADVERTISE_IP` | 自动探测（`ip route get` 第一台 host 的 src） | 多网卡等场景可显式指定 |
+| `ETCD_ENDPOINTS` | - | 使用外部 etcd |
+| `IMAGE` | 本镜像 | 远端 host 上启动的镜像（须已导入，不自动拉取） |
+| `CONTAINER_RUNTIME` | `docker` | `docker` / `nerdctl` |
+| `GPU_FLAGS` | `--gpus all` | GPU-operator 节点用 `--runtime /usr/local/nvidia/toolkit/nvidia-container-runtime -e NVIDIA_VISIBLE_DEVICES=all` |
+| `DEVICE_LIST` | `all` | RDMA 网卡；`all`=全部设备（UCX 多轨聚合），可指定如 `mlx5_0` 隔离单网卡 |
+| `DRY_RUN` | `false` | 只打印将执行的命令 |
+| `TESTNIXL_MOUNT` | - | 迭代调试：挂载宿主机脚本覆盖镜像内版本，如 `-v /tmp/testNixl:/usr/sbin/testNixl:ro` |
+
+完整变量与测试逻辑见脚本头部注释（`image/tools/testNixl`）。
+
+### 手动：run-nixlbench
+
 单机快速测试。容器内启动本地 ETCD，并运行 UCX VRAM 默认测试：
 
 ```bash
@@ -194,6 +254,15 @@ docker run --rm -it --gpus all --network host --privileged \
   ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:latest \
   bash -lc 'nvidia-smi && ibv_devices && ucx_info -d'
 ```
+
+DeepEP 常见问题：
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| `CUDA error 'named symbol not found'` | GPU 架构与镜像编译目标不符（如 SM80 GPU 跑 SM90 镜像），按上文重建镜像 |
+| `Assertion 'num_ranks > NUM_MAX_NVL_PEERS'` | internode 常规模式要求总 ranks > 8，加大节点/GPU 数或只测 low_latency |
+| NCCL 初始化 SIGSEGV（个别节点） | 可设 `NCCL_IB_DISABLE=1` 绕过（DeepEP 中 NCCL 仅做控制面，数据面走 NVSHMEM，不影响结果） |
+| SSH 远端 `No module named deep_ep` | 旧镜像缺 site-packages `.pth` 注册，重建镜像即可 |
 
 清理 NIXLBench ETCD：
 
