@@ -27,6 +27,11 @@ def checks():
     ssh = shutil.which("ssh")
     rows.append(("ssh", True, bool(ssh), _version(["ssh", "-V"]) if ssh else "missing",
                  "" if ssh else "install openssh-client"))
+    try:
+        import openpyxl
+        rows.append(("openpyxl", False, True, openpyxl.__version__, ""))
+    except ImportError:
+        rows.append(("openpyxl", False, False, "missing", "mtest import reads CSV only (pip install openpyxl)"))
     keygen = shutil.which("ssh-keygen")
     rows.append(("ssh-keygen", False, bool(keygen), keygen or "missing",
                  "" if keygen else "mpi-mode items (imex, sharp) cannot run"))

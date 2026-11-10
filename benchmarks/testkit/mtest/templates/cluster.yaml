@@ -19,11 +19,15 @@ network:
     compare_golden: true          # compare the GPU <-> rail mapping with the golden host
   ib_mode: {enforce: true, reboot: ask}      # reboot: ask / auto / never
   lom:
-    pin_routes: [10.252.10.0/24]  # control-node subnets that must stay on the LOM port
-  mgmt: {port: 0, gateway: 10.20.0.1, mtu: 1500, dns: [10.20.0.53], default_route: true}
-  storage: {port: 1, mtu: 9000, routes: [10.30.0.0/16]}
-  ipoib: {mtu: 4092, pkey: "0x7fff"}   # only the default partition 0x7fff is supported
-  match_by: mac                   # how netplan finds the BF3 ports: mac (permanent MAC) or name (S3 netdev name)
+    pin_routes: [10.252.10.0/24]  # control-node subnets kept on the LOM; empty: a /32 route to the control node
+  # BF3 port 0 (mgmt) and port 1 (storage). mtu is optional: when omitted the port MTU is not changed.
+  # gateway / routes here are defaults; mgmt_gateway, storage_gateway, storage_routes on a host win.
+  mgmt: {port: 0, gateway: 10.20.0.1, dns: [10.20.0.53], default_route: true}
+  storage: {port: 1, routes: [10.30.0.0/16]}
+  ipoib: {mtu: 4092, pkey: "0x7fff"}   # IPoIB MTU (a host's ib_mtu wins); only partition 0x7fff
+  require_pci: true               # find each port by the PCI address in hosts (mgmt_pci, storage_pci, ib_pci);
+                                  # false: BF3 .0 = mgmt, .1 = storage, rails in GPU order
+  match_by: mac                   # how netplan finds the BF3 ports: mac (permanent MAC) or name (netdev name)
   rollback_seconds: 120           # restore the old netplan if the host is unreachable after apply
   verify: {ping_gateway: true, ping_peer_in_rack: true}
 
@@ -36,7 +40,12 @@ defaults:                         # inherited by every host, can be overridden p
 #   ssh      LOM address used by mtest
 #   mgmt     BF3 port 0 (business/management network, CIDR); also used as MASTER_ADDR
 #   storage  BF3 port 1 (storage network, CIDR)
-#   ib       IPoIB address per rail 0..3 (CIDR); the same rail must be in the same subnet
+#   ib       IPoIB address per rail 0..3 (CIDR), optional; the same rail must be in the same subnet
+#   Optional, usually filled by "mtest import <ip-plan.xlsx|csv>":
+#   mgmt_pci, storage_pci       PCI address of BF3 port 0 / port 1, quoted: "0009:01:00.0"
+#   ib_pci, ib_guid             per rail 0..3; ib_pci is needed when ib or ib_mtu is set
+#   ib_mtu                      IPoIB MTU of this host
+#   mgmt_gateway, storage_gateway, storage_routes, lom_gateway, mgmt_mac, storage_mac
 #   tags     golden = reference host; other tags are free-form groups, selected with tag:<name>
 #   env      extra environment variables for tests on this host only
 #   skip     test items (or prefixes such as moe) this host does not run

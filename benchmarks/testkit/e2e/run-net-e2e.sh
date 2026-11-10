@@ -48,27 +48,30 @@ on() { docker exec "$1" sh -c "$2"; }
 json() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 state() { json "$ROOT/runs/state.json" "d['hosts']['$1']['$2']['status']"; }
 
-cluster() {   # cluster FILE GATEWAY
-    {
-        echo "ssh: {user: root, key: $ROOT/id_ed25519, connect_timeout: 5, parallel: 8}"
-        echo "network:"
-        echo "  expect: {cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}"
-        echo "  ib_mode: {enforce: true, reboot: never}"
-        echo "  lom: {pin_routes: [10.99.0.0/16]}"
-        echo "  mgmt: {port: 0, gateway: $2, mtu: 1400, default_route: true}"
-        echo "  storage: {port: 1, mtu: 1450, routes: [10.98.0.0/16]}"
-        echo "  ipoib: {mtu: 1300}"
-        echo "  match_by: name"
-        echo "  rollback_seconds: 60"
-        echo "  verify: {ping_gateway: true, ping_peer_in_rack: true}"
-        echo "hosts:"
-        for i in 0 1 2; do
-            local n=$((11 + i))
-            echo "  - {name: ${HOSTS[$i]}, rack: ${RACKS[$i]}, tray: ${TRAYS[$i]}, ssh: $P.10.$n, mgmt: $P.20.$n/24,"
-            echo "     storage: $P.30.$n/24, ib: [$P.40.$n/24, $P.41.$n/24, $P.42.$n/24, $P.43.$n/24]$( \
-                [ $i = 0 ] && echo ", tags: [golden]")}"
-        done
-    } > "$ROOT/$1"
+cluster() {   # cluster FILE [BAD_GW_HOST] [BAD_PCI_HOST]: base file + "mtest import" of a CSV IP plan
+    cat > "$ROOT/$1" <<EOF
+ssh: {user: root, key: $ROOT/id_ed25519, connect_timeout: 5, parallel: 8}
+network:
+  expect: {cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}
+  ib_mode: {enforce: true, reboot: never}
+  lom: {pin_routes: [10.99.0.0/16]}
+  mgmt: {port: 0, default_route: true}
+  storage: {port: 1}
+  ipoib: {pkey: "0x7fff"}
+  require_pci: true
+  match_by: name
+  rollback_seconds: 60
+  verify: {ping_gateway: true, ping_peer_in_rack: true}
+EOF
+    local plan="$ROOT/${1%.yaml}.csv"
+    echo "rack,tray,hostname,lom_ip,bf3_mgt_ip,bf3_mgt_gateway,bf3_mgt_pci,bf3_storage_ip,bf3_storage_gateway,bf3_storage_routes,bf3_storage_pci,ib_rail1_pci,ib_rail2_pci,ib_rail3_pci,ib_rail4_pci,ib_rail1_ip,ib_rail2_ip,ib_rail3_ip,ib_rail4_ip,ib_mtu" > "$plan"
+    for i in 0 1 2; do
+        local n=$((11 + i)) h=${HOSTS[$i]} gw=$P.20.1 mpci=0009:01:00.0
+        [ "$h" = "${2:-}" ] && gw=$P.20.254
+        [ "$h" = "${3:-}" ] && mpci=0009:01:00.7
+        echo "${RACKS[$i]#R},${TRAYS[$i]},$h,$P.10.$n,$P.20.$n/24,$gw,$mpci,$P.30.$n/24,$P.30.1,10.98.0.0/16,0009:01:00.1,0000:03:00.0,0001:03:00.0,0002:03:00.0,0003:03:00.0,$P.40.$n/24,$P.41.$n/24,$P.42.$n/24,$P.43.$n/24,1300" >> "$plan"
+    done
+    mtest "$1" import "$plan" >/dev/null
 }
 
 setup() {
@@ -105,12 +108,19 @@ setup() {
     done
     for h in "${HOSTS[@]}"; do on "$h" "sed -i 's/172\.28\./$P./g' /root/fake_sysfs.py && python3 /root/fake_sysfs.py /fake-sys" >/dev/null; done
     printf 'images: {sb_worker: "x"}\nruntime: {results_dir: ./runs}\n' > "$ROOT/tests.yaml"
-    cluster cluster.yaml "$P.20.1"
-    cluster bad-gw.yaml "$P.20.254"
+    cluster cluster.yaml
+    cluster bad-gw.yaml gb300-r2-t01
+    cluster bad-pci.yaml "" gb300-r1-t02
 }
 
 trap cleanup EXIT
 setup
+
+log "0. mtest import"
+check "import kept the network section" grep -q "match_by: name" "$ROOT/cluster.yaml"
+check "plan PCI imported" [ "$(grep -c 'mgmt_pci:' "$ROOT/cluster.yaml")" = 3 ]
+out=$(mtest cluster.yaml validate 2>&1) || true
+check "validate passes" grep -q "result: 0 error(s)" <<<"$out"
 
 log "1. nic discover"
 out=$(mtest cluster.yaml nic discover 2>&1) && rc=0 || rc=$?
@@ -119,6 +129,7 @@ check "mgmt port found" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "d['mgmt_if
 check "4 rails in PCI order" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "','.join(d['ib_devs'])")" = mlx5_0,mlx5_1,mlx5_2,mlx5_3 ]
 check "LOM gateway found (DHCP)" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
 check "golden match" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['golden_match']['result']")" = pass ]
+check "plan PCI found on host" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['plan_pci']['result']")" = pass ]
 out=$(mtest cluster.yaml nic show)
 check "nic show prints rails" grep -q "mlx5_3" <<<"$out"
 
@@ -136,7 +147,8 @@ check "every host passed" [ "$(state gb300-r1-t01 network)$(state gb300-r1-t02 n
 check "default route via mgmt only" [ "$(on gb300-r1-t02 "ip route show default")" = "default via $P.20.1 dev eth1 proto static " ]
 check "LOM pin route merged into the LOM entry" on gb300-r1-t02 "ip route show 10.99.0.0/16 | grep -q 'via $P.10.1 dev eth0'"
 check "LOM keeps its DHCP address" on gb300-r1-t02 "ip -4 addr show eth0 | grep -q 'inet $P.10.12/24.*dynamic'"
-check "MTU on storage and rail" [ "$(on gb300-r2-t01 "cat /sys/class/net/eth2/mtu /sys/class/net/eth6/mtu" | tr '\n' ' ')" = "1450 1300 " ]
+check "BF3 MTU unchanged, IB MTU from plan" [ "$(on gb300-r2-t01 "cat /sys/class/net/eth1/mtu /sys/class/net/eth2/mtu /sys/class/net/eth6/mtu" | tr '\n' ' ')" = "1500 1500 1300 " ]
+check "storage route from plan" on gb300-r2-t01 "ip route show 10.98.0.0/16 | grep -q 'via $P.30.1 dev eth2'"
 check "rollback timer stopped" on gb300-r1-t01 "! systemctl is-active --quiet mtest-net-rollback.timer"
 check "peer pings recorded" grep -q '"ping:ib3-peer"' "$ROOT/runs/$(ls "$ROOT/runs" | grep -E '^[0-9]{8}-' | sort | tail -1)/gb300-r1-t01/network/summary.json"
 
@@ -164,14 +176,19 @@ log "6. net verify"
 out=$(mtest cluster.yaml net verify 2>&1) && rc=0 || rc=$?
 check "verify exits 0 after rollback" [ "$rc" = 0 ]
 
-log "7. conflicting netplan entry is refused"
+log "7. PCI in the plan not found on the host"
+out=$(mtest bad-pci.yaml net apply --hosts gb300-r1-t02 2>&1) && rc=0 || rc=$?
+check "apply refused" [ "$rc" = 1 ]
+check "reason names the PCI" grep -q "mgmt_pci 0009:01:00.7 is not a BF3 port" <<<"$out"
+
+log "8. conflicting netplan entry is refused"
 on gb300-r1-t02 "printf 'network:\n  version: 2\n  ethernets:\n    other:\n      match: {name: eth1}\n      dhcp4: true\n' > /etc/netplan/55-other.yaml && chmod 600 /etc/netplan/55-other.yaml"
 out=$(mtest cluster.yaml net apply --hosts gb300-r1-t02 2>&1) && rc=0 || rc=$?
 check "apply refused" [ "$rc" = 1 ]
 check "reason names the file" grep -q "55-other.yaml: ethernets.other" <<<"$out"
 on gb300-r1-t02 "rm -f /etc/netplan/55-other.yaml"
 
-log "8. report"
+log "9. report"
 mtest cluster.yaml report >/dev/null
 check "report has S3 and S4" python3 -c "
 import json,re,sys; s=open('$ROOT/runs/report/report.html').read()

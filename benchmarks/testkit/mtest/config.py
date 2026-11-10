@@ -24,6 +24,11 @@ RUNTIME_DEFAULTS = {
 }
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+PCI_RE = re.compile(r"^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$")
+MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+# Per-host values from the IP plan; each overrides the matching network-wide setting.
+PLAN_FIELDS = ("mgmt_gateway", "storage_gateway", "storage_routes", "lom_gateway", "mgmt_pci", "storage_pci",
+               "mgmt_mac", "storage_mac", "ib_pci", "ib_guid", "ib_mtu")
 CLUSTER_FREE = {"network.expect", "network.verify", "defaults.env"}
 TESTS_FREE = {"images", "common_env", "sharp.common.env", "sharp.scale_up.cases", "sharp.scale_out.cases",
               "sharp.scale_out.sharp_env", "moe.common.env", "moe.common.per_rank"}
@@ -45,6 +50,7 @@ class Host:
         self.env = env or {}
         self.skip = skip or []
         self.gpus = gpus
+        self.plan = {}              # PLAN_FIELDS present for this host
 
     @property
     def mgmt_ip(self):
@@ -142,11 +148,86 @@ def _parse_host(raw, defaults, index, problems, ib_count):
     if not isinstance(gpus, int) or gpus < 1:
         problems.error("{}: gpus must be a positive integer".format(where))
         ok = False
-    if not ok:
+    plan = _parse_plan(merged, where, problems, ib_count)
+    if not ok or plan is None:
         return None
-    return Host(name=name, rack=str(rack), tray=tray, ssh=str(ssh), mgmt=mgmt, storage=storage, ib=ib,
+    host = Host(name=name, rack=str(rack), tray=tray, ssh=str(ssh), mgmt=mgmt, storage=storage, ib=ib,
                 serial=env_str(merged.get("serial")), tags=[str(t) for t in tags],
                 env={str(k): env_str(v) for k, v in env.items()}, skip=[str(s) for s in skip], gpus=gpus)
+    host.plan = plan
+    return host
+
+
+def norm_pci(value):
+    """'8:01:00.0' or '00000008:01:00.0' -> '0008:01:00.0'."""
+    dom, _, rest = str(value).strip().lower().partition(":")
+    try:
+        return "{:04x}:{}".format(int(dom, 16), rest) if rest.count(":") == 1 else str(value).strip().lower()
+    except ValueError:
+        return str(value).strip().lower()
+
+
+def _parse_plan(merged, where, problems, ib_count):
+    plan = {}
+    ok = True
+    for key in ("mgmt_pci", "storage_pci", "ib_pci", "ib_guid", "mgmt_mac", "storage_mac"):
+        vals = merged.get(key)
+        vals = vals if isinstance(vals, list) else [vals]
+        if any(isinstance(v, (int, float)) and not isinstance(v, bool) for v in vals):
+            problems.error('{}: {} must be quoted in YAML, e.g. "0009:01:00.0"'.format(where, key))
+            return None
+    for key in ("mgmt_gateway", "storage_gateway", "lom_gateway"):
+        if merged.get(key) not in (None, ""):
+            try:
+                plan[key] = str(ipaddress.ip_address(str(merged[key])))
+            except ValueError:
+                problems.error("{}: {} '{}' is not a valid address".format(where, key, merged[key]))
+                ok = False
+    routes = merged.get("storage_routes")
+    if routes not in (None, "", []):
+        routes = routes if isinstance(routes, list) else re.split(r"[,;\s]+", str(routes).strip())
+        plan["storage_routes"] = []
+        for r in routes:
+            try:
+                plan["storage_routes"].append(str(ipaddress.ip_network(str(r))))
+            except ValueError:
+                problems.error("{}: storage_routes '{}' is not a valid subnet".format(where, r))
+                ok = False
+    for key in ("mgmt_pci", "storage_pci"):
+        if merged.get(key) not in (None, ""):
+            plan[key] = norm_pci(merged[key])
+            if not PCI_RE.match(plan[key]):
+                problems.error("{}: {} '{}' is not a PCI address like 0009:01:00.0".format(where, key, merged[key]))
+                ok = False
+    for key in ("mgmt_mac", "storage_mac"):
+        if merged.get(key) not in (None, ""):
+            plan[key] = str(merged[key]).strip().lower().replace("-", ":")
+            if not MAC_RE.match(plan[key]):
+                problems.error("{}: {} '{}' is not a MAC address".format(where, key, merged[key]))
+                ok = False
+    for key in ("ib_pci", "ib_guid"):
+        vals = merged.get(key)
+        if vals in (None, "", []):
+            continue
+        if not isinstance(vals, list) or len(vals) != ib_count:
+            problems.error("{}: {} must be a list of {} values, one per rail".format(where, key, ib_count))
+            ok = False
+            continue
+        if key == "ib_pci":
+            vals = [norm_pci(v) if v not in (None, "") else "" for v in vals]
+            bad = [v for v in vals if v and not PCI_RE.match(v)]
+            if bad:
+                problems.error("{}: ib_pci {} is not a PCI address".format(where, bad))
+                ok = False
+        plan[key] = [env_str(v).lower() for v in vals]
+    if merged.get("ib_mtu") not in (None, ""):
+        mtu = merged["ib_mtu"]
+        if not isinstance(mtu, int) or isinstance(mtu, bool) or not 576 <= mtu <= 65520:
+            problems.error("{}: ib_mtu must be an integer between 576 and 65520".format(where))
+            ok = False
+        else:
+            plan["ib_mtu"] = mtu
+    return plan if ok else None
 
 
 def load_cluster(path, problems):
@@ -192,6 +273,16 @@ def check_cluster(cluster, problems):
             problems.error("{} and {}: both are {} tray {}".format(slots[key], h.name, h.rack, h.tray))
         slots[key] = h.name
 
+    for h in cluster.hosts:
+        own = [("mgmt_pci", h.plan.get("mgmt_pci")), ("storage_pci", h.plan.get("storage_pci"))] + \
+            [("ib_pci[{}]".format(i), v) for i, v in enumerate(h.plan.get("ib_pci") or [])]
+        seen_here = {}
+        for field, v in own:
+            if v and v in seen_here:
+                problems.error("{}: {} and {} are the same PCI address {}".format(h.name, seen_here[v], field, v))
+            elif v:
+                seen_here[v] = field
+
     owners = {}
     for h in cluster.hosts:
         addrs = [("ssh", h.ssh)]
@@ -222,17 +313,19 @@ def check_cluster(cluster, problems):
         if len(idx) > 1:
             problems.warn("rails {} share subnet {}; each rail usually has its own".format(idx, net))
 
-    gateway = dig(cluster.network, "mgmt.gateway")
-    if gateway:
-        try:
-            gw = ipaddress.ip_address(str(gateway))
-        except ValueError:
-            problems.error("network.mgmt.gateway '{}' is not a valid address".format(gateway))
-            gw = None
-        if gw is not None:
-            for h in cluster.hosts:
-                if h.mgmt is not None and gw not in h.mgmt.network:
-                    problems.error("{}: mgmt {} is not in the same subnet as gateway {}".format(h.name, h.mgmt, gw))
+    for role in ("mgmt", "storage"):
+        default = dig(cluster.network, role + ".gateway")
+        if default:
+            try:
+                ipaddress.ip_address(str(default))
+            except ValueError:
+                problems.error("network.{}.gateway '{}' is not a valid address".format(role, default))
+                default = None
+        for h in cluster.hosts:
+            addr = getattr(h, role)
+            gw = h.plan.get(role + "_gateway") or default
+            if addr is not None and gw and ipaddress.ip_address(str(gw)) not in addr.network:
+                problems.error("{}: {} {} is not in the same subnet as gateway {}".format(h.name, role, addr, gw))
 
     net = cluster.network or {}
     if net.get("match_by", "mac") not in ("mac", "name"):
@@ -241,6 +334,15 @@ def check_cluster(cluster, problems):
         problems.error("network.ipoib.pkey: only the default partition 0x7fff is supported")
     if dig(net, "ib_mode.reboot", "ask") not in ("ask", "auto", "never"):
         problems.error("network.ib_mode.reboot must be ask, auto or never")
+    if not isinstance(net.get("require_pci", True), bool):
+        problems.error("network.require_pci must be true or false")
+    elif net.get("require_pci", True):
+        need = [h.name for h in cluster.hosts if (h.mgmt is not None and not h.plan.get("mgmt_pci"))
+                or (h.storage is not None and not h.plan.get("storage_pci"))
+                or ((h.ib or h.plan.get("ib_mtu") or dig(net, "ipoib.mtu")) and not all(h.plan.get("ib_pci") or [""]))]
+        if need:
+            problems.warn("{} host(s) lack mgmt_pci / storage_pci / ib_pci (e.g. {}); 'mtest net apply' refuses them "
+                          "while network.require_pci is true".format(len(need), need[0]))
     rb = net.get("rollback_seconds", 120)
     if not isinstance(rb, int) or isinstance(rb, bool) or rb < 30:
         problems.error("network.rollback_seconds must be an integer >= 30")

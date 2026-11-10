@@ -8,6 +8,7 @@ done, the full checks (addresses, MTU, IB ports, pings to a peer in the same rac
 
 import difflib
 import fnmatch
+import ipaddress
 import os
 import sys
 import time
@@ -79,60 +80,160 @@ def _routes(nets, via):
     return [{"to": n, "via": via} if via else {"to": n, "scope": "link"} for n in nets]
 
 
+def _guid(value):
+    return str(value or "").lower().replace("0x", "").replace(":", "")
+
+
+def _devices(nic):
+    """PCI address -> discovered port (BF3 ports and CX8 rails) from the S3 record."""
+    raw = nic.get("raw") or {}
+    out = {}
+    for p in (raw.get("bf3") or {}).get("pfs") or []:
+        out[p["pci"]] = dict(p, kind="bf3")
+    for r in raw.get("rails") or nic.get("rails") or []:
+        out[r["pci"]] = dict(r, kind="cx8")
+    return out
+
+
+def resolve_ports(host, nic, network):
+    """Which local interface each planned address goes to, found by the PCI address in the plan.
+
+    Returns {"mgmt", "storage": {netdev, mac, pci} or None, "rails": [{rail, netdev, ibdev, pci, addr, mtu}],
+    "mgmt_gateway", "storage_gateway", "storage_routes", "lom_gateway"}; raises NetError when the plan
+    and the host do not agree.
+    """
+    plan = host.plan
+    require = network.get("require_pci", True)
+    devs = _devices(nic)
+    found_bf3 = ", ".join(sorted(k for k, v in devs.items() if v["kind"] == "bf3")) or "none"
+    found_cx8 = ", ".join(sorted(k for k, v in devs.items() if v["kind"] == "cx8")) or "none"
+
+    def bf3_port(role, fallback_if, fallback_mac):
+        pci = plan.get(role + "_pci")
+        if pci:
+            d = devs.get(pci)
+            if d is None or d["kind"] != "bf3":
+                raise NetError("{}_pci {} is not a BF3 port on this host (BF3 ports: {})".format(role, pci, found_bf3))
+            port = {"netdev": d.get("netdev", ""), "mac": (d.get("mac") or "").lower(), "pci": pci}
+        elif require:
+            raise NetError("{}_pci is empty in the IP plan (network.require_pci is true)".format(role))
+        else:
+            port = {"netdev": nic.get(fallback_if, ""), "mac": (nic.get(fallback_mac) or "").lower(), "pci": ""}
+        if not port["netdev"] or not port["mac"]:
+            raise NetError("{} port {} has no network interface".format(role, port["pci"] or "(S3 order)"))
+        want = plan.get(role + "_mac")
+        if want and want != port["mac"]:
+            raise NetError("{} port {}: MAC {} differs from the IP plan {}".format(role, port["pci"] or port["netdev"],
+                                                                                 port["mac"], want))
+        return port
+
+    out = {"mgmt": bf3_port("mgmt", "mgmt_if", "mgmt_mac") if host.mgmt is not None else None,
+           "storage": bf3_port("storage", "storage_if", "storage_mac") if host.storage is not None else None,
+           "rails": []}
+    ib_mtu = plan.get("ib_mtu") or dig(network, "ipoib.mtu")
+    pcis = plan.get("ib_pci") or []
+    guids = plan.get("ib_guid") or []
+    rails = nic.get("rails") or []
+    for i in range(max(len(host.ib), len(pcis), len(rails))):
+        addr = host.ib[i] if i < len(host.ib) else None
+        pci = pcis[i] if i < len(pcis) else ""
+        if addr is None and not ib_mtu:
+            continue
+        if pci:
+            d = devs.get(pci)
+            if d is None or d["kind"] != "cx8":
+                raise NetError("ib_pci[{}] {} is not a compute NIC on this host (found: {})".format(i, pci, found_cx8))
+        elif require:
+            raise NetError("ib_pci[{}] is empty in the IP plan (needed to set the IB {})".format(
+                i, "address" if addr is not None else "MTU"))
+        elif i < len(rails):
+            d = rails[i]
+        else:
+            continue
+        if i < len(guids) and guids[i] and _guid(d.get("guid")) and _guid(guids[i]) != _guid(d.get("guid")):
+            raise NetError("ib_pci[{}] {}: GUID {} differs from the IP plan {}".format(i, pci, d.get("guid"), guids[i]))
+        if not d.get("netdev"):
+            raise NetError("rail {} ({}) has no IPoIB interface".format(i, d.get("pci")))
+        out["rails"].append({"rail": i, "netdev": d["netdev"], "ibdev": d.get("ibdev", ""), "pci": d.get("pci", ""),
+                             "addr": addr, "mtu": ib_mtu})
+    mgmt = network.get("mgmt") or {}
+    storage = network.get("storage") or {}
+    out["mgmt_gateway"] = plan.get("mgmt_gateway") or mgmt.get("gateway")
+    out["storage_gateway"] = plan.get("storage_gateway") or storage.get("gateway")
+    out["storage_routes"] = plan.get("storage_routes") or storage.get("routes") or []
+    out["lom_gateway"] = (nic.get("lom") or {}).get("gateway") or plan.get("lom_gateway")
+    return out
+
+
+def _mgmt_default(host, network, ports):
+    return bool((network.get("mgmt") or {}).get("default_route", True) and host.mgmt is not None
+                and ports["mgmt_gateway"])
+
+
+def pin_routes(network, nic, ports, mgmt_default):
+    """lom.pin_routes, or when none are configured and the default route leaves the LOM, a host
+    route to the control machine so this ssh session keeps working."""
+    pins = [str(n) for n in ((network.get("lom") or {}).get("pin_routes") or [])]
+    if pins or not mgmt_default:
+        return pins
+    lom = nic.get("lom") or {}
+    ctl = lom.get("control_ip")
+    if not ctl:
+        return []
+    try:
+        if lom.get("prefix") and ipaddress.ip_address(ctl) in ipaddress.ip_interface(lom["prefix"]).network:
+            return []
+    except ValueError:
+        pass
+    return ["{}/32".format(ctl)]
+
+
 def render(host, nic, network, lom_id, lom_dhcp=True):
     """Text of 60-mtest.yaml for one host.
 
     The LOM entry reuses the id of the existing netplan entry (lom_id) so netplan merges the
     pin routes into it; a second entry for the same port would be ignored by networkd.
     """
+    ports = resolve_ports(host, nic, network)
     mgmt = network.get("mgmt") or {}
     storage = network.get("storage") or {}
-    ipoib = network.get("ipoib") or {}
-    lom_cfg = network.get("lom") or {}
     eth = {}
     by_name = network.get("match_by", "mac") == "name"
 
-    def match(mac_key, if_key):
-        return {"name": nic[if_key]} if by_name else {"macaddress": nic[mac_key]}
+    def match(port):
+        return {"name": port["netdev"]} if by_name else {"macaddress": port["mac"]}
 
-    if host.mgmt is not None:
-        if not nic.get("mgmt_mac"):
-            raise NetError("BF3 port {} has no netdev (S3)".format(mgmt.get("port", 0)))
-        e = {"match": match("mgmt_mac", "mgmt_if"), "dhcp4": False, "dhcp6": False,
-             "addresses": [str(host.mgmt)]}
+    mgmt_default = _mgmt_default(host, network, ports)
+    if ports["mgmt"]:
+        e = {"match": match(ports["mgmt"]), "dhcp4": False, "dhcp6": False, "addresses": [str(host.mgmt)]}
         if mgmt.get("mtu"):
             e["mtu"] = int(mgmt["mtu"])
         routes = []
-        if mgmt.get("default_route", True) and mgmt.get("gateway"):
-            routes.append({"to": "default", "via": str(mgmt["gateway"])})
-        routes += _routes(mgmt.get("routes") or [], mgmt.get("gateway"))
+        if mgmt_default:
+            routes.append({"to": "default", "via": ports["mgmt_gateway"]})
+        routes += _routes(mgmt.get("routes") or [], ports["mgmt_gateway"])
         if routes:
             e["routes"] = routes
         if mgmt.get("dns"):
             e["nameservers"] = {"addresses": [str(x) for x in mgmt["dns"]]}
         eth["mtest-mgmt"] = e
-    if host.storage is not None:
-        if not nic.get("storage_mac"):
-            raise NetError("BF3 port {} has no netdev (S3)".format(storage.get("port", 1)))
-        e = {"match": match("storage_mac", "storage_if"), "dhcp4": False, "dhcp6": False,
-             "addresses": [str(host.storage)]}
+    if ports["storage"]:
+        e = {"match": match(ports["storage"]), "dhcp4": False, "dhcp6": False, "addresses": [str(host.storage)]}
         if storage.get("mtu"):
             e["mtu"] = int(storage["mtu"])
-        if storage.get("routes"):
-            e["routes"] = _routes(storage["routes"], storage.get("gateway"))
+        if ports["storage_routes"]:
+            e["routes"] = _routes(ports["storage_routes"], ports["storage_gateway"])
         eth["mtest-storage"] = e
-    ifs = nic.get("ipoib_ifs") or []
-    for i, iface in enumerate(host.ib):
-        if iface is None:
-            continue
-        if i >= len(ifs) or not ifs[i]:
-            raise NetError("rail {} has no IPoIB interface (S3)".format(i))
-        e = {"dhcp4": False, "dhcp6": False, "addresses": [str(iface)]}
-        if ipoib.get("mtu"):
-            e["mtu"] = int(ipoib["mtu"])
-        eth[ifs[i]] = e
-    pins = lom_cfg.get("pin_routes") or []
-    mgmt_default = bool(mgmt.get("default_route", True) and host.mgmt is not None and mgmt.get("gateway"))
+    for r in ports["rails"]:
+        e = {"dhcp4": False, "dhcp6": False}
+        if r["addr"] is not None:
+            e["addresses"] = [str(r["addr"])]
+        else:
+            e["link-local"] = []
+        if r["mtu"]:
+            e["mtu"] = int(r["mtu"])
+        eth[r["netdev"]] = e
+    pins = pin_routes(network, nic, ports, mgmt_default)
     if pins or (lom_dhcp and mgmt_default):
         lom = nic.get("lom") or {}
         if not lom_id:
@@ -140,9 +241,9 @@ def render(host, nic, network, lom_id, lom_dhcp=True):
                 lom.get("if") or "?"))
         e = {}
         if pins:
-            if not lom.get("gateway"):
-                raise NetError("no default gateway found on the LOM port {} (S3)".format(lom.get("if")))
-            e["routes"] = [{"to": str(n), "via": lom["gateway"]} for n in pins]
+            if not ports["lom_gateway"]:
+                raise NetError("no gateway known for the LOM port {} (S3 or lom_gateway)".format(lom.get("if")))
+            e["routes"] = [{"to": n, "via": ports["lom_gateway"]} for n in pins]
         if lom_dhcp and mgmt_default:
             # Keep the LOM's DHCP address but drop its default route (and DNS/NTP when mgmt has DNS).
             overrides = {"use-routes": False}
@@ -170,43 +271,45 @@ def link_type_actions(nic, network):
 
 
 def verify_args(host, nic, network, peer=None, critical_only=False):
+    """Arguments of the node-side verify; peer = {"host": Host, "nic": record} of the ping partner."""
+    ports = resolve_ports(host, nic, network)
     mgmt = network.get("mgmt") or {}
+    storage = network.get("storage") or {}
     verify = network.get("verify") or {}
     lom = nic.get("lom") or {}
     args = {"action": "verify", "control_ip": lom.get("control_ip"), "lom_if": lom.get("if"), "ifaces": [],
             "ib": [], "pings": []}
-    if mgmt.get("default_route", True) and host.mgmt is not None and mgmt.get("gateway"):
-        args["default_if"] = nic.get("mgmt_if")
-    if host.mgmt is not None:
-        args["ifaces"].append({"label": "mgmt", "name": nic["mgmt_if"], "addr": str(host.mgmt),
+    if _mgmt_default(host, network, ports):
+        args["default_if"] = ports["mgmt"]["netdev"]
+    if ports["mgmt"]:
+        args["ifaces"].append({"label": "mgmt", "name": ports["mgmt"]["netdev"], "addr": str(host.mgmt),
                                "mtu": mgmt.get("mtu")})
-        if verify.get("ping_gateway", True) and mgmt.get("gateway"):
-            args["pings"].append({"label": "mgmt-gateway", "iface": nic["mgmt_if"], "target": str(mgmt["gateway"])})
+        if verify.get("ping_gateway", True) and ports["mgmt_gateway"]:
+            args["pings"].append({"label": "mgmt-gateway", "iface": ports["mgmt"]["netdev"],
+                                  "target": ports["mgmt_gateway"]})
     if critical_only:
         return args
-    storage = network.get("storage") or {}
-    if host.storage is not None:
-        args["ifaces"].append({"label": "storage", "name": nic["storage_if"], "addr": str(host.storage),
+    if ports["storage"]:
+        args["ifaces"].append({"label": "storage", "name": ports["storage"]["netdev"], "addr": str(host.storage),
                                "mtu": storage.get("mtu")})
+    for r in ports["rails"]:
+        args["ifaces"].append({"label": "ib{}".format(r["rail"]), "name": r["netdev"],
+                               "addr": str(r["addr"]) if r["addr"] is not None else None, "mtu": r["mtu"]})
     rate = dig(network, "expect.cx8.rate_gbps")
-    ipoib_mtu = dig(network, "ipoib.mtu")
-    for i, iface in enumerate(host.ib):
-        rail = nic["rails"][i] if i < len(nic.get("rails", [])) else {}
-        if iface is not None and rail:
-            args["ifaces"].append({"label": "ib{}".format(i), "name": rail["netdev"], "addr": str(iface),
-                                   "mtu": ipoib_mtu})
-        if rail.get("ibdev"):
-            args["ib"].append({"label": "rail{}".format(i), "ibdev": rail["ibdev"], "min_rate": rate})
+    for r in nic.get("rails") or []:
+        if r.get("ibdev"):
+            args["ib"].append({"label": "rail{}".format(r["rail"]), "ibdev": r["ibdev"], "min_rate": rate})
     if peer is not None and verify.get("ping_peer_in_rack", True):
         ph = peer["host"]
-        if host.mgmt is not None and ph.mgmt is not None:
-            args["pings"].append({"label": "mgmt-peer", "iface": nic["mgmt_if"], "target": ph.mgmt_ip})
-        if host.storage is not None and ph.storage is not None:
-            args["pings"].append({"label": "storage-peer", "iface": nic["storage_if"], "target": str(ph.storage.ip)})
-        for i, iface in enumerate(host.ib):
-            if iface is not None and i < len(ph.ib) and ph.ib[i] is not None and i < len(nic.get("rails", [])):
-                args["pings"].append({"label": "ib{}-peer".format(i), "iface": nic["rails"][i]["netdev"],
-                                      "target": str(ph.ib[i].ip)})
+        if ports["mgmt"] and ph.mgmt is not None:
+            args["pings"].append({"label": "mgmt-peer", "iface": ports["mgmt"]["netdev"], "target": ph.mgmt_ip})
+        if ports["storage"] and ph.storage is not None:
+            args["pings"].append({"label": "storage-peer", "iface": ports["storage"]["netdev"],
+                                  "target": str(ph.storage.ip)})
+        for r in ports["rails"]:
+            i = r["rail"]
+            if r["addr"] is not None and i < len(ph.ib) and ph.ib[i] is not None:
+                args["pings"].append({"label": "ib{}-peer".format(i), "iface": r["netdev"], "target": str(ph.ib[i].ip)})
     return args
 
 
@@ -280,8 +383,13 @@ class NetRun:
         if info.get("rollback_active"):
             return hn.fail("error", "an earlier mtest change is still waiting for confirmation or rollback")
         files = info["files"]
-        names = [n for n in (hn.nic.get("ipoib_ifs") or []) + [hn.nic.get("mgmt_if"), hn.nic.get("storage_if")] if n]
-        found = conflicts(files, [hn.nic.get("mgmt_mac"), hn.nic.get("storage_mac")], names)
+        try:
+            ports = resolve_ports(hn.host, hn.nic, self.network)
+        except NetError as e:
+            return hn.fail("error", str(e))
+        bf3 = [p for p in (ports["mgmt"], ports["storage"]) if p]
+        names = [p["netdev"] for p in bf3] + [r["netdev"] for r in ports["rails"]]
+        found = conflicts(files, [p["mac"] for p in bf3], names)
         if found:
             return hn.fail("error", "; ".join(found))
         _, lom_id, lom_entry = find_lom_id(files, hn.nic.get("lom") or {})

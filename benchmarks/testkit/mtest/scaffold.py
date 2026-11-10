@@ -24,6 +24,9 @@ def host_entry(rack_index, rack, tray, golden=False, examples=False):
         "    mgmt: 10.20.{}.{}/16".format(r, 10 + t),
         "    storage: 10.30.{}.{}/16".format(r, 10 + t),
         "    ib: [{}]".format(", ".join("10.10{}.{}.{}/16".format(k, r, 10 + t) for k in range(4))),
+        '    mgmt_pci: "0009:01:00.0"',
+        '    storage_pci: "0009:01:00.1"',
+        '    ib_pci: ["0000:03:00.0", "0001:03:00.0", "0002:03:00.0", "0003:03:00.0"]',
     ]
     if golden:
         lines.append("    tags: [golden]")
@@ -51,7 +54,9 @@ def tests_text():
 def cluster_schema():
     data = yaml.safe_load(cluster_text(1, 1))
     host = dict(data["hosts"][0])
+    from mtest.config import PLAN_FIELDS
     host.update({"tags": [], "env": {}, "skip": [], "gpus": 4})
+    host.update({k: None for k in PLAN_FIELDS})
     data["hosts"] = host
     return data
 

@@ -113,6 +113,37 @@ def check(rec, network, golden=None):
     return out
 
 
+def apply_plan(rec, host):
+    """Use the PCI addresses of the IP plan: pick the mgmt/storage ports by PCI and check that every
+    planned PCI address exists. Returns the plan_pci check, or None when the plan has no PCI."""
+    plan = host.plan
+    pfs = {p["pci"]: p for p in ((rec.get("raw") or {}).get("bf3") or {}).get("pfs") or []}
+    rails = {r["pci"]: r for r in rec["rails"]}
+    problems = []
+    used = False
+    for role in ("mgmt", "storage"):
+        pci = plan.get(role + "_pci")
+        if not pci:
+            continue
+        used = True
+        if pci in pfs:
+            rec[role + "_if"] = pfs[pci].get("netdev", "")
+            rec[role + "_mac"] = pfs[pci].get("mac", "")
+        else:
+            problems.append("{}_pci {} not found (BF3: {})".format(role, pci, ", ".join(sorted(pfs)) or "none"))
+    for i, pci in enumerate(plan.get("ib_pci") or []):
+        if not pci:
+            continue
+        used = True
+        if pci not in rails:
+            problems.append("ib_pci[{}] {} not found".format(i, pci))
+        elif rails[pci]["rail"] != i:
+            problems.append("ib_pci[{}] {} is rail {} by GPU distance".format(i, pci, rails[pci]["rail"]))
+    if not used:
+        return None
+    return {"result": "fail" if problems else "pass", "reason": "; ".join(problems) or "all PCI addresses found"}
+
+
 STRUCTURAL = ("cx8_count", "bf3_ports", "lom", "gpu_rail_map", "golden_match")
 
 
@@ -161,7 +192,10 @@ def discover(cluster, tests, hosts, out=print):
             if not rec["lom"].get("gateway") and (old.get("lom") or {}).get("gateway"):
                 rec["lom"]["gateway"] = old["lom"]["gateway"]
             ref = golden if golden is not None and host.name != golden_host.name else None
+            plan_check = apply_plan(rec, host)
             checks = check(rec, network, ref)
+            if plan_check:
+                checks["plan_pci"] = plan_check
             failed = [k for k, v in checks.items() if v["result"] == "fail"]
             status = "fail" if failed else "pass"
             reason = "; ".join("{}: {}".format(k, checks[k]["reason"]) for k in failed)

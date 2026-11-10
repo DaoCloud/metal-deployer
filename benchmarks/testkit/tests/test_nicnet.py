@@ -79,11 +79,14 @@ NETWORK = {
 }
 
 
-def host(name="gb300-r1-t01", rack="R1", tray=1, last=11):
-    return Host(name, rack, tray, "10.10.0.{}".format(last),
-                mgmt=ipaddress.ip_interface("10.20.0.{}/16".format(last)),
-                storage=ipaddress.ip_interface("10.30.0.{}/16".format(last)),
-                ib=[ipaddress.ip_interface("10.10{}.0.{}/16".format(k, last)) for k in range(4)])
+def host(name="gb300-r1-t01", rack="R1", tray=1, last=11, ib=True):
+    h = Host(name, rack, tray, "10.10.0.{}".format(last),
+             mgmt=ipaddress.ip_interface("10.20.0.{}/16".format(last)),
+             storage=ipaddress.ip_interface("10.30.0.{}/16".format(last)),
+             ib=[ipaddress.ip_interface("10.10{}.0.{}/16".format(k, last)) for k in range(4)] if ib else [])
+    h.plan = {"mgmt_pci": "0009:01:00.0", "storage_pci": "0009:01:00.1",
+              "ib_pci": ["000{}:03:00.0".format(i) for i in range(4)]}
+    return h
 
 
 class DiscoverTest(unittest.TestCase):
@@ -136,6 +139,20 @@ class DiscoverTest(unittest.TestCase):
         self.assertEqual(diff["result"], "fail")
         self.assertIn("rail0", diff["reason"])
 
+    def test_apply_plan(self):
+        rec = nicmod.summarize(self.discover(fake_sysfs(self.root)), NETWORK)
+        h = host()
+        h.plan = {"mgmt_pci": "0009:01:00.1", "storage_pci": "0009:01:00.0",
+                  "ib_pci": ["0002:03:00.0", "0000:03:00.0", "0003:03:00.0", "0001:03:00.0"]}
+        self.assertEqual(nicmod.apply_plan(rec, h)["result"], "fail")      # rails are in GPU order, not this one
+        self.assertEqual(rec["mgmt_if"], "enP9p1s0f1np1")
+        h.plan["ib_pci"] = ["0000:03:00.0", "0001:03:00.0", "0002:03:00.0", "0003:03:00.0"]
+        self.assertEqual(nicmod.apply_plan(rec, h), {"result": "pass", "reason": "all PCI addresses found"})
+        h.plan["mgmt_pci"] = "0009:01:00.5"
+        self.assertIn("mgmt_pci 0009:01:00.5 not found", nicmod.apply_plan(rec, h)["reason"])
+        h.plan = {}
+        self.assertIsNone(nicmod.apply_plan(rec, h))
+
     def test_bf3_mode(self):
         rec = nicmod.summarize(self.discover(fake_sysfs(self.root)), NETWORK)
         rec["bf3"].update({"mode": "DISABLED(1)", "mode_next": "DISABLED(1)"})
@@ -159,13 +176,16 @@ LOM_FILE = """network:
 class NetplanTest(unittest.TestCase):
 
     def nic(self):
+        rails = [{"rail": i, "netdev": n, "ibdev": "mlx5_" + n[3], "link_type": "IB(1)", "guid": "b83f:d203:00a1:000" + n[3],
+                  "link_type_next": "IB(1)", "pci": "000{}:03:00.0".format(i)}
+                 for i, n in enumerate(["ibp2s0", "ibp0s0", "ibp3s0", "ibp1s0"])]
+        pfs = [{"pci": "0009:01:00.0", "netdev": "enP9p1s0f0np0", "mac": "aa:bb:cc:00:00:01"},
+               {"pci": "0009:01:00.1", "netdev": "enP9p1s0f1np1", "mac": "aa:bb:cc:00:00:02"}]
         return {"mgmt_if": "enP9p1s0f0np0", "mgmt_mac": "aa:bb:cc:00:00:01", "storage_if": "enP9p1s0f1np1",
                 "storage_mac": "aa:bb:cc:00:00:02", "ipoib_ifs": ["ibp2s0", "ibp0s0", "ibp3s0", "ibp1s0"],
-                "rails": [{"rail": i, "netdev": n, "ibdev": "mlx5_" + n[3], "link_type": "IB(1)",
-                           "link_type_next": "IB(1)", "pci": "000{}:03:00.0".format(i)}
-                          for i, n in enumerate(["ibp2s0", "ibp0s0", "ibp3s0", "ibp1s0"])],
-                "mlxconfig": True,
-                "lom": {"if": "eno1", "mac": "11:22:33:44:55:66", "gateway": "10.10.0.1", "control_ip": "10.252.10.5"}}
+                "rails": rails, "mlxconfig": True, "raw": {"bf3": {"pfs": pfs}, "rails": rails},
+                "lom": {"if": "eno1", "mac": "11:22:33:44:55:66", "gateway": "10.10.0.1", "control_ip": "10.252.10.5",
+                        "prefix": "10.10.0.11/24"}}
 
     def test_find_lom_and_conflicts(self):
         files = {"50-cloud-init.yaml": LOM_FILE, "bad.yaml": "network: [\n"}
@@ -201,6 +221,64 @@ class NetplanTest(unittest.TestCase):
         static = yaml.safe_load(net.render(host(), self.nic(), NETWORK, "eno1", lom_dhcp=False))
         self.assertNotIn("dhcp4-overrides", static["network"]["ethernets"]["eno1"])
 
+    def test_ports_follow_plan_pci(self):
+        h = host()
+        h.plan.update({"mgmt_pci": "0009:01:00.1", "storage_pci": "0009:01:00.0"})   # swapped on purpose
+        doc = yaml.safe_load(net.render(h, self.nic(), NETWORK, "eno1"))["network"]["ethernets"]
+        self.assertEqual(doc["mtest-mgmt"]["match"], {"macaddress": "aa:bb:cc:00:00:02"})
+        self.assertEqual(doc["mtest-storage"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
+
+    def test_plan_errors(self):
+        cases = [({"mgmt_pci": None}, "mgmt_pci is empty"),
+                 ({"storage_pci": "0009:01:00.2"}, "storage_pci 0009:01:00.2 is not a BF3 port"),
+                 ({"mgmt_pci": "0000:03:00.0"}, "is not a BF3 port"),
+                 ({"mgmt_mac": "aa:bb:cc:00:00:09"}, "differs from the IP plan"),
+                 ({"ib_pci": ["0000:03:00.0", "", "0002:03:00.0", "0003:03:00.0"]}, "ib_pci[1] is empty"),
+                 ({"ib_pci": ["0009:01:00.0", "0001:03:00.0", "0002:03:00.0", "0003:03:00.0"]},
+                  "ib_pci[0] 0009:01:00.0 is not a compute NIC"),
+                 ({"ib_guid": ["0xb83fd20300a10009", "", "", ""]}, "GUID")]
+        for change, msg in cases:
+            h = host()
+            h.plan.update(change)
+            with self.assertRaises(net.NetError) as cm:
+                net.render(h, self.nic(), NETWORK, "eno1")
+            self.assertIn(msg, str(cm.exception), change)
+        h = host()
+        h.plan["ib_guid"] = ["0xB83FD20300A10002", "", "", ""]
+        net.render(h, self.nic(), NETWORK, "eno1")
+
+    def test_ib_mtu_only_and_per_host_routes(self):
+        h = host(ib=False)
+        h.plan.update({"ib_mtu": 2044, "mgmt_gateway": "10.20.0.254", "storage_gateway": "10.30.0.1",
+                       "storage_routes": ["10.61.1.0/24"]})
+        doc = yaml.safe_load(net.render(h, self.nic(), NETWORK, "eno1"))["network"]["ethernets"]
+        self.assertEqual(doc["ibp0s0"], {"dhcp4": False, "dhcp6": False, "link-local": [], "mtu": 2044})
+        self.assertEqual(doc["mtest-mgmt"]["routes"], [{"to": "default", "via": "10.20.0.254"}])
+        self.assertEqual(doc["mtest-storage"]["routes"], [{"to": "10.61.1.0/24", "via": "10.30.0.1"}])
+        args = net.verify_args(h, self.nic(), NETWORK, peer={"host": host("b", tray=2, last=12), "nic": self.nic()})
+        ib0 = [i for i in args["ifaces"] if i["label"] == "ib1"][0]
+        self.assertEqual((ib0["name"], ib0["addr"], ib0["mtu"]), ("ibp0s0", None, 2044))
+        self.assertNotIn("ib0-peer", [p["label"] for p in args["pings"]])
+        no_mtu = host(ib=False)
+        doc = yaml.safe_load(net.render(no_mtu, self.nic(), dict(NETWORK, ipoib={}), "eno1"))["network"]["ethernets"]
+        self.assertNotIn("ibp0s0", doc)
+
+    def test_auto_pin_control_ip(self):
+        auto = dict(NETWORK, lom={})
+        doc = yaml.safe_load(net.render(host(), self.nic(), auto, "eno1"))["network"]["ethernets"]
+        self.assertEqual(doc["eno1"]["routes"], [{"to": "10.252.10.5/32", "via": "10.10.0.1"}])
+        nic = self.nic()
+        nic["lom"]["control_ip"] = "10.10.0.200"          # same subnet as the LOM: no route needed
+        doc = yaml.safe_load(net.render(host(), nic, auto, "eno1"))["network"]["ethernets"]
+        self.assertNotIn("routes", doc["eno1"])
+
+    def test_require_pci_false_uses_s3_order(self):
+        h = host()
+        h.plan = {}
+        doc = yaml.safe_load(net.render(h, self.nic(), dict(NETWORK, require_pci=False), "eno1"))
+        self.assertEqual(doc["network"]["ethernets"]["mtest-mgmt"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
+        self.assertEqual(doc["network"]["ethernets"]["ibp2s0"]["addresses"], ["10.100.0.11/16"])
+
     def test_render_refuses_unsafe(self):
         with self.assertRaises(net.NetError):
             net.render(host(), self.nic(), NETWORK, None)
@@ -209,7 +287,7 @@ class NetplanTest(unittest.TestCase):
         with self.assertRaises(net.NetError):
             net.render(host(), nic, NETWORK, "eno1")
         nic = self.nic()
-        nic["mgmt_mac"] = ""
+        nic["raw"]["bf3"]["pfs"][0]["mac"] = ""
         with self.assertRaises(net.NetError):
             net.render(host(), nic, NETWORK, "eno1")
 

@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试工具（mtest）
 
-> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `mtest` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -39,6 +39,25 @@
 
 `env`、`cmd`、`args` 中的 `{变量}` 按节点渲染，可用变量见 tests.yaml 开头注释。`{mgmt_if}`、`{ib_hcas}`、`{ib_ucx_devs}` 来自 S3 网卡识别结果，识别前在 `mtest plan` 中显示为 `<S3:...>`。环境变量按以下顺序合并，后者覆盖前者：`common_env` → `<段>.common.env` → `<项>.env` → `per_rank` → cluster.yaml 中该主机的 `env`。
 
+## 导入 IP 规划表
+
+```bash
+mtest import gb300-nic-ip-plan.xlsx [--sheet hosts] [--dry-run]   # 或 .csv
+```
+
+把规划表读进 `cluster.yaml`（`-c` 指定）的 `hosts` 段：只替换 `hosts`，`ssh`、`network` 和注释保持不变；已有主机的 `tags`、`env`、`skip`、`gpus` 保留；原文件备份为 `cluster.yaml.bak`。`cluster.yaml` 不存在时新建，network 段只保留按规划表下发所需的设置（不改 BF3 MTU，网关和存储路由按主机取自规划表）。写入前先校验，有错误时不写。`.xlsx` 需要 openpyxl（`pip install './benchmarks/testkit[xlsx]'`），否则把 sheet 另存为 CSV。
+
+| 规划表列 | cluster.yaml 字段 |
+|---|---|
+| `hostname`、`rack`（数字转为 `R<n>`）、`tray`、`sn` | `name`、`rack`、`tray`、`serial` |
+| `lom_ip`、`lom_gateway` | `ssh`、`lom_gateway` |
+| `bf3_mgt_ip`、`bf3_mgt_gateway`、`bf3_mgt_pci`、`bf3_mgt_mac` | `mgmt`、`mgmt_gateway`、`mgmt_pci`、`mgmt_mac` |
+| `bf3_storage_ip`、`_gateway`、`_routes`、`_pci`、`_mac` | `storage`、`storage_gateway`、`storage_routes`、`storage_pci`、`storage_mac` |
+| `ib_rail<N>_pci`、`ib_rail<N>_guid`、`ib_rail<N>_ip`（可选） | `ib_pci`、`ib_guid`、`ib`（rail N 对应列表第 N 项） |
+| `ib_mtu`（需在表中新增此列） | `ib_mtu` |
+
+其余列（`bmc_*`、`bf3_oob_ip` 等）忽略。导入后会列出各主机缺少的 PCI 与 `ib_mtu`。
+
 ## 网卡识别与网络配置（S3、S4）
 
 ```bash
@@ -59,16 +78,19 @@ mtest net verify                        # 只验证，不修改
 - LOM = 承载本次 SSH 会话的接口，同时记录它的默认网关和控制机地址。
 - 检查：GPU、CX8、BF3 口数量，链路层、端口 ACTIVE、速率，BF3 模式，与金样本的 rail↔GPU↔RDMA 设备↔NUMA 映射一致。结果写入 `runs/nic/<主机>.json`，测试项中的 `{mgmt_if}`、`{ib_hcas}` 由此填充。
 
-**S4 下发**：生成 `/etc/netplan/60-mtest.yaml`：
+**S4 下发**：每个口按规划表中的 PCI 地址（`mgmt_pci`、`storage_pci`、`ib_pci`）在主机上找到对应网卡，生成 `/etc/netplan/60-mtest.yaml`：
 
 | 内容 | 写法 |
 |---|---|
-| BF3 port 0 | `mgmt` 地址、MTU、默认路由（`mgmt.gateway`）、DNS |
-| BF3 port 1 | `storage` 地址、MTU、`storage.routes`（有 `storage.gateway` 时经网关，否则直连） |
-| IPoIB | 每个 rail 的地址与 `ipoib.mtu`，按 S3 识别的接口名匹配 |
-| LOM | 在**已有**的 LOM netplan 条目（同一个 id）下追加 `lom.pin_routes`（经 LOM 网关），DHCP 时加 `dhcp4-overrides: {use-routes: false}`，mgmt 配了 DNS 时同时关闭 DHCP 的 DNS/NTP。LOM 不由 netplan 管理时拒绝下发 |
+| BF3 业务口（`mgmt_pci`） | `mgmt` 地址、默认路由（`mgmt_gateway`，否则 `network.mgmt.gateway`）、DNS；`network.mgmt.mtu` 设置时才改 MTU |
+| BF3 存储口（`storage_pci`） | `storage` 地址、`storage_routes`（经 `storage_gateway`，没有网关时直连），不设默认路由；`network.storage.mtu` 设置时才改 MTU |
+| IB（`ib_pci`） | MTU 取 `ib_mtu`（否则 `network.ipoib.mtu`）；有 `ib` 地址时配地址，没有时只设 MTU |
+| LOM | 在**已有**的 LOM netplan 条目（同一个 id）下追加固定路由（经 LOM 网关），DHCP 时加 `dhcp4-overrides: {use-routes: false}`，mgmt 配了 DNS 时同时关闭 DHCP 的 DNS/NTP。LOM 不由 netplan 管理时拒绝下发 |
 
-BF3 口默认按永久 MAC 匹配（`match_by: mac`）；虚拟机等没有永久 MAC 的环境用 `match_by: name`。
+- `network.require_pci: true`（默认）：缺少 PCI、PCI 在主机上找不到或类型不对（BF3 口 / CX8）、规划表的 MAC 或 GUID 与主机不一致时，拒绝下发该主机。`false` 时没有 PCI 的口按 S3 推断（BF3 .0 = 业务、.1 = 存储，rail 按 GPU 顺序）。
+- 固定路由：`lom.pin_routes` 为空、且默认路由要移到业务口、而控制机不在 LOM 直连网段时，自动加一条到控制机地址的 /32 路由，保证 SSH 不断。
+- netplan 按永久 MAC 匹配 BF3 口（`match_by: mac`，MAC 由 PCI 查到）；虚拟机等没有永久 MAC 的环境用 `match_by: name`。
+- S3 也会使用规划表的 PCI：`{mgmt_if}` 取 `mgmt_pci` 对应的网卡；检查项 `plan_pci` 列出找不到的 PCI，以及 `ib_pci` 顺序与按 GPU 距离得到的 rail 顺序不一致的情况。
 
 每台主机的流程：
 
@@ -191,7 +213,7 @@ benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3/S4 端到端测试，约 4
 
 端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
-S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 dnsmasq 经 DHCP 分配地址，另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。覆盖：识别与金样本比对、dry-run、下发（默认路由、LOM 固定路由与保留 DHCP 地址、MTU、跨 rail ping）、重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
+S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 dnsmasq 经 DHCP 分配地址，另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。主机由 `mtest import` 导入 CSV 规划表（含 PCI、网关、存储路由、`ib_mtu`）。覆盖：导入、识别与金样本比对、dry-run、按 PCI 下发（默认路由、LOM 固定路由与保留 DHCP 地址、BF3 MTU 不变、IB MTU、存储路由、跨 rail ping）、重新识别后重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、规划表 PCI 在主机上不存在时拒绝、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
 
 只用标准库和 PyYAML，语法保持兼容 Python 3.8。
 

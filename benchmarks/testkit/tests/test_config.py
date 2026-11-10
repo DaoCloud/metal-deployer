@@ -106,6 +106,10 @@ class ClusterTest(unittest.TestCase):
                      "'10.252.10.0/33' is not a valid subnet"):
             self.assertTrue(any(frag in e for e in problems.errors), frag)
 
+    def test_unquoted_pci(self):
+        self.ws.edit("cluster.yaml", 'mgmt_pci: "0009:01:00.0"', "mgmt_pci: 0009:01:00.0")
+        self.assertError("must be quoted in YAML")
+
     def test_unknown_key_warns(self):
         self.ws.edit("cluster.yaml", "    # skip: [moe]", "    colour: red")
         self.ws.edit("cluster.yaml", "  port: 22", "  port: 22\n  prot: 22")

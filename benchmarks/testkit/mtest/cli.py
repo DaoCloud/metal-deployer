@@ -24,6 +24,11 @@ def build_parser():
     init.add_argument("--trays", type=int, default=2, help="example trays per rack (default: 2)")
     init.add_argument("--force", action="store_true", help="overwrite existing files")
 
+    imp = sub.add_parser("import", help="read the IP plan (.xlsx or .csv) into the hosts of cluster.yaml (-c)")
+    imp.add_argument("plan", help="IP plan file, e.g. gb300-nic-ip-plan.xlsx")
+    imp.add_argument("--sheet", help="sheet name in .xlsx (default: hosts, else the first sheet)")
+    imp.add_argument("--dry-run", action="store_true", help="check and summarize without writing cluster.yaml")
+
     val = sub.add_parser("validate", help="check cluster.yaml and tests.yaml")
     val.add_argument("--ssh", action="store_true", help="also check that every host is reachable over SSH")
 
@@ -237,6 +242,9 @@ def main(argv=None):
         return 0
     if args.command == "init":
         return cmd_init(args)
+    if args.command == "import":
+        from mtest.plan_import import run_import
+        return run_import(args.plan, args.cluster, sheet=args.sheet, dry_run=args.dry_run)
     if args.command == "doctor":
         from mtest import doctor
         return doctor.run()
