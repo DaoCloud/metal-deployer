@@ -1,0 +1,43 @@
+# mtest cluster file: how to reach the hosts, network parameters, and the host list.
+# Values that differ per host go under hosts; values shared by every host go elsewhere.
+
+ssh:
+  user: root
+  key: ~/.ssh/id_ed25519          # private key used to log in to every host over its LOM address
+  port: 22
+  parallel: 24                    # max hosts operated on at the same time
+  connect_timeout: 10             # seconds
+  options: []                     # extra "ssh -o" options, for example [ProxyJump=jump01]
+
+# Network parameters for S3 (mtest nic discover) and S4 (mtest net apply).
+# Not needed when the host network is already configured and you only run tests.
+network:
+  expect:
+    gpus: 4
+    cx8: {count: 4, pci_id: "15b3:1023", link_layer: InfiniBand, rate_gbps: 800}
+    bf3: {pf_count: 2, pci_id: "15b3:a2dc", mode: nic}
+    compare_golden: true          # compare the GPU <-> rail mapping with the golden host
+  ib_mode: {enforce: true, reboot: ask}      # reboot: ask / auto / never
+  lom:
+    pin_routes: [10.252.10.0/24]  # control-node subnets that must stay on the LOM port
+  mgmt: {port: 0, gateway: 10.20.0.1, mtu: 1500, dns: [10.20.0.53], default_route: true}
+  storage: {port: 1, mtu: 9000, routes: [10.30.0.0/16]}
+  ipoib: {mtu: 4092, pkey: "0x7fff"}
+  rollback_seconds: 120           # restore the old netplan if the host is unreachable after apply
+  verify: {ping_gateway: true, ping_peer_in_rack: true}
+
+defaults:                         # inherited by every host, can be overridden per host
+  gpus: 4
+  tags: []
+  env: {}
+
+# One entry per host. rack + tray decide the rank order in multi-node tests.
+#   ssh      LOM address used by mtest
+#   mgmt     BF3 port 0 (business/management network, CIDR); also used as MASTER_ADDR
+#   storage  BF3 port 1 (storage network, CIDR)
+#   ib       IPoIB address per rail 0..3 (CIDR); the same rail must be in the same subnet
+#   tags     golden = reference host; other tags are free-form groups, selected with tag:<name>
+#   env      extra environment variables for tests on this host only
+#   skip     test items (or prefixes such as moe) this host does not run
+hosts:
+__HOSTS__

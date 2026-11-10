@@ -1,0 +1,33 @@
+import os
+import tempfile
+
+from mtest import scaffold
+
+
+class Workspace:
+    """Temporary directory with generated cluster.yaml / tests.yaml that tests can edit."""
+
+    def __init__(self, racks=2, trays=18):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = self.tmp.name
+        self.cluster = os.path.join(self.dir, "cluster.yaml")
+        self.tests = os.path.join(self.dir, "tests.yaml")
+        self.write("cluster.yaml", scaffold.cluster_text(racks, trays))
+        self.write("tests.yaml", scaffold.tests_text())
+
+    def write(self, name, text):
+        with open(os.path.join(self.dir, name), "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def read(self, name):
+        with open(os.path.join(self.dir, name), encoding="utf-8") as f:
+            return f.read()
+
+    def edit(self, name, old, new, count=1):
+        text = self.read(name)
+        if old not in text:
+            raise AssertionError("{!r} not found in {}".format(old, name))
+        self.write(name, text.replace(old, new, count))
+
+    def close(self):
+        self.tmp.cleanup()

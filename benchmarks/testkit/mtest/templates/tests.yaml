@@ -1,0 +1,196 @@
+# mtest tests file: which tests to run, on which hosts, and how.
+#
+# Items run in this built-in order; only "enabled: true" items run:
+#   dcgm -> superbench.single_node -> superbench.disk -> superbench.pair -> superbench.rack
+#   -> superbench.all -> imex -> sharp.scale_up -> sharp.scale_out
+#   -> moe.single -> moe.rack -> moe.cross_rack -> moe.all -> moe.moonep
+#
+# Host selection (hosts / groups): all | R1 | gb300-r1-t01 | tag:batch1, or a list of them.
+# scope: node  = one group per host
+#        rack  = one group per rack
+#        group = all selected hosts in one group (or list several groups under "groups")
+#
+# Template variables, rendered per node at run time:
+#   group: {run_id} {group_id} {node_rank} {nnodes} {master_addr} {master_port} {node_list} {rack_list}
+#   host:  {hostname} {rack} {tray} {gpus} {mgmt_ip} {storage_ip} {ib0_ip}..{ib3_ip}
+#   S3:    {mgmt_if} {ib_hcas} {ib_ucx_devs}   (filled from "mtest nic discover" results)
+# Environment layers, later ones win:
+#   common_env -> <section>.common.env -> <item>.env -> <section>.common.per_rank -> host env in cluster.yaml
+version: 1
+
+images:                           # tag or tag@digest; the digest actually used is recorded in results
+  dcgm: registry.local/metal-deployer/dcgm-diag:4.7.1
+  sbcli: registry.local/metal-deployer/testkit:latest
+  sb_worker: superbench/main:cuda13.0
+  sharp: ""                       # empty: use sb_worker
+  moe_bench: registry.local/metal-deployer/moe-bench:latest
+image_pull: registry              # registry: hosts pull; push: copy over ssh (docker save | load); skip: only check
+
+runtime:
+  results_dir: ./runs             # local results, relative to this file
+  node_results_dir: /var/lib/testkit/runs     # on each host, mounted as /results in test containers
+  container_args: [--gpus, all, --network, host, --ipc, host, --privileged,
+                   --ulimit, memlock=-1, --ulimit, stack=67108864, --shm-size, 64g]
+  master_port_base: 29500         # MASTER_PORT = base + group index
+  mpi_ssh_port: 2222              # sshd port inside containers in mpi mode
+  rendezvous_timeout: 600         # seconds
+  run_timeout: 7200               # seconds, per group
+  stop_on_failure: true           # hosts that failed an item do not run later items
+  group_order: serial             # serial / parallel
+
+common_env:                       # injected into every test container
+  NCCL_SOCKET_IFNAME: "{mgmt_if}"
+  GLOO_SOCKET_IFNAME: "{mgmt_if}"
+  NCCL_IB_HCA: "{ib_hcas}"
+  UCX_NET_DEVICES: "{ib_ucx_devs}"
+
+# ---------------- S5 DCGM ----------------
+dcgm:
+  enabled: true
+  scope: node
+  hosts: all
+  level: 3                        # dcgmi diag -r 3; 4 is the long run
+  health: true
+  checks: [ecc, remapped_rows, nvlink, fabric_state]
+  gpu_burn: {enabled: false, seconds: 600}
+
+# ---------------- S6 SuperBench ----------------
+superbench:
+  common:
+    profile: gb300                # always passed as run-tests.sh -p gb300
+    rule: rule_gb300.yaml
+    runner: auto                  # auto: local sb if installed, else on the rank 0 host; local / remote
+    benchmarks: {include: [], exclude: []}    # empty include = every benchmark in the config
+
+  single_node:                    # SB-1: GEMM, GPU memory, gpu-burn, cpu-stream, ib-loopback, NCCL in node
+    enabled: true
+    scope: node
+    hosts: all
+    config: config_gb300_single_node.yaml
+
+  disk:                           # overwrites the selected disks; implemented in a later phase
+    enabled: false
+    scope: node
+    hosts: all
+    config: config_gb300_disk.yaml
+    selector: {model: "", size_gb: 3840}
+    exclude_by_id: []
+    expected_count: 8
+    parallel: false
+
+  pair:                           # SB-2: two-host IB smoke test
+    enabled: true
+    scope: group
+    hosts: [gb300-r1-t01, gb300-r1-t02]
+    config: config_gb300_multi_node.yaml
+
+  rack:                           # SB-3: IB inside each rack
+    enabled: true
+    scope: rack
+    hosts: all
+    config: config_gb300_multi_node.yaml
+
+  all:                            # SB-4: IB across all hosts; ib-traffic covers every host pair
+    enabled: false
+    scope: group
+    hosts: all
+    config: config_gb300_multi_node.yaml
+
+# ---------------- S7 IMEX ----------------
+imex:
+  enabled: true
+  scope: rack
+  hosts: all
+  configure: true                 # run imex-configure.sh on the hosts, bound to the mgmt address
+  wait_ready_seconds: 300
+  bench:
+    t1_fabric_ipc: true
+    t2_nvbandwidth: true
+    t3_nccl: {enabled: true, ops: [sendrecv, alltoall, all_reduce], compare_mnnvl_off: true}
+  nvl_domain: {enabled: true}     # SuperBench config_gb300_nvl_domain.yaml
+
+# ---------------- S7a SHARP ----------------
+sharp:
+  common:
+    image: sharp
+    nccl_tests_dir: ""            # empty: nccl-tests in the image
+    nccl_lib_dir: ""              # empty: system NCCL in the image
+    ops: [all_reduce, reduce_scatter, all_gather]
+    msg: {min: 1M, max: 16G, factor: 2}
+    iters: 50
+    env:
+      NCCL_MNNVL_ENABLE: "1"
+      NCCL_CUMEM_ENABLE: "1"
+      NCCL_DEBUG: INFO
+      NCCL_DEBUG_SUBSYS: INIT,NET,COLL,NVLS,TUNING
+
+  scale_up:                       # NVLink SHARP inside a rack
+    enabled: true
+    scope: rack
+    hosts: all
+    cases:
+      U-A: {NCCL_NVLS_ENABLE: "0"}
+      U-B: {NCCL_NVLS_ENABLE: "1", NCCL_ALGO: NVLS}
+
+  scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM
+    enabled: false
+    scope: group
+    groups: [[R1, R2]]
+    sharp_env:                    # only for cases with use_sharp_env
+      LD_LIBRARY_PATH: "$HPCX_SHARP_DIR/lib:$HPCX_NCCL_RDMA_SHARP_PLUGIN_DIR/lib:$LD_LIBRARY_PATH"
+      SHARP_COLL_ENABLE_SAT: "1"
+    cases:
+      O-A: {NCCL_NVLS_ENABLE: "0", NCCL_COLLNET_ENABLE: "0"}
+      O-B: {NCCL_COLLNET_ENABLE: "0", NCCL_ALGO: NVLSTree}
+      O-C: {NCCL_NVLS_ENABLE: "0", NCCL_COLLNET_ENABLE: "1", NCCL_ALGO: CollnetDirect, use_sharp_env: true}
+      O-D: {NCCL_COLLNET_ENABLE: "1", NCCL_ALGO: NVLS, use_sharp_env: true}
+
+# ---------------- S8 MoE ----------------
+moe:
+  common:
+    image: moe_bench
+    env:
+      WORLD_SIZE: "{nnodes}"
+      RANK: "{node_rank}"
+      MASTER_ADDR: "{master_addr}"
+      MASTER_PORT: "{master_port}"
+      HIDDEN_DIM: "7168"
+      NUM_TOKENS_PER_RANK: "4096"
+      NUM_LOCAL_EXPERTS: "8"
+      TOPK: "8"
+    cmd: [moe-bench, --log-dir, /results]
+    per_rank: {}                  # per group rank, for example {"0": {env: {...}, args_append: [...]}}
+
+  single:                         # L1: one host, HybridEP + DeepGEMM
+    enabled: true
+    scope: node
+    hosts: all
+    args: [--suite, all]
+
+  rack:                           # L2: inside a rack over MNNVL; needs imex
+    enabled: true
+    scope: rack
+    hosts: all
+    args: [--suite, hybrid-ep]
+
+  cross_rack:                     # L3: NVLink inside a rack, IB across racks
+    enabled: false
+    scope: group
+    groups: [[R1, R2]]
+    args: [--suite, hybrid-ep]
+    env: {NUM_TOKENS_PER_RANK: "2048"}
+
+  all:                            # L4: all hosts in one group
+    enabled: false
+    scope: group
+    hosts: all
+    args: [--suite, hybrid-ep]
+
+  moonep:                         # not integrated yet
+    enabled: false
+    scope: node
+    hosts: all
+
+# ---------------- S9 report ----------------
+report:
+  formats: [html, csv]
