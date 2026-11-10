@@ -18,6 +18,7 @@ MGMT_NET=${MGMT_NET:-172.29.0}
 NODE_IMAGE=mtest-e2e-node:latest
 WORKER_IMAGE=mtest-e2e-worker:latest
 DCGM_IMAGE=${DCGM_IMAGE:-nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04}
+SBCLI_IMAGE=mtest-e2e-sbcli:latest
 HOSTS=(gb300-r1-t01 gb300-r1-t02 gb300-r1-t03)
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
@@ -90,7 +91,7 @@ scenario() {
         done
     } > "$E2E_ROOT/$dir/cluster.yaml"
     cat > "$E2E_ROOT/$dir/tests.yaml" <<EOF
-images: {sb_worker: $WORKER_IMAGE, dcgm: $DCGM_IMAGE}
+images: {sb_worker: $WORKER_IMAGE, dcgm: $DCGM_IMAGE, sbcli: $SBCLI_IMAGE}
 image_pull: skip
 runtime:
   results_dir: ./runs
@@ -108,6 +109,7 @@ setup() {
     log "building images"
     docker build -q -t "$NODE_IMAGE" -f "$HERE/node.Dockerfile" "$HERE" >/dev/null
     docker build -q -t "$WORKER_IMAGE" -f "$HERE/worker.Dockerfile" "$HERE" >/dev/null
+    docker build -q -t "$SBCLI_IMAGE" -f "$HERE/sbcli-stub.Dockerfile" "$HERE" >/dev/null
     cleanup
     mkdir -p "$E2E_ROOT/noderes"
     ssh-keygen -q -t ed25519 -N "" -f "$E2E_ROOT/id_ed25519"
@@ -120,8 +122,9 @@ setup() {
         docker run -d --name "$h" --hostname "$h" --network mtest-e2e-ssh --ip "$SSH_NET.1$i" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$E2E_ROOT/noderes:$E2E_ROOT/noderes" \
-            -v "$E2E_ROOT/authorized_keys:/root/.ssh/authorized_keys:ro" \
             "$NODE_IMAGE" >/dev/null
+        docker cp "$E2E_ROOT/authorized_keys" "$h:/root/.ssh/authorized_keys"
+        docker exec "$h" chown root:root /root/.ssh/authorized_keys
         docker network connect --ip "$MGMT_NET.1$i" mtest-e2e-mgmt "$h"
         i=$((i + 1))
     done
@@ -257,7 +260,30 @@ else
     log "   skipped: cannot pull $DCGM_IMAGE"
 fi
 
-log "11. report"
+log "11. superbench (stub sb: real ssh with the run key, SuperBench result format)"
+scenario s11 node per-node 0 300 "" "superbench:
+  common: {rule: rule_gb300.yaml, timeout: 120}
+  single_node: {enabled: true, scope: node, hosts: all, config: config_gb300_single_node.yaml, benchmarks: {exclude: [gpu-burn]}}
+  rack: {enabled: true, scope: rack, hosts: all, config: config_gb300_multi_node.yaml}"
+sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s11/tests.yaml"
+mtest s11 run superbench >"$E2E_ROOT/s11.log" 2>&1 && rc=0 || rc=$?
+run=$(last_run s11)
+check "run exits 0" [ "$rc" = 0 ]
+check "single-node: every host passed" [ "$(state s11 gb300-r1-t01 superbench.single_node)$(state s11 gb300-r1-t02 superbench.single_node)$(state s11 gb300-r1-t03 superbench.single_node)" = passpasspass ]
+check "single-node ran once for all hosts" [ "$(json "$E2E_ROOT/s11/runs/$run/run.json" "list(d['items']['superbench.single_node']['groups'])")" = "['all']" ]
+check "exclude reached sb" grep -q 'superbench.enable=\["cublaslt-gemm:compute","nccl-bw:bw:allreduce:nvlink"\]' \
+    "$E2E_ROOT/s11/runs/$run/gb300-r1-t01/superbench.single_node/sb/run/override.txt"
+check "per-host metrics split out" [ "$(json "$E2E_ROOT/s11/runs/$run/gb300-r1-t03/superbench.single_node/summary.json" "d['metrics']['cublaslt-gemm:compute/fp8e4m3_0_8192_8192_8192_flops']['value']")" = 4477.0 ]
+check "rack: ib-traffic pairs parsed" [ "$(json "$E2E_ROOT/s11/runs/$run/_groups/superbench.rack/R1/summary.json" "len(d['rdma']['pairs'])")" = 3 ]
+check "run key removed from every host" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h grep -c mtest- /root/.ssh/authorized_keys; done | tr -d '\n')" = 000 ]
+check "private run key removed from the rank 0 host" [ -z "$(find "$E2E_ROOT/noderes/$run" -name id_ed25519)" ]
+mtest s11 report >/dev/null
+check "report has the RDMA matrix" python3 -c "
+import json,re,sys; s=open('$E2E_ROOT/s11/runs/report/report.html').read()
+d=json.loads(re.search(r'const D = (.*);\n', s).group(1).replace('<\\\\/', '</'))
+sys.exit(0 if d['rdma'] and len(d['rdma']['pairs']) == 3 else 1)"
+
+log "12. report"
 out=$(mtest s3 report --archive) && rc=0 || rc=$?
 check "report exits 0" [ "$rc" = 0 ]
 check "report.html written" grep -q "const D = " "$E2E_ROOT/s3/runs/report/report.html"

@@ -212,12 +212,12 @@ class GroupRunner:
         pull = self.ctx.tests.data.get("image_pull", "registry")
 
         def check(host_name):
-            spec = specs[host_name][0]
-            host = spec.host
+            host = self.hosts[host_name].host
             res = self.ops.ping(host)
             if not res.ok:
                 return host_name, "ssh/docker not available: " + res.message()
-            for image in sorted({s.image for s in specs[host_name]}):
+            images = {s.image for s in specs.get(host_name, [])} | set(self.job.host_images)
+            for image in sorted(images):
                 present, digest = self.ops.image_info(host, image)
                 if not present and pull == "registry":
                     res = self.ops.pull(host, image)
@@ -231,7 +231,8 @@ class GroupRunner:
                     return host_name, "image {} not found (image_pull: skip)".format(image)
                 if not present:
                     present, digest = self.ops.image_info(host, image)
-                self.digests[host_name] = digest
+                if image in {s.image for s in specs.get(host_name, [])} or host_name not in self.digests:
+                    self.digests[host_name] = digest
             busy = self.ops.containers(host, "acc-")
             if busy is None:
                 return host_name, "cannot list containers"
@@ -251,7 +252,7 @@ class GroupRunner:
                     return host_name, "host preparation failed: " + res.message()
             return host_name, None
 
-        bad = {h: r for h, r in pmap(check, specs, self.ctx.parallel) if r}
+        bad = {h: r for h, r in pmap(check, list(self.hosts), self.ctx.parallel) if r}
         if not bad:
             return True
         if self.ctx.cancelled():
@@ -317,7 +318,8 @@ class GroupRunner:
 
     def monitor(self):
         rt = self.rt
-        deadline = time.time() + int(rt["run_timeout"])
+        self.timeout = int(self.job.timeout or rt["run_timeout"])
+        deadline = time.time() + self.timeout
         interval = float(rt["poll_interval"])
         running = list(self.started)
         launcher = None
@@ -338,14 +340,13 @@ class GroupRunner:
                 log.close()
 
     def _monitor_loop(self, running, launcher, deadline, interval):
-        rt = self.rt
         misses = {}
         while True:
             if self.ctx.cancelled():
                 self.end_all(running, "cancelled", "run cancelled", launcher)
                 return
             if time.time() > deadline:
-                self.group_reason = "run_timeout {}s reached".format(rt["run_timeout"])
+                self.group_reason = "run_timeout {}s reached".format(self.timeout)
                 self.end_all(running, "timeout", self.group_reason, launcher)
                 return
             states, lost = self.poll(running)
@@ -458,6 +459,39 @@ class GroupRunner:
             if err:
                 self.copy_errors = getattr(self, "copy_errors", {})
                 self.copy_errors[host_name] = err
+        master = self.nodes[0].host.name
+        if self.job.parse_group and master in self.result and master not in getattr(self, "copy_errors", {}):
+            self.parse_group(master)
+
+    def parse_group(self, master):
+        """Split a delegate run's results into per-host summaries and group extras."""
+        try:
+            per_host, extra = self.job.parse_group(self.ctx.local_dir(master, self.item.id))
+        except Exception as e:      # a parser bug must not lose the run
+            per_host, extra = {}, {"status": "error", "reason": "cannot parse results: {}: {}".format(
+                type(e).__name__, e)}
+        self.group_extra = extra
+        for h, parsed in per_host.items():
+            if h not in self.hosts:
+                continue
+            path = os.path.join(self.ctx.local_dir(h, self.item.id), "summary.json")
+            summary = read_json(path) or {}
+            summary.update({k: v for k, v in parsed.items() if k != "own"})
+            write_json(path, summary)
+            if parsed.get("own") and h != master:
+                # Per-host results (e.g. single-node benchmarks): the host's own verdict, not the group's.
+                self.result[h] = {"status": parsed["status"], "reason": parsed.get("reason", ""), "rc": None}
+                if parsed["status"] in ("fail", "error"):
+                    self.host_fault.add(h)
+            elif parsed.get("own") and parsed.get("status") in ("fail", "error"):
+                self.result[h] = {"status": parsed["status"], "reason": parsed.get("reason", ""),
+                                  "rc": self.result[h]["rc"]}
+                self.host_fault.add(h)
+        if extra.get("status") in ("fail", "error"):
+            rc = self.result[master]["rc"]
+            if self.result[master]["status"] == "pass":
+                self.result[master] = {"status": extra["status"], "reason": extra.get("reason", ""), "rc": rc}
+            self.group_reason = self.group_reason or extra.get("reason", "")
 
     def parse_one(self, host, local):
         """Merge the item parser's verdict, metrics and checks into the host's summary.json."""
@@ -532,10 +566,12 @@ class GroupRunner:
                                          "finished_at": finished}}
         reason = self.group_reason or ("" if group_status == "pass" else
                                        next((r["reason"] for r in statuses.values() if r and r["reason"]), ""))
+        extra = {k: v for k, v in getattr(self, "group_extra", {}).items() if k not in ("status", "reason")}
         group = {"item": self.item.id, "group": self.group.id, "mode": self.job.mode, "status": group_status,
                  "reason": reason, "first_failed": self.first_failed, "hosts": [n.host.name for n in self.nodes],
                  "master_port": self.nodes[0].variables.get("master_port"), "started_at": started,
                  "finished_at": finished, "seconds": int(time.time() - t0), "run_id": self.ctx.run_id}
+        group.update(extra)
         write_json(os.path.join(self.ctx.run_dir, "_groups", self.item.id, self.group.id, "summary.json"), group)
         self.ctx.state.update(entries, (self.item.id, self.group.id, group))
         group["host_status"] = {h: (statuses[h] or {"status": group_status})["status"] for h in self.hosts}
@@ -596,6 +632,15 @@ def run_item(ctx, plan):
     by_group = {}
     for n in plan.nodes:
         by_group.setdefault(n.group.id, []).append(n)
+    if item.batch and len(plan.groups) > 1:
+        from mtest.selection import Group
+        merged = Group("all", [n.host for n in plan.nodes], 0)
+        for n in plan.nodes:
+            n.group = merged
+        plan.groups = [merged]
+        by_group = {"all": plan.nodes}
+        for rank, n in enumerate(plan.nodes):
+            n.rank = rank
     jobs = []
     try:
         for g in plan.groups:

@@ -65,7 +65,7 @@ def tests_schema():
     data = yaml.safe_load(tests_text())
     # Keys every item section may carry even if the template does not show them.
     extra = {"enabled": True, "scope": "", "hosts": "", "groups": [], "env": {}, "args": [],
-             "image": "", "cmd": [], "per_rank": {}, "benchmarks": {}, "config": ""}
+             "image": "", "cmd": [], "per_rank": {}, "benchmarks": {"include": [], "exclude": []}, "config": "", "timeout": 0}
     for section in ("superbench", "sharp", "moe"):
         for sub in data[section].values():
             for key, value in extra.items():

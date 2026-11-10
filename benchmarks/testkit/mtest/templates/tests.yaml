@@ -71,11 +71,14 @@ dcgm:
 
 # ---------------- S6 SuperBench ----------------
 superbench:
+  # The sbcli image (images.sbcli) runs on the rank 0 host of each group and drives every host of the
+  # group with sb deploy/run; images.sb_worker must already be on every host. A key made for the run is
+  # added to the hosts' authorized_keys and removed afterwards.
   common:
-    profile: gb300                # always passed as run-tests.sh -p gb300
     rule: rule_gb300.yaml
-    runner: auto                  # auto: local sb if installed, else on the rank 0 host; local / remote
-    benchmarks: {include: [], exclude: []}    # empty include = every benchmark in the config
+    config_dir: ""                # where configs are in the sbcli image (empty: /workspace)
+    timeout: 14400                # seconds per group; overrides runtime.run_timeout
+    benchmarks: {include: [], exclude: []}    # empty include = every benchmark enabled in the config
 
   single_node:                    # SB-1: GEMM, GPU memory, gpu-burn, cpu-stream, ib-loopback, NCCL in node
     enabled: true

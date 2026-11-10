@@ -90,10 +90,19 @@ def _check_item(tests, cluster, item, cfg, problems):
         for g in groups:
             if len({h.rack for h in g.hosts}) < 2:
                 problems.warn("sharp.scale_out: group {} has only one rack; IB SHARP needs at least 2".format(g.id))
-    if item.section == "superbench" and cfg.get("profile", "gb300") != "gb300":
-        problems.warn("{}: profile is '{}', GB300 configs need gb300".format(where, cfg.get("profile")))
     if item.id == "smoke" and cfg.get("mode", item.mode) not in ("per-node", "mpi", "delegate"):
         problems.error("smoke: mode must be per-node, mpi or delegate")
+    if item.section == "superbench" and item.id != "superbench.disk":
+        if not cfg.get("config"):
+            problems.error("{}: config is required (e.g. config_gb300_multi_node.yaml)".format(where))
+        if not tests.images.get("sb_worker"):
+            problems.error("{}: images.sb_worker is required (worker image on every host)".format(where))
+        if item.id != "superbench.single_node":
+            for g in groups:
+                if len(g.hosts) < 2:
+                    problems.warn("{}: group {} has one host; multi-node benchmarks need at least 2".format(where, g.id))
+    if cfg.get("timeout") is not None and (not isinstance(cfg["timeout"], int) or cfg["timeout"] <= 0):
+        problems.error("{}: timeout must be a positive integer (seconds)".format(where))
     if item.id == "dcgm":
         if cfg.get("hostengine", "container") not in ("host", "container"):
             problems.error("dcgm.hostengine must be host or container")

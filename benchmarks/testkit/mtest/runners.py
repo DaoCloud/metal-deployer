@@ -7,6 +7,7 @@ Modes:
 """
 
 import os
+import re
 import shlex
 
 from mtest.render import HOSTFILE, render
@@ -74,8 +75,11 @@ class ContainerSpec:
 class Job:
 
     def __init__(self, mode, containers, launcher=None, launcher_env=None, files=None, group_result=False,
-                 host_pre=None, host_post=None, parse=None):
+                 host_pre=None, host_post=None, parse=None, parse_group=None, host_images=None, timeout=None):
         self.mode = mode
+        self.parse_group = parse_group      # parse_group(local_dir_of_master) -> ({host: fields}, group_extra)
+        self.host_images = host_images or []  # images every host of the group needs (besides its containers)
+        self.timeout = timeout              # overrides runtime.run_timeout
         self.host_pre = host_pre            # shell run on each host after preflight, before containers start
         self.host_post = host_post          # shell run on each host where host_pre ran, always at the end
         self.parse = parse                  # parse(local_dir, host) -> summary fields, after results are copied
@@ -151,6 +155,8 @@ def build_job(ctx, item, cfg, nodes):
 
     if item.id == "dcgm":
         return dcgm_job(ctx, item, cfg, nodes, image)
+    if item.section == "superbench" and item.id != "superbench.disk":
+        return superbench_job(ctx, item, cfg, nodes, image)
 
     if mode == "per-node" and all(n.cmd for n in nodes):
         return Job(mode, [_spec(tests, run_id, item.id, n, image, n.cmd) for n in nodes])
@@ -189,6 +195,59 @@ def dcgm_job(ctx, item, cfg, nodes, image):
         post = "[ -f {f} ] && for s in $(cat {f}); do systemctl start $s; done; rm -f {f}; true".format(f=flag)
     return Job("per-node", specs, files=files, host_pre=pre, host_post=post,
                parse=lambda local_dir, host: dcgm.parse(local_dir, cfg, host))
+
+
+def inventory(nodes, ssh_cfg, key_path):
+    """Ansible inventory for sb: name = mgmt IP (MPI between workers), ansible_host = LOM (ssh)."""
+    lines = ["[all]"]
+    for n in nodes:
+        lines.append("{} ansible_host={} mtest_name={}".format(n.host.mgmt_ip or n.host.ssh, n.host.ssh, n.host.name))
+    lines += ["", "[all:vars]", "ansible_user={}".format(ssh_cfg.get("user", "root")),
+              "ansible_port={}".format(ssh_cfg.get("port", 22)), "ansible_ssh_private_key_file={}".format(key_path),
+              "ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'", ""]
+    return "\n".join(lines)
+
+
+def superbench_job(ctx, item, cfg, nodes, image):
+    """S6: sbcli container on the rank 0 host runs sb deploy/run against the whole group.
+
+    A key made for this run is added to every host's authorized_keys before and removed after.
+    """
+    from mtest.parsers import superbench
+    tests, run_id = ctx.tests, ctx.run_id
+    priv, pub, _ = ctx.ssh_keys()
+    master = nodes[0]
+    tool_dir = node_dir(tests, run_id, item.id, master.host.name) + ".mtest"
+    files = [(master.host, tool_dir + "/inventory", inventory(nodes, ctx.cluster.ssh, "/mtest/id_ed25519"), "644"),
+             (master.host, tool_dir + "/id_ed25519", priv, "600"),
+             (master.host, tool_dir + "/sb_run.sh", node_script("sb_run.sh"), "755")]
+    worker = tests.images.get("sb_worker") or ""
+    bench = cfg.get("benchmarks") or {}
+    env = {"MTEST_SB_CONFIG": cfg.get("config", ""), "MTEST_SB_WORKER": worker,
+           "MTEST_SB_RULE": cfg.get("rule", ""), "MTEST_SB_INCLUDE": ",".join(bench.get("include") or []),
+           "MTEST_SB_EXCLUDE": ",".join(bench.get("exclude") or [])}
+    if cfg.get("config_dir"):
+        env["MTEST_SB_CONFIG_DIR"] = cfg["config_dir"]
+    spec = _spec(tests, run_id, item.id, master, image, ["/mtest/sb_run.sh"], env,
+                 mounts=[(tool_dir, "/mtest", True)])
+    spec.extra_args = ["--entrypoint", "bash"]
+    pub = pub.strip()
+    tag = pub.split()[-1]
+    pre = ("mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && "
+           "(grep -qF {k} ~/.ssh/authorized_keys || echo {k} >> ~/.ssh/authorized_keys)").format(k=shlex.quote(pub))
+    if not re.match(r"^[A-Za-z0-9._-]+$", tag):
+        raise NotReady("unexpected ssh key comment {!r}".format(tag))
+    post = "sed -i {} ~/.ssh/authorized_keys; rm -f {}/id_ed25519; true".format(
+        shlex.quote("/ {}$/d".format(tag.replace(".", "\\."))), shlex.quote(tool_dir))
+    mapping = {}
+    for n in nodes:
+        for key in (n.host.mgmt_ip, n.host.ssh, n.host.name):
+            if key:
+                mapping[key] = n.host.name
+    own = item.id == "superbench.single_node"
+    return Job("delegate", [spec], files=files, group_result=True, host_pre=pre, host_post=post,
+               host_images=[worker] if worker else [], timeout=cfg.get("timeout"),
+               parse_group=lambda local_dir: superbench.parse_group(local_dir, mapping, own, cfg))
 
 
 def _mpi_job(ctx, item, nodes, image, launcher):

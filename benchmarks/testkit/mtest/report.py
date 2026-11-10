@@ -70,7 +70,7 @@ class Columns:
         self.cols = {}
 
     def add_metric(self, name, m):
-        if name in self.cols:
+        if name in self.cols or (isinstance(m, dict) and m.get("hidden")):
             return
         value = m.get("value") if isinstance(m, dict) else m
         self.cols[name] = {
@@ -185,6 +185,12 @@ def build_data(cluster, tests, title=None):
                      "items": list(r.get("items", {})), "hosts": len(members),
                      "path": os.path.relpath(os.path.join(results, r["run_id"]), results) + "/"})
 
+    rdma = build_rdma(cluster, results, group_state)
+    if rdma:
+        pos = max([i for i, it in enumerate(items) if it["id"].startswith("superbench.")] or [len(items) - 1]) + 1
+        items.insert(pos, {"id": "rdma", "title": "S6 RDMA 打流（ib-traffic）", "kind": "group", "view": "rdma",
+                           "cols": []})
+
     starts = [r["start"] for r in runs if r["start"]]
     ends = [r.get("finished_at") for r in list_runs(results) if r.get("finished_at")]
     golden = [h.name for h in cluster.hosts if h.golden]
@@ -200,8 +206,47 @@ def build_data(cluster, tests, title=None):
             "results_dir": results,
         },
         "racks": cluster.racks, "trays": max([h.tray for h in cluster.hosts] or [1]),
-        "items": items, "hosts": hosts, "groups": groups, "runs": runs, "rdma": None,
+        "items": items, "hosts": hosts, "groups": groups, "runs": runs, "rdma": rdma,
     }
+
+
+RDMA_ITEMS = ("superbench.all", "superbench.rack", "superbench.pair")
+
+
+def build_rdma(cluster, results, group_state):
+    """Pair x rail matrices for the report from the widest multi-node SuperBench run that has ib-traffic."""
+    for item_id in RDMA_ITEMS:
+        parts = []
+        run_id = ""
+        for gid, g in (group_state.get(item_id) or {}).items():
+            full = read_json(os.path.join(results, g.get("run_id", ""), "_groups", item_id, gid, "summary.json")) or {}
+            if full.get("rdma"):
+                parts.append(full["rdma"])
+                run_id = max(run_id, full.get("run_id", ""))
+        if not parts:
+            continue
+        names = {n for p in parts for key in p["pairs"] for n in key.split("|")}
+        order = [h.name for h in cluster.hosts if h.name in names] + sorted(names - set(cluster.by_name))
+        idx = {n: i for i, n in enumerate(order)}
+        racks = [cluster.by_name[n].rack if n in cluster.by_name else "?" for n in order]
+        pairs, keys = [], []
+        for p in parts:
+            for key, rnd in sorted(p["pairs"].items(), key=lambda kv: (kv[1], kv[0])):
+                a, b = key.split("|")
+                pairs.append([idx[a], idx[b], rnd])
+                keys.append((p, key))
+        tests, values = {}, {}
+        for p in parts:
+            for tid, t in p["tests"].items():
+                tests.setdefault(tid, {k: t[k] for k in ("id", "name", "unit", "cmd", "lower_better")})
+        for tid in tests:
+            values[tid] = [[(p["tests"].get(tid, {}).get("values", {}).get(key, {}).get(str(rail),
+                             p["tests"].get(tid, {}).get("values", {}).get(key, {}).get(rail, -1)))
+                            for p, key in keys] for rail in range(4)]
+        order_ids = sorted(tests, key=lambda t: (t.startswith("lat"), t.startswith("bidir"), t))
+        return {"hosts": order, "racks": racks, "pairs": pairs, "rounds": len({p[2] for p in pairs}),
+                "tests": [tests[t] for t in order_ids], "values": values, "run_id": run_id, "item": item_id}
+    return None
 
 
 def render_html(data):

@@ -143,6 +143,10 @@ class FakeOps:
         summary = self.b(host, "summary")
         if summary is not None:
             write_json(os.path.join(local_dir, "summary.json"), summary)
+        for rel, text in (self.b(host, "files") or {}).items():
+            os.makedirs(os.path.dirname(os.path.join(local_dir, rel)), exist_ok=True)
+            with open(os.path.join(local_dir, rel), "w") as f:
+                f.write(text)
         for name, text in (self.b(host, "raw") or {}).items():
             os.makedirs(os.path.join(local_dir, "raw"), exist_ok=True)
             with open(os.path.join(local_dir, "raw", name), "w") as f:

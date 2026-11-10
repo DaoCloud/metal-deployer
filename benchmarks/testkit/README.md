@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试工具（mtest）
 
-> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`dcgm`；其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`dcgm`、`superbench.single_node/pair/rack/all`；其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `mtest` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -193,6 +193,24 @@ mtest report [--out DIR] [--title T] [--archive]
 
 `gpu_burn` 尚未接入 dcgm 项，开启时记为跳过。
 
+### superbench：S6 SuperBench 与 RDMA 打流
+
+每组在 rank 0 主机上启动 sbcli 镜像（`images.sbcli`，需与主机同为 arm64），由它对组内所有主机执行 `sb deploy` / `sb run`（脚本 `node_scripts/sb_run.sh`）。worker 镜像 `images.sb_worker` 须已在每台主机上（ISO 预置），预检会逐台检查。
+
+- inventory：名称为主机的 mgmt 地址（MPI 走业务网），`ansible_host` 为 LOM 地址（SSH）。
+- SSH 密钥：本次运行生成的密钥在预检时加入每台主机的 `authorized_keys`，结束后（包括失败、取消）删除，rank 0 主机上的私钥同时删除；不会把 `cluster.yaml` 中的密钥拷到主机。
+- `benchmarks.include` / `exclude` 改写配置的 `superbench.enable`。
+- `timeout`（默认 14400 秒）覆盖 `runtime.run_timeout`。
+
+| 测试项 | 配置 | 结果 |
+|---|---|---|
+| `single_node` | `config_gb300_single_node.yaml` | 所有主机一次执行，按主机拆分：每个 benchmark 的 `return_code` 为检查项，非 0 时该主机失败；每块 GPU 的指标取最差值；NCCL、ib-loopback 只在报告中显示最大消息的数值，其余写入 `metrics.csv` |
+| `pair` / `rack` / `all` | `config_gb300_multi_node.yaml` | 组结果：NCCL busbw 表与随消息大小的曲线；ib-traffic 按节点对、rail 解析 |
+
+报告的“RDMA 打流”页取 `superbench.all`（否则 `rack`，再否则 `pair`）的 ib-traffic 结果，画出每个 rail 的节点对矩阵（带宽、双向带宽、时延），失败的测量（-1）显示为黑格。
+
+磁盘测试（`superbench.disk`）在 P10 实现。
+
 ### smoke：检查节点能否运行测试容器
 
 `smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在某台主机的 `env` 中设置 `MTEST_SMOKE_EXIT: "1"` 可让它单独失败。
@@ -231,7 +249,7 @@ benchmarks/testkit/e2e/run-e2e.sh [--keep]       # 执行器端到端测试，�
 benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3/S4 端到端测试，约 4 分钟
 ```
 
-端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错）。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
+端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错），和用 sb 替身镜像跑 `superbench`（替身经真实 SSH 用本次运行的密钥连每台主机并检查 worker 镜像，输出 SuperBench 格式结果；验证 include/exclude、按主机拆分、ib-traffic 节点对、运行后密钥删除、报告 RDMA 矩阵）。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
 S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 dnsmasq 经 DHCP 分配地址，另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。主机由 `mtest import` 导入 CSV 规划表（含 PCI、网关、存储路由、`ib_mtu`）。覆盖：导入、识别与金样本比对、dry-run、按 PCI 下发（默认路由、LOM 固定路由与保留 DHCP 地址、BF3 MTU 不变、IB MTU、存储路由、跨 rail ping）、重新识别后重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、规划表 PCI 在主机上不存在时拒绝、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
 
@@ -247,7 +265,7 @@ S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、
 | P6 | HTML 报告 | 完成 |
 | P3 | S3 网卡识别、S4 网络配置 | 完成（实机待确认） |
 | P4 | S5 DCGM | 完成（实机待确认） |
-| P5 | S6 SuperBench（含 RDMA 打流） | 待做 |
+| P5 | S6 SuperBench（含 RDMA 打流） | 完成（实机待确认） |
 | P7 | S7 IMEX、S7a SHARP | 待做 |
 | P8 | S8 MoE | 待做 |
 | P9 | testkit 镜像、文档 | 待做 |
