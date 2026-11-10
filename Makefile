@@ -79,6 +79,10 @@ build-sbcli: ## Build sbcli image locally
 		$(SBCLI_CONTEXT)
 	@echo "Build complete: $(SBCLI_IMAGE_NAME):$(SBCLI_IMAGE_TAG)"
 
+.PHONY: test-testkit
+test-testkit: ## Run mtest unit tests (benchmarks/testkit)
+	cd benchmarks/testkit && python3 -m unittest discover -s tests -v
+
 .PHONY: build-gpu-rdma-bench
 build-gpu-rdma-bench: ## 本地构建 GPU/RDMA benchmark 镜像
 	@echo "Building gpu-rdma-bench image..."
