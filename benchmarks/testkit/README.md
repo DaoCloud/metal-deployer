@@ -186,10 +186,10 @@ mtest report [--out DIR] [--title T] [--archive]
 
 `dcgm.checks` 选择启用哪些 nvidia-smi 检查，`health: false` 关闭 health。版本写入 `env.json`（driver、CUDA、vbios、DCGM），进入报告的版本一致性页；诊断日志在 `raw/diag.log`。
 
-`hostengine` 两种模式：
+`hostengine` 两种模式（命令都在容器里执行，区别是诊断由哪个 hostengine 跑）：
 
-- `host`（默认）：容器以主机网络连接主机上的 `nvidia-dcgm` 服务（127.0.0.1:5555），诊断由主机的 DCGM 执行；主机服务未运行时该主机记为 error。
-- `container`：容器内启动 nv-hostengine，用镜像自带的诊断插件。同一时间只能有一个 hostengine 使用 GPU，mtest 在启动前停掉主机的 `nvidia-dcgm`（或 `dcgm`）服务，结束后（包括失败、取消）再启动。
+- `container`（默认）：容器内启动 nv-hostengine，用镜像自带的 DCGM 与诊断插件，所有主机版本一致，不依赖主机安装的 DCGM。同一时间只能有一个 hostengine 使用 GPU，mtest 在启动前停掉主机的 `nvidia-dcgm`（或 `dcgm`）服务，结束后（包括失败、取消）再启动；这段时间依赖主机 DCGM 的监控（如 dcgm-exporter）中断。
+- `host`：容器以主机网络连接主机上的 `nvidia-dcgm` 服务（127.0.0.1:5555），诊断由主机的 DCGM 执行，不停主机服务；主机服务未运行时该主机记为 error。
 
 `gpu_burn` 尚未接入 dcgm 项，开启时记为跳过。
 

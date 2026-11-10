@@ -62,9 +62,9 @@ dcgm:
   scope: node
   hosts: all
   level: 3                        # dcgmi diag -r 3; 4 is the long run
-  hostengine: host                # host: use the host's nv-hostengine (nvidia-dcgm service, port 5555)
-                                  # container: run nv-hostengine in the container; the host service is
-                                  #            stopped during the test and started again afterwards
+  hostengine: container           # container: run nv-hostengine and the diag plugins of the image; the host
+                                  #            nvidia-dcgm service is stopped during the test, started again after
+                                  # host: use the host's nvidia-dcgm service (port 5555) and its DCGM install
   health: true
   checks: [ecc, remapped_rows, nvlink, fabric_state]
   gpu_burn: {enabled: false, seconds: 600}

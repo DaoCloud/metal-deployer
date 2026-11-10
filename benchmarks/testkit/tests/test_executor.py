@@ -400,7 +400,6 @@ class ExecutorTest(unittest.TestCase):
     def test_dcgm_parse_hook_and_host_hooks(self):
         from tests.test_dcgm import DIAG_PASS, DIAG_FAIL, SMI, NVLINK
         cluster, tests = self.setup(dcgm="true")
-        tests.data["dcgm"]["hostengine"] = "container"
         good = {"diag.json": DIAG_PASS, "nvidia-smi-q.txt": SMI, "nvlink.txt": NVLINK}
         ops = FakeOps({"gb300-r1-t01": {"raw": good},
                        "gb300-r1-t02": {"raw": dict(good, **{"diag.json": DIAG_FAIL})},

@@ -10,7 +10,7 @@
 set -u
 R=/results/raw
 mkdir -p "$R"
-MODE=${MTEST_DCGM_MODE:-host}
+MODE=${MTEST_DCGM_MODE:-container}
 LEVEL=${MTEST_DCGM_LEVEL:-3}
 LOG=mtest-${MTEST_RUN_ID:-run}.log
 date -u +%Y-%m-%dT%H:%M:%SZ > "$R/started_at"

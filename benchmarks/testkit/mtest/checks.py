@@ -95,7 +95,7 @@ def _check_item(tests, cluster, item, cfg, problems):
     if item.id == "smoke" and cfg.get("mode", item.mode) not in ("per-node", "mpi", "delegate"):
         problems.error("smoke: mode must be per-node, mpi or delegate")
     if item.id == "dcgm":
-        if cfg.get("hostengine", "host") not in ("host", "container"):
+        if cfg.get("hostengine", "container") not in ("host", "container"):
             problems.error("dcgm.hostengine must be host or container")
         if cfg.get("level", 3) not in (1, 2, 3, 4):
             problems.error("dcgm.level must be 1, 2, 3 or 4")

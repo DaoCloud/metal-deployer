@@ -166,7 +166,7 @@ def dcgm_job(ctx, item, cfg, nodes, image):
     """S5: dcgmi diag + nvidia-smi checks in the official DCGM image; parsed by mtest.parsers.dcgm."""
     from mtest.parsers import dcgm
     tests, run_id = ctx.tests, ctx.run_id
-    mode = cfg.get("hostengine", "host")
+    mode = cfg.get("hostengine", "container")
     env = {"MTEST_DCGM_MODE": mode, "MTEST_DCGM_LEVEL": str(cfg.get("level", 3)),
            "MTEST_DCGM_HEALTH": "1" if cfg.get("health", True) else "0"}
     text = node_script("dcgm_run.sh")
