@@ -26,6 +26,9 @@ def check_tests(tests, cluster, problems):
     for key in POSITIVE_INTS:
         if not isinstance(rt.get(key), int) or rt[key] <= 0:
             problems.error("runtime.{} must be a positive integer".format(key))
+    poll = rt.get("poll_interval")
+    if isinstance(poll, bool) or not isinstance(poll, (int, float)) or poll <= 0:
+        problems.error("runtime.poll_interval must be a positive number")
     if rt.get("group_order") not in ("serial", "parallel"):
         problems.error("runtime.group_order must be serial or parallel")
     if not isinstance(rt.get("container_args"), list):
@@ -89,5 +92,7 @@ def _check_item(tests, cluster, item, cfg, problems):
                 problems.warn("sharp.scale_out: group {} has only one rack; IB SHARP needs at least 2".format(g.id))
     if item.section == "superbench" and cfg.get("profile", "gb300") != "gb300":
         problems.warn("{}: profile is '{}', GB300 configs need gb300".format(where, cfg.get("profile")))
+    if item.id == "smoke" and cfg.get("mode", item.mode) not in ("per-node", "mpi", "delegate"):
+        problems.error("smoke: mode must be per-node, mpi or delegate")
     if item.id == "superbench.disk":
         problems.warn("superbench.disk overwrites disks; it is implemented in a later phase (P10)")

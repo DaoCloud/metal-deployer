@@ -65,7 +65,7 @@ def tests_schema():
         for sub in data[section].values():
             for key, value in extra.items():
                 sub.setdefault(key, value)
-    for section in ("dcgm", "imex"):
+    for section in ("smoke", "dcgm", "imex"):
         for key, value in extra.items():
             data[section].setdefault(key, value)
     return data

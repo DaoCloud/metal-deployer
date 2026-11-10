@@ -35,6 +35,7 @@ class Item:
 
 
 ITEMS = [
+    Item("smoke", "smoke", None, "per-node", "sb_worker", "P2"),
     Item("dcgm", "dcgm", None, "per-node", "dcgm", "P4"),
     Item("superbench.single_node", "superbench", "single_node", "delegate", "sbcli", "P5", batch=True),
     Item("superbench.disk", "superbench", "disk", "per-node", "sb_worker", "P10"),

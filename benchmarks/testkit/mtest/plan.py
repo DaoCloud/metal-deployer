@@ -11,12 +11,13 @@ STAGE = {"dcgm": "S5", "superbench": "S6", "imex": "S7", "sharp": "S7a", "moe": 
 
 class NodePlan:
 
-    def __init__(self, group, rank, host, env, cmd):
+    def __init__(self, group, rank, host, env, cmd, variables=None):
         self.group = group
         self.rank = rank
         self.host = host
         self.env = env
         self.cmd = cmd
+        self.variables = variables or {}
 
 
 class ItemPlan:
@@ -30,15 +31,19 @@ class ItemPlan:
         self.nodes = nodes
 
 
-def build_plan(cluster, tests, selectors=None, only=None, exclude=None, run_id="plan"):
-    """Plans of enabled items in run order. selectors limit items by id or prefix."""
+def build_plan(cluster, tests, selectors=None, only=None, exclude=None, run_id="plan", drop=None):
+    """Plans of enabled items in run order. selectors limit items by id or prefix.
+
+    drop maps item id to host names to leave out of that item.
+    """
     base = tests.runtime["master_port_base"]
     plans = []
     nic_cache = {}
     for item, cfg in enabled_items(tests):
         if selectors and not any(matches(item.id, s) for s in selectors):
             continue
-        groups, notes = build_groups(cluster, item, cfg, only=only, exclude=exclude)
+        groups, notes = build_groups(cluster, item, cfg, only=only, exclude=exclude,
+                                     drop=(drop or {}).get(item.id))
         nodes = []
         for g in groups:
             port = base + g.index
@@ -47,7 +52,7 @@ def build_plan(cluster, tests, selectors=None, only=None, exclude=None, run_id="
                     nic_cache[host.name] = load_nic(tests.results_dir, host.name)
                 variables = node_vars(run_id, g, rank, host, port, nic_cache[host.name])
                 nodes.append(NodePlan(g, rank, host, node_env(tests.common_env, cfg, rank, host, variables),
-                                      node_cmd(cfg, rank, variables)))
+                                      node_cmd(cfg, rank, variables), variables))
         plans.append(ItemPlan(item, cfg, tests.image_for(item, cfg), groups, notes, nodes))
     return plans
 

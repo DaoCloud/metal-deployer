@@ -71,10 +71,11 @@ def _group_id(hosts, cluster, fallback):
     return "+".join(racks) if full else fallback
 
 
-def build_groups(cluster, item, cfg, only=None, exclude=None):
+def build_groups(cluster, item, cfg, only=None, exclude=None, drop=None):
     """Split the item's hosts into groups according to its scope.
 
-    only/exclude come from the command line and can only narrow the selection.
+    only/exclude come from the command line and can only narrow the selection; drop is a
+    set of host names removed by mtest itself (for example after an earlier failure).
     Returns (groups, notes) where notes explain hosts that were dropped.
     """
     notes = []
@@ -83,9 +84,9 @@ def build_groups(cluster, item, cfg, only=None, exclude=None):
     if only is not None:
         keep = {h.name for h in resolve(cluster, only)}
         allowed = [h for h in allowed if h.name in keep]
-    drop = set()
+    drop = set(drop or ())
     if exclude:
-        drop = {h.name for h in resolve(cluster, exclude)}
+        drop |= {h.name for h in resolve(cluster, exclude)}
     for h in allowed:
         if skipped(h, item.id):
             notes.append("{} skips {} (cluster.yaml skip)".format(h.name, item.id))

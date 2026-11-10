@@ -6,7 +6,10 @@ from mtest.util import env_str
 
 VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-GROUP_VARS = {"run_id", "group_id", "node_rank", "nnodes", "master_addr", "master_port", "node_list", "rack_list"}
+GROUP_VARS = {"run_id", "group_id", "node_rank", "nnodes", "master_addr", "master_port", "node_list", "rack_list",
+              "np", "hostfile"}
+# Path of the MPI hostfile inside containers in mpi mode.
+HOSTFILE = "/mtest-ssh/hostfile"
 HOST_VARS = {"hostname", "rack", "tray", "gpus", "mgmt_ip", "storage_ip", "ib0_ip", "ib1_ip", "ib2_ip", "ib3_ip"}
 # Filled from "mtest nic discover" results; until then rendered as a visible placeholder.
 NIC_VARS = {"mgmt_if", "ib_hcas", "ib_ucx_devs"}
@@ -60,6 +63,8 @@ def node_vars(run_id, group, rank, host, master_port, nic=None):
         "master_port": master_port,
         "node_list": ",".join(h.mgmt_ip for h in group.hosts),
         "rack_list": ",".join(h.rack for h in group.hosts),
+        "np": sum(h.gpus for h in group.hosts),
+        "hostfile": HOSTFILE,
         "hostname": host.name,
         "rack": host.rack,
         "tray": host.tray,

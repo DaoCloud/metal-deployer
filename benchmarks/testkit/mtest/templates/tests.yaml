@@ -1,7 +1,7 @@
 # mtest tests file: which tests to run, on which hosts, and how.
 #
 # Items run in this built-in order; only "enabled: true" items run:
-#   dcgm -> superbench.single_node -> superbench.disk -> superbench.pair -> superbench.rack
+#   smoke -> dcgm -> superbench.single_node -> superbench.disk -> superbench.pair -> superbench.rack
 #   -> superbench.all -> imex -> sharp.scale_up -> sharp.scale_out
 #   -> moe.single -> moe.rack -> moe.cross_rack -> moe.all -> moe.moonep
 #
@@ -12,6 +12,7 @@
 #
 # Template variables, rendered per node at run time:
 #   group: {run_id} {group_id} {node_rank} {nnodes} {master_addr} {master_port} {node_list} {rack_list}
+#          {np} (GPUs in the group) {hostfile} (MPI hostfile in mpi mode)
 #   host:  {hostname} {rack} {tray} {gpus} {mgmt_ip} {storage_ip} {ib0_ip}..{ib3_ip}
 #   S3:    {mgmt_if} {ib_hcas} {ib_ucx_devs}   (filled from "mtest nic discover" results)
 # Environment layers, later ones win:
@@ -35,6 +36,7 @@ runtime:
   mpi_ssh_port: 2222              # sshd port inside containers in mpi mode
   rendezvous_timeout: 600         # seconds
   run_timeout: 7200               # seconds, per group
+  poll_interval: 3                # seconds between container status checks
   stop_on_failure: true           # hosts that failed an item do not run later items
   group_order: serial             # serial / parallel
 
@@ -43,6 +45,16 @@ common_env:                       # injected into every test container
   GLOO_SOCKET_IFNAME: "{mgmt_if}"
   NCCL_IB_HCA: "{ib_hcas}"
   UCX_NET_DEVICES: "{ib_ucx_devs}"
+
+# ---------------- smoke ----------------
+smoke:                            # start one container per host and write summary.json: checks SSH, Docker and the image
+  enabled: false
+  scope: node
+  hosts: all
+  image: sb_worker
+  mode: per-node                  # per-node / mpi / delegate; mpi runs "mpirun hostname" across the group
+  sleep: 0                        # seconds the container waits before finishing
+  exit_code: 0                    # exit code to return; set MTEST_SMOKE_EXIT in a host env to fail one host
 
 # ---------------- S5 DCGM ----------------
 dcgm:

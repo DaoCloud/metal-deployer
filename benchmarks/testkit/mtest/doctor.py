@@ -27,6 +27,9 @@ def checks():
     ssh = shutil.which("ssh")
     rows.append(("ssh", True, bool(ssh), _version(["ssh", "-V"]) if ssh else "missing",
                  "" if ssh else "install openssh-client"))
+    keygen = shutil.which("ssh-keygen")
+    rows.append(("ssh-keygen", False, bool(keygen), keygen or "missing",
+                 "" if keygen else "mpi-mode items (imex, sharp) cannot run"))
     rsync = shutil.which("rsync")
     rows.append(("rsync", False, bool(rsync), rsync or "missing", "" if rsync else "results are copied with ssh + tar"))
     sb = shutil.which("sb")

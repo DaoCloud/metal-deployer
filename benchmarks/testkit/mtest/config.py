@@ -18,6 +18,7 @@ RUNTIME_DEFAULTS = {
     "mpi_ssh_port": 2222,
     "rendezvous_timeout": 600,
     "run_timeout": 7200,
+    "poll_interval": 3,
     "stop_on_failure": True,
     "group_order": "serial",
 }

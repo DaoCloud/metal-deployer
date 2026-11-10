@@ -10,10 +10,6 @@ from mtest import __version__
 PENDING = {
     "nic": "P3",
     "net": "P3",
-    "run": "P2",
-    "status": "P2",
-    "logs": "P2",
-    "cancel": "P2",
     "report": "P6",
 }
 
@@ -55,11 +51,16 @@ def build_parser():
 
     run = sub.add_parser("run", help="S5-S8: run enabled test items in the built-in order")
     _add_selection(run)
+    run.add_argument("--force", action="store_true",
+                     help="also run hosts that failed an earlier item (ignore stop_on_failure)")
 
-    sub.add_parser("status", help="show per-item and per-host progress")
-    logs = sub.add_parser("logs", help="show logs of a run")
+    st = sub.add_parser("status", help="show per-item and per-host results")
+    st.add_argument("--host", help="show every item of one host")
+    logs = sub.add_parser("logs", help="show a run, or the logs of one host in a run")
     logs.add_argument("run_id")
     logs.add_argument("--host")
+    logs.add_argument("--item", help="only this item")
+    logs.add_argument("--follow", action="store_true", help="stream live container logs over ssh")
     cancel = sub.add_parser("cancel", help="stop all containers of a run")
     cancel.add_argument("run_id")
     sub.add_parser("report", help="S9: build the HTML report from local results")
@@ -152,6 +153,43 @@ def cmd_plan(args):
     return 0
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
+def cmd_run(args):
+    import signal
+    from mtest.docker import DockerOps
+    from mtest.executor import run_items
+    from mtest.items import known_selector
+    from mtest.selection import SelectionError
+    # Stop containers on Ctrl-C and on kill (TERM), also when started in the background.
+    signal.signal(signal.SIGINT, _interrupt)
+    signal.signal(signal.SIGTERM, _interrupt)
+    cluster, tests, problems = _load(args)
+    for s in args.items:
+        if not known_selector(s):
+            problems.error("'{}' is not a test item or prefix".format(s))
+    if not problems.ok:
+        _print_problems(problems)
+        return 1
+    for msg in problems.warnings:
+        print("warning: " + msg)
+    try:
+        _, code = run_items(cluster, tests, args.items, args.hosts, args.exclude, DockerOps(cluster.ssh),
+                            force=args.force, out=lambda m: print(m, flush=True))
+    except SelectionError as e:
+        print("error: " + str(e))
+        return 1
+    return code
+
+
+def _load_quiet(args):
+    from mtest.config import load_both
+    cluster, tests, _ = load_both(args.cluster, args.tests)
+    return cluster, tests
+
+
 def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -173,6 +211,19 @@ def main(argv=None):
             return cmd_validate(args)
         if args.command == "plan":
             return cmd_plan(args)
+        if args.command == "run":
+            return cmd_run(args)
+        from mtest import runs
+        cluster, tests = _load_quiet(args)
+        if args.command == "status":
+            return runs.status(tests, cluster, host=args.host)
+        if args.command == "logs":
+            from mtest.docker import DockerOps
+            ops = {"cluster": cluster, "docker": DockerOps(cluster.ssh)} if args.follow else None
+            return runs.logs(tests, args.run_id, host=args.host, item=args.item, follow=args.follow, ops=ops)
+        if args.command == "cancel":
+            from mtest.docker import DockerOps
+            return runs.cancel(tests, cluster, args.run_id, DockerOps(cluster.ssh))
     except ConfigError as e:
         print("error: " + str(e))
         return 1
