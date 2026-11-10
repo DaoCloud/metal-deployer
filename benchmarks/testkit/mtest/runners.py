@@ -73,8 +73,12 @@ class ContainerSpec:
 
 class Job:
 
-    def __init__(self, mode, containers, launcher=None, launcher_env=None, files=None, group_result=False):
+    def __init__(self, mode, containers, launcher=None, launcher_env=None, files=None, group_result=False,
+                 host_pre=None, host_post=None, parse=None):
         self.mode = mode
+        self.host_pre = host_pre            # shell run on each host after preflight, before containers start
+        self.host_post = host_post          # shell run on each host where host_pre ran, always at the end
+        self.parse = parse                  # parse(local_dir, host) -> summary fields, after results are copied
         self.containers = containers
         self.launcher = launcher            # mpi: shell command run in the rank 0 container
         self.launcher_env = launcher_env or {}
@@ -145,9 +149,46 @@ def build_job(ctx, item, cfg, nodes):
             launcher = render(SMOKE_MPI_LAUNCHER, nodes[0].variables)
         return _mpi_job(ctx, item, nodes, image, launcher)
 
+    if item.id == "dcgm":
+        return dcgm_job(ctx, item, cfg, nodes, image)
+
     if mode == "per-node" and all(n.cmd for n in nodes):
         return Job(mode, [_spec(tests, run_id, item.id, n, image, n.cmd) for n in nodes])
     raise NotReady("{} is not implemented yet ({})".format(item.id, item.phase))
+
+
+def node_script(name):
+    from mtest.nodecmd import script
+    return script(name).decode()
+
+
+def dcgm_job(ctx, item, cfg, nodes, image):
+    """S5: dcgmi diag + nvidia-smi checks in the official DCGM image; parsed by mtest.parsers.dcgm."""
+    from mtest.parsers import dcgm
+    tests, run_id = ctx.tests, ctx.run_id
+    mode = cfg.get("hostengine", "host")
+    env = {"MTEST_DCGM_MODE": mode, "MTEST_DCGM_LEVEL": str(cfg.get("level", 3)),
+           "MTEST_DCGM_HEALTH": "1" if cfg.get("health", True) else "0"}
+    text = node_script("dcgm_run.sh")
+    specs, files = [], []
+    for n in nodes:
+        tool_dir = node_dir(tests, run_id, item.id, n.host.name) + ".mtest"
+        files.append((n.host, tool_dir + "/dcgm_run.sh", text, "755"))
+        mounts = [(tool_dir, "/mtest", True)]
+        if mode == "host":
+            mounts.append(("/var/log/nvidia-dcgm", "/host-dcgm-log", True))
+        spec = _spec(tests, run_id, item.id, n, image, ["/mtest/dcgm_run.sh"], env, mounts=mounts)
+        spec.extra_args = ["--entrypoint", "sh"]
+        specs.append(spec)
+    flag = "/run/mtest-dcgm-stopped-" + run_id
+    pre = post = None
+    if mode == "container":
+        # Only one hostengine may drive the GPUs: stop the host service, start it again afterwards.
+        pre = ("rm -f {f}; for s in nvidia-dcgm dcgm; do if systemctl is-active --quiet $s; then "
+               "systemctl stop $s && echo $s >> {f}; fi; done; true").format(f=flag)
+        post = "[ -f {f} ] && for s in $(cat {f}); do systemctl start $s; done; rm -f {f}; true".format(f=flag)
+    return Job("per-node", specs, files=files, host_pre=pre, host_post=post,
+               parse=lambda local_dir, host: dcgm.parse(local_dir, cfg, host))
 
 
 def _mpi_job(ctx, item, nodes, image, launcher):

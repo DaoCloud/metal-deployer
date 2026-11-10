@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试工具（mtest）
 
-> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`dcgm`；其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `mtest` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -173,6 +173,26 @@ mtest report [--out DIR] [--title T] [--archive]
 
 可选 `/results/env.json`（`{"driver": "580.95.05", ...}`）用于版本一致性页。组级 `summary.json` 可带 `tables`、`charts`、`matrix`，在组卡片中显示。
 
+### dcgm：S5 DCGM 诊断
+
+使用官方镜像 `nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04`（含 arm64、CUDA 13 诊断插件，与 ISO 中 DCGM 4.7.1 一致），不另做镜像。mtest 把包装脚本 `node_scripts/dcgm_run.sh` 写到主机并挂载进容器，脚本只采集原始输出，判定在控制端完成（`mtest/parsers/dcgm.py`）。
+
+| 采集 | 判定 |
+|---|---|
+| `dcgmi diag -r <level> -j` | 每个诊断项一个检查：Fail 为失败（附失败 GPU 与告警），Skip 记为跳过；`runtime_error` 记为失败 |
+| `nvidia-smi -q` | GPU 数量；未纠正 ECC（Volatile 各项之和）；Remapped Rows 未纠正、Pending、失败；Fabric `State: Completed` / `Status: Success` |
+| `nvidia-smi nvlink -s` | 每张 GPU 的 NVLink 全部 up |
+| `dcgmi health` | Overall Health 为 Healthy |
+
+`dcgm.checks` 选择启用哪些 nvidia-smi 检查，`health: false` 关闭 health。版本写入 `env.json`（driver、CUDA、vbios、DCGM），进入报告的版本一致性页；诊断日志在 `raw/diag.log`。
+
+`hostengine` 两种模式：
+
+- `host`（默认）：容器以主机网络连接主机上的 `nvidia-dcgm` 服务（127.0.0.1:5555），诊断由主机的 DCGM 执行；主机服务未运行时该主机记为 error。
+- `container`：容器内启动 nv-hostengine，用镜像自带的诊断插件。同一时间只能有一个 hostengine 使用 GPU，mtest 在启动前停掉主机的 `nvidia-dcgm`（或 `dcgm`）服务，结束后（包括失败、取消）再启动。
+
+`gpu_burn` 尚未接入 dcgm 项，开启时记为跳过。
+
 ### smoke：检查节点能否运行测试容器
 
 `smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在某台主机的 `env` 中设置 `MTEST_SMOKE_EXIT: "1"` 可让它单独失败。
@@ -211,7 +231,7 @@ benchmarks/testkit/e2e/run-e2e.sh [--keep]       # 执行器端到端测试，�
 benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3/S4 端到端测试，约 4 分钟
 ```
 
-端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
+端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错）。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
 S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 dnsmasq 经 DHCP 分配地址，另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。主机由 `mtest import` 导入 CSV 规划表（含 PCI、网关、存储路由、`ib_mtu`）。覆盖：导入、识别与金样本比对、dry-run、按 PCI 下发（默认路由、LOM 固定路由与保留 DHCP 地址、BF3 MTU 不变、IB MTU、存储路由、跨 rail ping）、重新识别后重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、规划表 PCI 在主机上不存在时拒绝、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
 
@@ -226,7 +246,7 @@ S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、
 | P2 | 执行器：SSH、远程 Docker、三种启动模式、结果拉回、`run/status/logs/cancel` | 完成 |
 | P6 | HTML 报告 | 完成 |
 | P3 | S3 网卡识别、S4 网络配置 | 完成（实机待确认） |
-| P4 | S5 DCGM | 待做 |
+| P4 | S5 DCGM | 完成（实机待确认） |
 | P5 | S6 SuperBench（含 RDMA 打流） | 待做 |
 | P7 | S7 IMEX、S7a SHARP | 待做 |
 | P8 | S8 MoE | 待做 |

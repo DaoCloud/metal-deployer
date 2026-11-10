@@ -102,6 +102,9 @@ class DockerOps:
         args += [name, "sh", "-c", command]
         return self.remote.popen(host, " ".join(q(a) for a in args), stdout=log)
 
+    def host_run(self, host, command, timeout=300):
+        return self._run(host, command, timeout=timeout)
+
     def exec_run(self, host, name, command, timeout):
         return self._run(host, "docker exec {} sh -c {}".format(q(name), q(command)), timeout=timeout)
 

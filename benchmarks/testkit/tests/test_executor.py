@@ -130,6 +130,10 @@ class FakeOps:
         self.calls.append(("remove", host.name, tuple(names)))
         return Result(0)
 
+    def host_run(self, host, command, timeout=300):
+        self.calls.append(("host_run", host.name, command))
+        return Result(1, "", "systemctl failed") if self.b(host, "host_run_fails") else Result(0)
+
     def remove_by_label(self, host, label):
         self.calls.append(("remove_by_label", host.name, label))
         return Result(0)
@@ -139,6 +143,10 @@ class FakeOps:
         summary = self.b(host, "summary")
         if summary is not None:
             write_json(os.path.join(local_dir, "summary.json"), summary)
+        for name, text in (self.b(host, "raw") or {}).items():
+            os.makedirs(os.path.join(local_dir, "raw"), exist_ok=True)
+            with open(os.path.join(local_dir, "raw", name), "w") as f:
+                f.write(text)
         with open(os.path.join(local_dir, "container.log"), "w") as f:
             f.write("log of {}\n".format(host.name))
         return Result(1, "", "rsync failed") if self.b(host, "fetch_fails") else Result(0)
@@ -226,8 +234,7 @@ class ExecutorTest(unittest.TestCase):
         ops = FakeOps()
         self.run_(cluster, tests, ops, selectors=["dcgm"])
         self.assertTrue(any("gb300-r1-t01 left out (smoke fail in run old)" in l for l in self.lines))
-        self.assertTrue(any("dcgm: skipped, dcgm is not implemented yet (P4)" in l for l in self.lines))
-        self.assertTrue(any("finished: nothing was run" in l for l in self.lines))
+        self.assertEqual(sorted(c[1] for c in ops.calls if c[0] == "run"), ["gb300-r1-t02", "gb300-r1-t03"])
         ops = FakeOps()
         self.lines = []
         self.run_(cluster, tests, ops, selectors=["smoke"])
@@ -389,6 +396,29 @@ class ExecutorTest(unittest.TestCase):
         _, code = self.run_(cluster, tests, ops)
         self.assertEqual(code, 130)
         self.assertEqual(self.host_state(tests, "gb300-r1-t02")["status"], "cancelled")
+
+    def test_dcgm_parse_hook_and_host_hooks(self):
+        from tests.test_dcgm import DIAG_PASS, DIAG_FAIL, SMI, NVLINK
+        cluster, tests = self.setup(dcgm="true")
+        tests.data["dcgm"]["hostengine"] = "container"
+        good = {"diag.json": DIAG_PASS, "nvidia-smi-q.txt": SMI, "nvlink.txt": NVLINK}
+        ops = FakeOps({"gb300-r1-t01": {"raw": good},
+                       "gb300-r1-t02": {"raw": dict(good, **{"diag.json": DIAG_FAIL})},
+                       "gb300-r1-t03": {"raw": good, "host_run_fails": True}})
+        _, code = self.run_(cluster, tests, ops, selectors=["dcgm"])
+        self.assertEqual(code, 1)
+        self.assertEqual(self.host_state(tests, "gb300-r1-t01", "dcgm")["status"], "pass")
+        st = self.host_state(tests, "gb300-r1-t02", "dcgm")
+        self.assertEqual(st["status"], "fail")
+        self.assertFalse(st["group_result"])
+        self.assertIn("diag:memory", st["reason"])
+        self.assertIn("host preparation failed", self.host_state(tests, "gb300-r1-t03", "dcgm")["reason"])
+        pre = [c for c in ops.calls if c[0] == "host_run" and "systemctl stop" in c[2]]
+        post = [c[1] for c in ops.calls if c[0] == "host_run" and "systemctl start" in c[2]]
+        self.assertEqual(len(pre), 3)
+        self.assertEqual(sorted(post), ["gb300-r1-t01", "gb300-r1-t02", "gb300-r1-t03"])
+        args = [c for c in ops.calls if c[0] == "put" and c[2].endswith("dcgm_run.sh")]
+        self.assertEqual(len(args), 3)
 
     def test_views(self):
         cluster, tests = self.setup()

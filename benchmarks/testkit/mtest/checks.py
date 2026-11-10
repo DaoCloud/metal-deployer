@@ -94,5 +94,13 @@ def _check_item(tests, cluster, item, cfg, problems):
         problems.warn("{}: profile is '{}', GB300 configs need gb300".format(where, cfg.get("profile")))
     if item.id == "smoke" and cfg.get("mode", item.mode) not in ("per-node", "mpi", "delegate"):
         problems.error("smoke: mode must be per-node, mpi or delegate")
+    if item.id == "dcgm":
+        if cfg.get("hostengine", "host") not in ("host", "container"):
+            problems.error("dcgm.hostengine must be host or container")
+        if cfg.get("level", 3) not in (1, 2, 3, 4):
+            problems.error("dcgm.level must be 1, 2, 3 or 4")
+        unknown = set(cfg.get("checks") or []) - {"ecc", "remapped_rows", "nvlink", "fabric_state"}
+        if unknown:
+            problems.error("dcgm.checks: unknown {}".format(sorted(unknown)))
     if item.id == "superbench.disk":
         problems.warn("superbench.disk overwrites disks; it is implemented in a later phase (P10)")

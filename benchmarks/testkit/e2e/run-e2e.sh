@@ -17,6 +17,7 @@ SSH_NET=${SSH_NET:-172.28.0}
 MGMT_NET=${MGMT_NET:-172.29.0}
 NODE_IMAGE=mtest-e2e-node:latest
 WORKER_IMAGE=mtest-e2e-worker:latest
+DCGM_IMAGE=${DCGM_IMAGE:-nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04}
 HOSTS=(gb300-r1-t01 gb300-r1-t02 gb300-r1-t03)
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
@@ -89,7 +90,7 @@ scenario() {
         done
     } > "$E2E_ROOT/$dir/cluster.yaml"
     cat > "$E2E_ROOT/$dir/tests.yaml" <<EOF
-images: {sb_worker: $WORKER_IMAGE, dcgm: $WORKER_IMAGE}
+images: {sb_worker: $WORKER_IMAGE, dcgm: $DCGM_IMAGE}
 image_pull: skip
 runtime:
   results_dir: ./runs
@@ -235,7 +236,28 @@ check "status counts the failed host" grep -q "gb300-r1-t02 .*smoke .*fail" <<<"
 out=$(mtest s1 logs "$(last_run s1)" --host gb300-r1-t02)
 check "logs prints the container log" grep -q "smoke: host gb300-r1-t02" <<<"$out"
 
-log "10. report"
+log "10. dcgm (official DCGM image, no GPUs here)"
+if docker image inspect "$DCGM_IMAGE" >/dev/null 2>&1 || docker pull -q "$DCGM_IMAGE" >/dev/null 2>&1; then
+    scenario s10 node per-node 0 300 "" "dcgm: {enabled: true, scope: node, hosts: all, hostengine: container, level: 1}"
+    mtest s10 run dcgm >"$E2E_ROOT/s10.log" 2>&1 && rc=0 || rc=$?
+    run=$(last_run s10)
+    d="$E2E_ROOT/s10/runs/$run/gb300-r1-t01/dcgm"
+    check "run exits 1 (no GPUs)" [ "$rc" = 1 ]
+    check "raw diag output copied back" grep -q '"DCGM Diagnostic"' "$d/raw/diag.json"
+    check "diag error parsed into the reason" grep -q "No available testing entities" <<<"$(state s10 gb300-r1-t01 dcgm; json "$E2E_ROOT/s10/runs/state.json" "d['hosts']['gb300-r1-t01']['dcgm']['reason']")"
+    check "env.json reports DCGM 4.7.1" [ "$(json "$d/env.json" "d['dcgm']")" = 4.7.1 ]
+    check "summary has checks" [ "$(json "$d/summary.json" "d['checks']['gpu_count']['result']")" = fail ]
+    check "containers removed" no_containers "$run"
+    sed -i 's/hostengine: container/hostengine: host/' "$E2E_ROOT/s10/tests.yaml"
+    mtest s10 run dcgm >"$E2E_ROOT/s10b.log" 2>&1 || true
+    check "host mode without host hostengine is an error" [ "$(state s10 gb300-r1-t02 dcgm)" = error ]
+    check "error explains the missing hostengine" grep -q "cannot reach the host nv-hostengine" \
+        "$E2E_ROOT/s10/runs/$(last_run s10)/gb300-r1-t02/dcgm/container.log"
+else
+    log "   skipped: cannot pull $DCGM_IMAGE"
+fi
+
+log "11. report"
 out=$(mtest s3 report --archive) && rc=0 || rc=$?
 check "report exits 0" [ "$rc" = 0 ]
 check "report.html written" grep -q "const D = " "$E2E_ROOT/s3/runs/report/report.html"

@@ -149,6 +149,7 @@ class GroupRunner:
         self.first_failed = None
         self.group_reason = ""
         self.host_fault = set()   # hosts whose own problem caused their result
+        self.pre_done = set()     # hosts where job.host_pre ran, so job.host_post must run
 
     # ---------- helpers ----------
     def set(self, host_name, status, reason="", rc=None, fault=False):
@@ -243,6 +244,11 @@ class GroupRunner:
                 res = self.ops.put(host, path, data, mode)
                 if not res.ok:
                     return host_name, "cannot write {}: {}".format(path, res.message())
+            if self.job.host_pre:
+                self.pre_done.add(host_name)
+                res = self.ops.host_run(host, self.job.host_pre)
+                if not res.ok:
+                    return host_name, "host preparation failed: " + res.message()
             return host_name, None
 
         bad = {h: r for h, r in pmap(check, specs, self.ctx.parallel) if r}
@@ -443,16 +449,40 @@ class GroupRunner:
             host_name = spec.host.name
             remote = node_dir(self.ctx.tests, self.ctx.run_id, self.item.id, host_name)
             self.ops.save_logs(spec.host, spec.name, remote + "/container.log")
-            res = self.ops.fetch(spec.host, remote, self.ctx.local_dir(host_name, self.item.id))
+            local = self.ctx.local_dir(host_name, self.item.id)
+            res = self.ops.fetch(spec.host, remote, local)
+            if res.ok and self.job.parse and host_name in self.result and self.result[host_name]["status"] == "pass":
+                self.parse_one(spec.host, local)
             return host_name, None if res.ok else res.message()
         for host_name, err in pmap(one, self.started, self.ctx.parallel):
             if err:
                 self.copy_errors = getattr(self, "copy_errors", {})
                 self.copy_errors[host_name] = err
 
+    def parse_one(self, host, local):
+        """Merge the item parser's verdict, metrics and checks into the host's summary.json."""
+        path = os.path.join(local, "summary.json")
+        summary = read_json(path) or {}
+        try:
+            parsed = self.job.parse(local, host)
+        except Exception as e:      # a parser bug must not lose the run
+            parsed = {"status": "error", "reason": "cannot parse results: {}: {}".format(type(e).__name__, e)}
+        summary.update(parsed)
+        write_json(path, summary)
+        if parsed.get("status") in ("fail", "error"):
+            self.result[host.name] = {"status": parsed["status"], "reason": parsed.get("reason", ""),
+                                      "rc": self.result[host.name]["rc"]}
+            self.host_fault.add(host.name)
+
     def cleanup(self):
         groups = list(self.by_host(getattr(self, "started", [])).values())
         pmap(lambda g: self.ops.remove(g[0].host, [s.name for s in g]), groups, self.ctx.parallel)
+        if self.job.host_post and self.pre_done:
+            hosts = [self.hosts[h].host for h in sorted(self.pre_done)]
+            for host, res in zip(hosts, pmap(lambda h: self.ops.host_run(h, self.job.host_post), hosts,
+                                             self.ctx.parallel)):
+                if not res.ok:
+                    self.ctx.log("  {}: host cleanup failed: {}".format(host.name, res.message()))
 
     # ---------- results ----------
     def finish(self, started, t0):

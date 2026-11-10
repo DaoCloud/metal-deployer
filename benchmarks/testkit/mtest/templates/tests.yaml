@@ -20,7 +20,7 @@
 version: 1
 
 images:                           # tag or tag@digest; the digest actually used is recorded in results
-  dcgm: registry.local/metal-deployer/dcgm-diag:4.7.1
+  dcgm: nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04   # same DCGM version as the ISO
   sbcli: registry.local/metal-deployer/testkit:latest
   sb_worker: superbench/main:cuda13.0
   sharp: ""                       # empty: use sb_worker
@@ -62,6 +62,9 @@ dcgm:
   scope: node
   hosts: all
   level: 3                        # dcgmi diag -r 3; 4 is the long run
+  hostengine: host                # host: use the host's nv-hostengine (nvidia-dcgm service, port 5555)
+                                  # container: run nv-hostengine in the container; the host service is
+                                  #            stopped during the test and started again afterwards
   health: true
   checks: [ecc, remapped_rows, nvlink, fabric_state]
   gpu_burn: {enabled: false, seconds: 600}
