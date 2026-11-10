@@ -11,8 +11,9 @@ class Item:
     batch means one invocation covers every group, as sb does for single-node configs.
     """
 
-    def __init__(self, id, section, sub, mode, image, phase, batch=False):
+    def __init__(self, id, section, sub, mode, image, phase, title, batch=False):
         self.id = id
+        self.title = title
         self.section = section
         self.sub = sub
         self.mode = mode
@@ -35,21 +36,21 @@ class Item:
 
 
 ITEMS = [
-    Item("smoke", "smoke", None, "per-node", "sb_worker", "P2"),
-    Item("dcgm", "dcgm", None, "per-node", "dcgm", "P4"),
-    Item("superbench.single_node", "superbench", "single_node", "delegate", "sbcli", "P5", batch=True),
-    Item("superbench.disk", "superbench", "disk", "per-node", "sb_worker", "P10"),
-    Item("superbench.pair", "superbench", "pair", "delegate", "sbcli", "P5"),
-    Item("superbench.rack", "superbench", "rack", "delegate", "sbcli", "P5"),
-    Item("superbench.all", "superbench", "all", "delegate", "sbcli", "P5"),
-    Item("imex", "imex", None, "mpi", "sb_worker", "P7"),
-    Item("sharp.scale_up", "sharp", "scale_up", "mpi", "sharp", "P7"),
-    Item("sharp.scale_out", "sharp", "scale_out", "mpi", "sharp", "P7"),
-    Item("moe.single", "moe", "single", "per-node", "moe_bench", "P8"),
-    Item("moe.rack", "moe", "rack", "per-node", "moe_bench", "P8"),
-    Item("moe.cross_rack", "moe", "cross_rack", "per-node", "moe_bench", "P8"),
-    Item("moe.all", "moe", "all", "per-node", "moe_bench", "P8"),
-    Item("moe.moonep", "moe", "moonep", "per-node", "moe_bench", "later"),
+    Item("smoke", "smoke", None, "per-node", "sb_worker", "P2", "冒烟测试（smoke）"),
+    Item("dcgm", "dcgm", None, "per-node", "dcgm", "P4", "S5 DCGM 诊断"),
+    Item("superbench.single_node", "superbench", "single_node", "delegate", "sbcli", "P5", "S6 SuperBench 单机", batch=True),
+    Item("superbench.disk", "superbench", "disk", "per-node", "sb_worker", "P10", "S6 SuperBench 磁盘"),
+    Item("superbench.pair", "superbench", "pair", "delegate", "sbcli", "P5", "S6 SuperBench 双节点 IB"),
+    Item("superbench.rack", "superbench", "rack", "delegate", "sbcli", "P5", "S6 SuperBench rack 内 IB"),
+    Item("superbench.all", "superbench", "all", "delegate", "sbcli", "P5", "S6 SuperBench 全部节点 IB"),
+    Item("imex", "imex", None, "mpi", "sb_worker", "P7", "S7 IMEX"),
+    Item("sharp.scale_up", "sharp", "scale_up", "mpi", "sharp", "P7", "S7a NVLink SHARP（柜内）"),
+    Item("sharp.scale_out", "sharp", "scale_out", "mpi", "sharp", "P7", "S7a IB SHARP（柜间）"),
+    Item("moe.single", "moe", "single", "per-node", "moe_bench", "P8", "S8 MoE 单机（L1）"),
+    Item("moe.rack", "moe", "rack", "per-node", "moe_bench", "P8", "S8 MoE rack 内（L2）"),
+    Item("moe.cross_rack", "moe", "cross_rack", "per-node", "moe_bench", "P8", "S8 MoE 跨 rack（L3）"),
+    Item("moe.all", "moe", "all", "per-node", "moe_bench", "P8", "S8 MoE 全部节点（L4）"),
+    Item("moe.moonep", "moe", "moonep", "per-node", "moe_bench", "later", "S8 MoonEP"),
 ]
 
 BY_ID = {item.id: item for item in ITEMS}

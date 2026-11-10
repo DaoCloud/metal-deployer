@@ -36,16 +36,16 @@ class CliTest(unittest.TestCase):
             "plan": ["plan", "moe", "--hosts", "R1", "-v"], "doctor": ["doctor"],
             "nic": ["nic", "discover"], "net": ["net", "apply", "--dry-run"],
             "run": ["run", "moe.rack", "--hosts", "R1", "--force"], "logs": ["logs", "x", "--host", "h"],
-            "cancel": ["cancel", "x"], "status": ["status", "--host", "h"],
+            "cancel": ["cancel", "x"], "status": ["status", "--host", "h"], "report": ["report", "--archive"],
         }
-        for name in list(PENDING) + ["init", "validate", "plan", "doctor", "run", "status", "logs", "cancel"]:
+        for name in list(PENDING) + ["init", "validate", "plan", "doctor", "run", "status", "logs", "cancel", "report"]:
             args = parser.parse_args(samples.get(name, [name]))
             self.assertEqual(args.command, name)
 
     def test_pending_command_exits_2(self):
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            self.assertEqual(main(["report"]), 2)
+            self.assertEqual(main(["nic", "discover"]), 2)
         self.assertIn("not implemented yet", err.getvalue())
 
     def test_init_validate_plan(self):

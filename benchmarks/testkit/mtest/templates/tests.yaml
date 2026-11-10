@@ -205,4 +205,5 @@ moe:
 
 # ---------------- S9 report ----------------
 report:
-  formats: [html, csv]
+  title: GB300 测试报告
+  formats: [html, csv]            # html: report.html (single file, works offline); csv: hosts.csv, metrics.csv

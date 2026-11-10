@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试工具（mtest）
 
-> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`run`、`status`、`logs`、`cancel`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `mtest` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -81,6 +81,35 @@ runs/
     └── _groups/<项>/<组>/summary.json
 ```
 
+## 报告
+
+```bash
+mtest report [--out DIR] [--title T] [--archive]
+```
+
+只读本地结果目录，不连主机，可随时重新生成。默认写到 `<results_dir>/report/`：
+
+| 文件 | 内容 |
+|---|---|
+| `report.html` | 单个文件，数据、样式、图表全部内嵌，离线可打开 |
+| `hosts.csv` | 每台主机一行：总体结论、各测试项状态、失败原因 |
+| `metrics.csv` | 每条指标一行：run、测试项、组、主机、指标、数值、单位 |
+| `raw-logs.tar.gz` | `--archive` 时打包所有 run 目录 |
+
+每台主机每个测试项取 `state.json` 中的最新结果。页面：总览（rack × tray 矩阵）、问题与离群值、各测试项（主机 × 指标表，按偏离全部主机中位数着色；多节点项另有组卡片）、主机详情、版本一致性、执行记录。
+
+判定规则：主机“有自身失败项”只看它自己的结果（fail / error / timeout）；mpi、delegate 的组结果和被连带停止都记在组上，不改变主机结论。性能指标不设门限，只按偏离中位数着色提示。
+
+测试容器写 `/results/summary.json` 即可进入报告，格式：
+
+```json
+{"status": "pass",
+ "metrics": {"gemm_fp8": {"value": 4510.3, "unit": "TFLOPS", "category": "GPU-COMPUTE", "lower_better": false}},
+ "checks": {"ecc": {"result": "pass", "reason": ""}}}
+```
+
+可选 `/results/env.json`（`{"driver": "580.95.05", ...}`）用于版本一致性页。组级 `summary.json` 可带 `tables`、`charts`、`matrix`，在组卡片中显示。
+
 ### smoke：检查节点能否运行测试容器
 
 `smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在某台主机的 `env` 中设置 `MTEST_SMOKE_EXIT: "1"` 可让它单独失败。
@@ -118,7 +147,7 @@ make test-testkit       # 或 cd benchmarks/testkit && python3 -m unittest disco
 benchmarks/testkit/e2e/run-e2e.sh [--keep]   # 端到端测试，约 3 分钟
 ```
 
-端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
+端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
 只用标准库和 PyYAML，语法保持兼容 Python 3.8。
 
@@ -129,7 +158,7 @@ benchmarks/testkit/e2e/run-e2e.sh [--keep]   # 端到端测试，约 3 分钟
 | P0 | 包结构、命令框架、测试 | 完成 |
 | P1 | 配置加载与校验、主机选择、分组与 rank、`init/validate/plan/doctor` | 完成 |
 | P2 | 执行器：SSH、远程 Docker、三种启动模式、结果拉回、`run/status/logs/cancel` | 完成 |
-| P6 | HTML 报告 | 待做 |
+| P6 | HTML 报告 | 完成 |
 | P3 | S3 网卡识别、S4 网络配置 | 待做 |
 | P4 | S5 DCGM | 待做 |
 | P5 | S6 SuperBench（含 RDMA 打流） | 待做 |

@@ -235,6 +235,13 @@ check "status counts the failed host" grep -q "gb300-r1-t02 .*smoke .*fail" <<<"
 out=$(mtest s1 logs "$(last_run s1)" --host gb300-r1-t02)
 check "logs prints the container log" grep -q "smoke: host gb300-r1-t02" <<<"$out"
 
+log "10. report"
+out=$(mtest s3 report --archive) && rc=0 || rc=$?
+check "report exits 0" [ "$rc" = 0 ]
+check "report.html written" grep -q "const D = " "$E2E_ROOT/s3/runs/report/report.html"
+check "hosts.csv marks the failing host" grep -q '^gb300-r1-t02,R1,2,,fail,' "$E2E_ROOT/s3/runs/report/hosts.csv"
+check "raw logs archived" tar -tzf "$E2E_ROOT/s3/runs/report/raw-logs.tar.gz" >/dev/null
+
 echo
 log "passed $PASSED, failed $FAILED"
 [ "$FAILED" = 0 ]

@@ -10,7 +10,6 @@ from mtest import __version__
 PENDING = {
     "nic": "P3",
     "net": "P3",
-    "report": "P6",
 }
 
 
@@ -63,7 +62,10 @@ def build_parser():
     logs.add_argument("--follow", action="store_true", help="stream live container logs over ssh")
     cancel = sub.add_parser("cancel", help="stop all containers of a run")
     cancel.add_argument("run_id")
-    sub.add_parser("report", help="S9: build the HTML report from local results")
+    rep = sub.add_parser("report", help="S9: build the HTML report (and CSV) from local results")
+    rep.add_argument("--out", help="output directory (default: <results_dir>/report)")
+    rep.add_argument("--title", help="report title (default: report.title in tests.yaml)")
+    rep.add_argument("--archive", action="store_true", help="also pack all run directories into raw-logs.tar.gz")
     return parser
 
 
@@ -221,6 +223,14 @@ def main(argv=None):
             from mtest.docker import DockerOps
             ops = {"cluster": cluster, "docker": DockerOps(cluster.ssh)} if args.follow else None
             return runs.logs(tests, args.run_id, host=args.host, item=args.item, follow=args.follow, ops=ops)
+        if args.command == "report":
+            from mtest.report import write_report
+            data, written = write_report(cluster, tests, out_dir=args.out, title=args.title, archive=args.archive)
+            n_fail = sum(1 for h in data["hosts"] if h["overall"] == "fail")
+            print("{} hosts, {} items, {} hosts with own failures".format(len(data["hosts"]), len(data["items"]), n_fail))
+            for path in written:
+                print("wrote " + path)
+            return 0
         if args.command == "cancel":
             from mtest.docker import DockerOps
             return runs.cancel(tests, cluster, args.run_id, DockerOps(cluster.ssh))
