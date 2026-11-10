@@ -22,7 +22,8 @@ network:
     pin_routes: [10.252.10.0/24]  # control-node subnets that must stay on the LOM port
   mgmt: {port: 0, gateway: 10.20.0.1, mtu: 1500, dns: [10.20.0.53], default_route: true}
   storage: {port: 1, mtu: 9000, routes: [10.30.0.0/16]}
-  ipoib: {mtu: 4092, pkey: "0x7fff"}
+  ipoib: {mtu: 4092, pkey: "0x7fff"}   # only the default partition 0x7fff is supported
+  match_by: mac                   # how netplan finds the BF3 ports: mac (permanent MAC) or name (S3 netdev name)
   rollback_seconds: 120           # restore the old netplan if the host is unreachable after apply
   verify: {ping_gateway: true, ping_peer_in_rack: true}
 

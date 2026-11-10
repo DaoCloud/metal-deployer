@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试工具（mtest）
 
-> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项只有 `smoke`，其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `mtest` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -38,6 +38,47 @@
 ### 变量与环境
 
 `env`、`cmd`、`args` 中的 `{变量}` 按节点渲染，可用变量见 tests.yaml 开头注释。`{mgmt_if}`、`{ib_hcas}`、`{ib_ucx_devs}` 来自 S3 网卡识别结果，识别前在 `mtest plan` 中显示为 `<S3:...>`。环境变量按以下顺序合并，后者覆盖前者：`common_env` → `<段>.common.env` → `<项>.env` → `per_rank` → cluster.yaml 中该主机的 `env`。
+
+## 网卡识别与网络配置（S3、S4）
+
+```bash
+mtest nic discover [--hosts R1]         # S3：识别网卡，与 network.expect、金样本比对
+mtest nic show [host]                   # 查看一台主机（默认金样本）的映射与检查结果
+mtest net apply --dry-run               # S4：只显示每台主机的动作和 netplan diff
+mtest net apply [--hosts R1] [--yes]    # 下发并验证
+mtest net verify                        # 只验证，不修改
+```
+
+主机上需要 python3（Ubuntu 自带）、netplan、systemd-run；读取固件设置需要 `mlxconfig`（没有时跳过 IB 模式与 BF3 模式检查）。
+
+**S3 识别**（`node_scripts/nic_discover.py`，经 SSH 在主机上执行，只读）：
+
+- 按 PCI ID 找出 ConnectX-8（默认 `15b3:1023`）与 BlueField-3（`15b3:a2dc`）；其他 `15b3` 功能（PCIe 交换、DDI、BF3 SoC 管理口）忽略。
+- rail N = PCI 树上离 GPU N 最近的 CX8（没有 GPU 时按 PCI 地址排序）；记录 RDMA 设备、IPoIB 接口、NUMA、端口状态与速率、`LINK_TYPE_P1`。
+- BF3 两个口按 PCI function 排序，`mgmt.port`、`storage.port` 选择哪个口；BF3 模式取 `INTERNAL_CPU_OFFLOAD_ENGINE`（`DISABLED(1)` 为 NIC 模式）。
+- LOM = 承载本次 SSH 会话的接口，同时记录它的默认网关和控制机地址。
+- 检查：GPU、CX8、BF3 口数量，链路层、端口 ACTIVE、速率，BF3 模式，与金样本的 rail↔GPU↔RDMA 设备↔NUMA 映射一致。结果写入 `runs/nic/<主机>.json`，测试项中的 `{mgmt_if}`、`{ib_hcas}` 由此填充。
+
+**S4 下发**：生成 `/etc/netplan/60-mtest.yaml`：
+
+| 内容 | 写法 |
+|---|---|
+| BF3 port 0 | `mgmt` 地址、MTU、默认路由（`mgmt.gateway`）、DNS |
+| BF3 port 1 | `storage` 地址、MTU、`storage.routes`（有 `storage.gateway` 时经网关，否则直连） |
+| IPoIB | 每个 rail 的地址与 `ipoib.mtu`，按 S3 识别的接口名匹配 |
+| LOM | 在**已有**的 LOM netplan 条目（同一个 id）下追加 `lom.pin_routes`（经 LOM 网关），DHCP 时加 `dhcp4-overrides: {use-routes: false}`，mgmt 配了 DNS 时同时关闭 DHCP 的 DNS/NTP。LOM 不由 netplan 管理时拒绝下发 |
+
+BF3 口默认按永久 MAC 匹配（`match_by: mac`）；虚拟机等没有永久 MAC 的环境用 `match_by: name`。
+
+每台主机的流程：
+
+1. 预检：S3 结构性检查通过（数量、映射、LOM）；没有其他 netplan 条目已经匹配 BF3 口或 IPoIB 接口；没有未确认的上一次修改。内容与现有文件相同则不做修改，只验证。
+2. CX8 不是 IB 模式时用 `mlxconfig` 设置 `LINK_TYPE_P1=IB`，需要重启：`ib_mode.reboot` 为 `never` 时标记失败，`ask` 时询问（或 `--yes`），`auto` 时重启并等待主机回来。
+3. 备份 `/etc/netplan`，写入新文件，`netplan generate` 失败则恢复；启动 `systemd-run` 定时器，`rollback_seconds` 秒后恢复备份并重新 apply；后台执行 `netplan apply`。
+4. 经 LOM 重新连接，执行关键检查：到控制机的路由走 LOM、只有一条经 mgmt 的默认路由、mgmt 地址与 MTU、能 ping 通 mgmt 网关。全部通过才停止回滚定时器；否则等待自动回滚并确认已恢复，记为 fail。
+5. 全部主机完成后做完整检查：storage、IPoIB 地址与 MTU，IB 端口 ACTIVE 与速率，经 mgmt、storage、每个 rail ping 同 rack 的下一台主机（rack 内只有一台时选其他主机）。完整检查失败记为 fail，但保留配置。
+
+`--dry-run` 只做第 1、2 步的判断并打印 netplan diff。只支持默认分区 `pkey 0x7fff`。
 
 ## 执行测试
 
@@ -144,10 +185,13 @@ mtest report                                # S9
 
 ```bash
 make test-testkit       # 或 cd benchmarks/testkit && python3 -m unittest discover -s tests -v
-benchmarks/testkit/e2e/run-e2e.sh [--keep]   # 端到端测试，约 3 分钟
+benchmarks/testkit/e2e/run-e2e.sh [--keep]       # 执行器端到端测试，约 3 分钟
+benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3/S4 端到端测试，约 4 分钟
 ```
 
 端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
+
+S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 dnsmasq 经 DHCP 分配地址，另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。覆盖：识别与金样本比对、dry-run、下发（默认路由、LOM 固定路由与保留 DHCP 地址、MTU、跨 rail ping）、重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
 
 只用标准库和 PyYAML，语法保持兼容 Python 3.8。
 
@@ -159,7 +203,7 @@ benchmarks/testkit/e2e/run-e2e.sh [--keep]   # 端到端测试，约 3 分钟
 | P1 | 配置加载与校验、主机选择、分组与 rank、`init/validate/plan/doctor` | 完成 |
 | P2 | 执行器：SSH、远程 Docker、三种启动模式、结果拉回、`run/status/logs/cancel` | 完成 |
 | P6 | HTML 报告 | 完成 |
-| P3 | S3 网卡识别、S4 网络配置 | 待做 |
+| P3 | S3 网卡识别、S4 网络配置 | 完成（实机待确认） |
 | P4 | S5 DCGM | 待做 |
 | P5 | S6 SuperBench（含 RDMA 打流） | 待做 |
 | P7 | S7 IMEX、S7a SHARP | 待做 |

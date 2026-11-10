@@ -36,6 +36,9 @@ class Item:
 
 
 ITEMS = [
+    # S3/S4 run through "mtest nic" and "mtest net", not "mtest run"; listed for state and report.
+    Item("nic", "nic", None, "host", "", "P3", "S3 网卡识别"),
+    Item("network", "network", None, "host", "", "P3", "S4 网络配置"),
     Item("smoke", "smoke", None, "per-node", "sb_worker", "P2", "冒烟测试（smoke）"),
     Item("dcgm", "dcgm", None, "per-node", "dcgm", "P4", "S5 DCGM 诊断"),
     Item("superbench.single_node", "superbench", "single_node", "delegate", "sbcli", "P5", "S6 SuperBench 单机", batch=True),
@@ -65,4 +68,4 @@ def matches(item_id, selector):
 
 
 def known_selector(selector):
-    return any(matches(item.id, selector) for item in ITEMS)
+    return any(matches(item.id, selector) for item in ITEMS if item.mode != "host")

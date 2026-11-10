@@ -122,6 +122,8 @@ def excluded_hosts(state, item_id):
     order = [i.id for i in ITEMS]
     before = set(order[:order.index(item_id)])
     out = {}
+    # S3 results only guide "mtest net apply"; S4 (network) is what later items depend on.
+    before.discard("nic")
     for host, items in state.get("hosts", {}).items():
         for other, entry in items.items():
             if other in before and entry.get("status") in FAILED and not entry.get("group_result"):

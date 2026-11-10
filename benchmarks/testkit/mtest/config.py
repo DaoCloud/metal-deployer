@@ -234,6 +234,26 @@ def check_cluster(cluster, problems):
                 if h.mgmt is not None and gw not in h.mgmt.network:
                     problems.error("{}: mgmt {} is not in the same subnet as gateway {}".format(h.name, h.mgmt, gw))
 
+    net = cluster.network or {}
+    if net.get("match_by", "mac") not in ("mac", "name"):
+        problems.error("network.match_by must be mac or name")
+    if str(dig(net, "ipoib.pkey", "0x7fff")).lower() != "0x7fff":
+        problems.error("network.ipoib.pkey: only the default partition 0x7fff is supported")
+    if dig(net, "ib_mode.reboot", "ask") not in ("ask", "auto", "never"):
+        problems.error("network.ib_mode.reboot must be ask, auto or never")
+    rb = net.get("rollback_seconds", 120)
+    if not isinstance(rb, int) or isinstance(rb, bool) or rb < 30:
+        problems.error("network.rollback_seconds must be an integer >= 30")
+    for key in ("mgmt", "storage"):
+        port = dig(net, key + ".port")
+        if port is not None and port not in (0, 1):
+            problems.error("network.{}.port must be 0 or 1 (BF3 port)".format(key))
+    for net_cidr in (dig(net, "lom.pin_routes") or []) + (dig(net, "storage.routes") or []):
+        try:
+            ipaddress.ip_network(str(net_cidr))
+        except ValueError:
+            problems.error("network: '{}' is not a valid subnet".format(net_cidr))
+
     golden = [h.name for h in cluster.hosts if h.golden]
     if len(golden) > 1:
         problems.error("more than one golden host: {}".format(", ".join(golden)))

@@ -96,6 +96,16 @@ class ClusterTest(unittest.TestCase):
         self.ws.edit("cluster.yaml", "    tray: 2\n", "    tray: two\n")
         self.assertError("tray must be a positive integer")
 
+    def test_network_options(self):
+        self.ws.edit("cluster.yaml", "  ipoib: {mtu: 4092, pkey: \"0x7fff\"}", "  ipoib: {mtu: 4092, pkey: \"0x8001\"}")
+        self.ws.edit("cluster.yaml", "  match_by: mac ", "  match_by: pci ")
+        self.ws.edit("cluster.yaml", "  rollback_seconds: 120", "  rollback_seconds: 5")
+        self.ws.edit("cluster.yaml", "pin_routes: [10.252.10.0/24]", "pin_routes: [10.252.10.0/33]")
+        _, problems = self.load()
+        for frag in ("only the default partition", "match_by must be", "rollback_seconds must be",
+                     "'10.252.10.0/33' is not a valid subnet"):
+            self.assertTrue(any(frag in e for e in problems.errors), frag)
+
     def test_unknown_key_warns(self):
         self.ws.edit("cluster.yaml", "    # skip: [moe]", "    colour: red")
         self.ws.edit("cluster.yaml", "  port: 22", "  port: 22\n  prot: 22")

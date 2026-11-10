@@ -4,7 +4,7 @@ import os
 import unittest
 
 from mtest import __version__
-from mtest.cli import PENDING, build_parser, main
+from mtest.cli import build_parser, main
 from tests.helpers import Workspace
 
 
@@ -34,19 +34,14 @@ class CliTest(unittest.TestCase):
         samples = {
             "init": ["init", "--racks", "2"], "validate": ["validate", "--ssh"],
             "plan": ["plan", "moe", "--hosts", "R1", "-v"], "doctor": ["doctor"],
-            "nic": ["nic", "discover"], "net": ["net", "apply", "--dry-run"],
+            "nic": ["nic", "discover", "--hosts", "R1"], "net": ["net", "apply", "--dry-run", "--yes"],
             "run": ["run", "moe.rack", "--hosts", "R1", "--force"], "logs": ["logs", "x", "--host", "h"],
             "cancel": ["cancel", "x"], "status": ["status", "--host", "h"], "report": ["report", "--archive"],
         }
-        for name in list(PENDING) + ["init", "validate", "plan", "doctor", "run", "status", "logs", "cancel", "report"]:
+        for name in ["init", "validate", "plan", "doctor", "run", "status", "logs", "cancel", "report", "nic", "net"]:
             args = parser.parse_args(samples.get(name, [name]))
             self.assertEqual(args.command, name)
 
-    def test_pending_command_exits_2(self):
-        err = io.StringIO()
-        with contextlib.redirect_stderr(err):
-            self.assertEqual(main(["nic", "discover"]), 2)
-        self.assertIn("not implemented yet", err.getvalue())
 
     def test_init_validate_plan(self):
         ws = Workspace(1, 1)

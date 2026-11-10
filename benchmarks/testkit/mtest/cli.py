@@ -6,13 +6,6 @@ import sys
 
 from mtest import __version__
 
-# Subcommands filled in by later phases report which phase provides them.
-PENDING = {
-    "nic": "P3",
-    "net": "P3",
-}
-
-
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="mtest",
@@ -41,12 +34,17 @@ def build_parser():
     sub.add_parser("doctor", help="check local dependencies (python, PyYAML, ssh, rsync, sb)")
 
     nic = sub.add_parser("nic", help="S3: discover NICs and compare with the golden host")
-    nic.add_argument("action", choices=["discover", "golden"])
-    nic.add_argument("host", nargs="?", help="host name for 'golden'")
+    nic.add_argument("action", choices=["discover", "show"])
+    nic.add_argument("host", nargs="?", help="host for 'show' (default: the golden host)")
+    nic.add_argument("--hosts", help="hosts for 'discover' (default: all)")
+    nic.add_argument("--exclude", help="hosts to leave out")
 
-    net = sub.add_parser("net", help="S4: apply network configuration")
-    net.add_argument("action", choices=["apply"])
-    net.add_argument("--dry-run", action="store_true", help="show the changes without applying them")
+    net = sub.add_parser("net", help="S4: configure BF3, IPoIB and LOM routes with netplan, then verify")
+    net.add_argument("action", choices=["apply", "verify"])
+    net.add_argument("--hosts", help="hosts to configure (default: all)")
+    net.add_argument("--exclude", help="hosts to leave out")
+    net.add_argument("--dry-run", action="store_true", help="show the planned changes and netplan diff only")
+    net.add_argument("--yes", action="store_true", help="allow reboots when ib_mode.reboot is ask")
 
     run = sub.add_parser("run", help="S5-S8: run enabled test items in the built-in order")
     _add_selection(run)
@@ -186,6 +184,45 @@ def cmd_run(args):
     return code
 
 
+def _hosts(cluster, args):
+    from mtest.selection import resolve
+    hosts = resolve(cluster, args.hosts or "all")
+    if args.exclude:
+        drop = {h.name for h in resolve(cluster, args.exclude)}
+        hosts = [h for h in hosts if h.name not in drop]
+    return hosts
+
+
+def cmd_nicnet(args, cluster, tests):
+    from mtest.selection import SelectionError
+    if args.command == "nic" and args.action == "show":
+        from mtest import nic
+        name = args.host or next((h.name for h in cluster.hosts if h.golden), None)
+        if not name:
+            print("error: no host given and no golden host in cluster.yaml")
+            return 1
+        return nic.show(cluster, tests, name)
+    try:
+        hosts = _hosts(cluster, args)
+    except SelectionError as e:
+        print("error: " + str(e))
+        return 1
+    if not hosts:
+        print("no hosts selected")
+        return 1
+    if args.command == "nic":
+        from mtest import nic
+        _, statuses = nic.discover(cluster, tests, hosts, out=lambda m: print(m, flush=True))
+        bad = sum(1 for s in statuses.values() if s != "pass")
+        print("{} hosts, {} with problems; details: mtest nic show <host>".format(len(statuses), bad))
+        return 0 if not bad else 1
+    from mtest import net
+    if args.action == "verify":
+        return net.verify_only(cluster, tests, hosts, out=lambda m: print(m, flush=True))
+    return net.NetRun(cluster, tests, hosts, out=lambda m: print(m, flush=True), dry_run=args.dry_run,
+                      assume_yes=args.yes).run()
+
+
 def _load_quiet(args):
     from mtest.config import load_both
     cluster, tests, _ = load_both(args.cluster, args.tests)
@@ -198,10 +235,6 @@ def main(argv=None):
     if not args.command:
         parser.print_help()
         return 0
-    if args.command in PENDING:
-        print("mtest {}: not implemented yet (planned in {})".format(args.command, PENDING[args.command]),
-              file=sys.stderr)
-        return 2
     if args.command == "init":
         return cmd_init(args)
     if args.command == "doctor":
@@ -223,6 +256,8 @@ def main(argv=None):
             from mtest.docker import DockerOps
             ops = {"cluster": cluster, "docker": DockerOps(cluster.ssh)} if args.follow else None
             return runs.logs(tests, args.run_id, host=args.host, item=args.item, follow=args.follow, ops=ops)
+        if args.command in ("nic", "net"):
+            return cmd_nicnet(args, cluster, tests)
         if args.command == "report":
             from mtest.report import write_report
             data, written = write_report(cluster, tests, out_dir=args.out, title=args.title, archive=args.archive)
