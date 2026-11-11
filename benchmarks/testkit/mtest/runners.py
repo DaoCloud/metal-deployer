@@ -9,6 +9,7 @@ Modes:
 import os
 import re
 import shlex
+from functools import partial
 
 from mtest.render import HOSTFILE, render
 
@@ -75,8 +76,11 @@ class ContainerSpec:
 class Job:
 
     def __init__(self, mode, containers, launcher=None, launcher_env=None, files=None, group_result=False,
-                 host_pre=None, host_post=None, parse=None, parse_group=None, host_images=None, timeout=None):
+                 host_pre=None, host_post=None, parse=None, parse_group=None, host_images=None, timeout=None,
+                 group_pre=None, host_collect=None):
         self.mode = mode
+        self.group_pre = group_pre          # (shell, timeout) run on the rank 0 host after every host_pre succeeded
+        self.host_collect = host_collect or []  # (file, shell): run on every host after group_pre, saved to raw/
         self.parse_group = parse_group      # parse_group(local_dir_of_master) -> ({host: fields}, group_extra)
         self.host_images = host_images or []  # images every host of the group needs (besides its containers)
         self.timeout = timeout              # overrides runtime.run_timeout
@@ -155,6 +159,10 @@ def build_job(ctx, item, cfg, nodes):
 
     if item.id == "dcgm":
         return dcgm_job(ctx, item, cfg, nodes, image)
+    if item.id == "imex":
+        return imex_job(ctx, item, cfg, nodes, image)
+    if item.section == "sharp":
+        return sharp_job(ctx, item, cfg, nodes, image)
     if item.section == "superbench" and item.id != "superbench.disk":
         return superbench_job(ctx, item, cfg, nodes, image)
 
@@ -208,7 +216,7 @@ def inventory(nodes, ssh_cfg, key_path):
     return "\n".join(lines)
 
 
-def superbench_job(ctx, item, cfg, nodes, image):
+def superbench_job(ctx, item, cfg, nodes, image, worker=None, parser=None):
     """S6: sbcli container on the rank 0 host runs sb deploy/run against the whole group.
 
     A key made for this run is added to every host's authorized_keys before and removed after.
@@ -221,7 +229,7 @@ def superbench_job(ctx, item, cfg, nodes, image):
     files = [(master.host, tool_dir + "/inventory", inventory(nodes, ctx.cluster.ssh, "/mtest/id_ed25519"), "644"),
              (master.host, tool_dir + "/id_ed25519", priv, "600"),
              (master.host, tool_dir + "/sb_run.sh", node_script("sb_run.sh"), "755")]
-    worker = tests.images.get("sb_worker") or ""
+    worker = worker or tests.images.get("sb_worker") or ""
     bench = cfg.get("benchmarks") or {}
     env = {"MTEST_SB_CONFIG": cfg.get("config", ""), "MTEST_SB_WORKER": worker,
            "MTEST_SB_RULE": cfg.get("rule", ""), "MTEST_SB_INCLUDE": ",".join(bench.get("include") or []),
@@ -245,25 +253,103 @@ def superbench_job(ctx, item, cfg, nodes, image):
             if key:
                 mapping[key] = n.host.name
     own = item.id == "superbench.single_node"
+    if parser is None:
+        def parser(local_dir):
+            return superbench.parse_group(local_dir, mapping, own, cfg)
+    else:
+        parser = partial(parser, mapping=mapping, cfg=cfg)
     return Job("delegate", [spec], files=files, group_result=True, host_pre=pre, host_post=post,
-               host_images=[worker] if worker else [], timeout=cfg.get("timeout"),
-               parse_group=lambda local_dir: superbench.parse_group(local_dir, mapping, own, cfg))
+               host_images=[worker] if worker else [], timeout=cfg.get("timeout"), parse_group=parser)
 
 
-def _mpi_job(ctx, item, nodes, image, launcher):
+SHARP_CASES = {"sharp.scale_up": ["U-A", "U-B"], "sharp.scale_out": ["O-A", "O-B", "O-C", "O-D"]}
+SHARP_OPS = ["allreduce", "reducescatter", "allgather"]
+
+
+def sharp_job(ctx, item, cfg, nodes, image):
+    """S7a: SuperBench nccl-bw:sharp:<op>:<case> from config_gb300_sharp.yaml, one case per NCCL setting."""
+    from mtest.parsers import sharp
+    cfg = dict(cfg)
+    cfg.setdefault("config", "config_gb300_sharp.yaml")
+    cases = cfg.get("cases") or SHARP_CASES[item.id]
+    ops = cfg.get("ops") or SHARP_OPS
+    cfg["benchmarks"] = {"include": ["nccl-bw:sharp:{}:{}".format(op, c) for c in cases for op in ops], "exclude": []}
+    return superbench_job(ctx, item, cfg, nodes, image, worker=cfg.get("worker_image") or None,
+                          parser=sharp.parse_group)
+
+
+def _mpi_job(ctx, item, nodes, image, launcher, tools=None, launcher_env=None):
+    """tools: {file name: text} written to every host and mounted read-only at /mtest."""
     tests, run_id = ctx.tests, ctx.run_id
     keys = ctx.ssh_keys()
     files = _mpi_files(tests, run_id, item.id, nodes, keys)
     port = str(tests.runtime["mpi_ssh_port"])
     containers = []
     for n in nodes:
-        ssh_dir = node_dir(tests, run_id, item.id, n.host.name) + ".ssh"
+        base = node_dir(tests, run_id, item.id, n.host.name)
+        mounts = [(base + ".ssh", SSH_DIR, True)]
+        if tools:
+            mounts.append((base + ".mtest", "/mtest", True))
+            for name, text in tools.items():
+                files.append((n.host, "{}.mtest/{}".format(base, name), text, "755" if name.endswith(".sh") else "644"))
         containers.append(_spec(tests, run_id, item.id, n, image, ["sh", "-c", SSHD_ENTRY],
-                                {"MTEST_SSH_PORT": port}, mounts=[(ssh_dir, SSH_DIR, True)]))
+                                {"MTEST_SSH_PORT": port}, mounts=mounts))
     env = dict(containers[0].env)
     env.update({"OMPI_MCA_plm_rsh_args": "-F {}/config".format(SSH_DIR), "OMPI_ALLOW_RUN_AS_ROOT": "1",
                 "OMPI_ALLOW_RUN_AS_ROOT_CONFIRM": "1"})
+    env.update(launcher_env or {})
     return Job("mpi", containers, launcher=launcher, launcher_env=env, files=files, group_result=True)
+
+
+def imex_source():
+    """imex_fabric_ipc_test.c (node_scripts/ links to build-iso/scripts/; packaging copies the file)."""
+    try:
+        return node_script("imex_fabric_ipc_test.c")
+    except OSError:
+        raise NotReady("imex_fabric_ipc_test.c not found next to the node scripts")
+
+
+def imex_job(ctx, item, cfg, nodes, image):
+    """S7: configure IMEX on the hosts, wait for the domain, check, then T1/T2 in mpi-mode containers."""
+    from mtest.parsers import imex
+    tests, run_id = ctx.tests, ctx.run_id
+    scripts = cfg.get("scripts_dir") or "/opt/resource/scripts"
+    configure = cfg.get("configure", True)
+    wait = int(cfg.get("wait_ready_seconds", 300))
+    # Same path and byte-identical node list on every host (IMEX requires identical nodes_config.cfg).
+    share = "{}/{}/{}.imex".format(tests.runtime["node_results_dir"].rstrip("/"), run_id, item.id)
+    group_tag = re.sub(r"[^A-Za-z0-9_.-]", "_", nodes[0].group.id)
+    share += "-" + group_tag
+    node_list = "".join(n.host.mgmt_ip + "\n" for n in nodes)
+    pre = None
+    collect = []
+    files = [(n.host, share + "/nodes.list", node_list, "644") for n in nodes]
+    if configure:
+        pre = ("{s}/imex-configure.sh --nodes {d}/nodes.list --expect {n} > {d}/configure.log 2>&1; rc=$?; "
+               "tail -n 3 {d}/configure.log; exit $rc").format(s=shlex.quote(scripts), d=shlex.quote(share),
+                                                                 n=len(nodes))
+        collect.append(("imex-configure.txt", "cat {}/configure.log; echo IMEX-CONFIGURE-OK".format(shlex.quote(share))))
+    collect.append(("imex-check.txt", "{}/imex-check.sh --quiet --level 3 2>&1; true".format(shlex.quote(scripts))))
+    group_pre = ("end=$(( $(date +%s) + {w} )); while :; do out=$(timeout 30 nvidia-imex-ctl -N -H 2>&1); "
+                 "echo \"$out\" | grep -q 'Domain State: *UP' && break; "
+                 "if [ $(date +%s) -ge $end ]; then echo \"$out\"; echo 'IMEX domain not UP after {w}s'; exit 1; fi; "
+                 "sleep 5; done; echo \"$out\"").format(w=wait)
+    bench = cfg.get("bench") or {}
+    env = {"MTEST_IMEX_T1": "1" if bench.get("t1_fabric_ipc", True) else "0",
+           "MTEST_IMEX_T2": "1" if bench.get("t2_nvbandwidth", True) else "0",
+           "MTEST_IMEX_GPUS": str(nodes[0].host.gpus), "MTEST_NNODES": str(len(nodes))}
+    if bench.get("nvbandwidth"):
+        env["MTEST_NVBANDWIDTH"] = bench["nvbandwidth"]
+    job = _mpi_job(ctx, item, nodes, image, "sh /mtest/imex_bench.sh",
+                   tools={"imex_bench.sh": node_script("imex_bench.sh"), "imex_fabric_ipc_test.c": imex_source()},
+                   launcher_env=env)
+    job.files += files
+    job.host_pre = pre
+    job.group_pre = (group_pre, wait + 60)
+    job.host_collect = collect
+    host_dirs = {n.host.name: ctx.local_dir(n.host.name, item.id) for n in nodes}
+    job.parse_group = lambda local_dir: imex.parse_group(local_dir, host_dirs, configure, len(nodes))
+    return job
 
 
 def peers_ready_script(nodes, timeout):

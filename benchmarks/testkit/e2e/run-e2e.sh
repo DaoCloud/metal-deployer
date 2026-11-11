@@ -283,7 +283,51 @@ import json,re,sys; s=open('$E2E_ROOT/s11/runs/report/report.html').read()
 d=json.loads(re.search(r'const D = (.*);\n', s).group(1).replace('<\\\\/', '</'))
 sys.exit(0 if d['rdma'] and len(d['rdma']['pairs']) == 3 else 1)"
 
-log "12. report"
+log "12. imex (stub IMEX tools on the hosts) + nvl-domain + SHARP (stub sb)"
+for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do
+    docker exec "$h" sh -c 'mkdir -p /opt/resource/scripts
+cat > /opt/resource/scripts/imex-configure.sh <<"EOS"
+#!/bin/sh
+cp "$2" /tmp/imex-nodes.list && echo "nodes_config.cfg written: $(grep -c . "$2") nodes"
+EOS
+cat > /opt/resource/scripts/imex-check.sh <<"EOS"
+#!/bin/sh
+echo "================ IMEX check summary ================"
+echo "L1  PASS  local daemon state                  READY"
+EOS
+cat > /usr/local/bin/nvidia-imex-ctl <<"EOS"
+#!/bin/sh
+i=0; for ip in $(cat /tmp/imex-nodes.list); do echo "Node #$i - $ip - READY - Version: 580"; i=$((i+1)); done
+echo " Nodes From\\To  0   1   2"; for r in 0 1 2; do echo "       $r        C   C   C"; done
+echo "Domain State: UP"
+EOS
+chmod +x /opt/resource/scripts/*.sh /usr/local/bin/nvidia-imex-ctl'
+done
+scenario s12 rack mpi 0 300 "" "imex: {enabled: true, scope: rack, hosts: all, wait_ready_seconds: 30}
+superbench:
+  nvl_domain: {enabled: true, scope: rack, hosts: all, config: config_gb300_nvl_domain.yaml}
+sharp:
+  common: {ops: [allreduce, allgather]}
+  scale_up: {enabled: true, scope: rack, hosts: all, cases: [U-A, U-B]}"
+sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s12/tests.yaml"
+mtest s12 run imex superbench sharp >"$E2E_ROOT/s12.log" 2>&1 && rc=0 || rc=$?
+run=$(last_run s12)
+g="$E2E_ROOT/s12/runs/$run/_groups"
+check "IMEX configured on every host with the same list" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h md5sum /tmp/imex-nodes.list; done | awk '{print $1}' | sort -u | wc -l)" = 1 ]
+check "domain matrix parsed" [ "$(json "$g/imex/R1/summary.json" "len(d['matrix']['cells'])")" = 3 ]
+check "T1 ran over mpirun and its build failure is reported" grep -q "T1 编译 imex_fabric_ipc_test" "$g/imex/R1/summary.json"
+check "T2 skipped without multinode nvbandwidth" python3 -c "
+import json,sys; rows=json.load(open('$g/imex/R1/summary.json'))['tables'][0]['rows']
+sys.exit(0 if any(r[0]=='T2 nvbandwidth multinode' and r[1]=='skip' for r in rows) else 1)"
+check "imex group failed only on T1, hosts not blamed" [ "$(state s12 gb300-r1-t02 imex)" = fail ] && \
+    [ "$(json "$E2E_ROOT/s12/runs/state.json" "d['hosts']['gb300-r1-t02']['imex']['group_result']")" = True ]
+check "nvl-domain ran after imex (group result, not excluded)" [ "$(state s12 gb300-r1-t01 superbench.nvl_domain)" = pass ]
+check "SHARP U-B/U-A compared" python3 -c "
+import json,sys; t=json.load(open('$g/sharp.scale_up/R1/summary.json'))['tables']
+sys.exit(0 if ['allreduce', 'U-B / U-A', 1.5] in t[1]['rows'] and ['allgather', 'U-B / U-A', 1.5] in t[1]['rows'] else 1)"
+check "SHARP NCCL log evidence collected" grep -q "uses Algo NVLS" "$g/sharp.scale_up/R1/summary.json"
+
+log "13. report"
 out=$(mtest s3 report --archive) && rc=0 || rc=$?
 check "report exits 0" [ "$rc" = 0 ]
 check "report.html written" grep -q "const D = " "$E2E_ROOT/s3/runs/report/report.html"

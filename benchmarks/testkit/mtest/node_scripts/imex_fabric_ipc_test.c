@@ -1,0 +1,1 @@
+../../../../build-iso/scripts/imex_fabric_ipc_test.c

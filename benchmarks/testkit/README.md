@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试工具（mtest）
 
-> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`dcgm`、`superbench.single_node/pair/rack/all`；其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`dcgm`、`superbench.*`、`imex`、`sharp.*`；其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `mtest` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -211,6 +211,26 @@ mtest report [--out DIR] [--title T] [--archive]
 
 磁盘测试（`superbench.disk`）在 P10 实现。
 
+### imex：S7 IMEX 配置与测试（每个 rack 一组）
+
+1. 主机侧（`configure: true` 时）：把 rack 的 mgmt 地址列表（rank 顺序）以相同路径、相同内容写到每台主机，执行 `<scripts_dir>/imex-configure.sh --nodes <列表> --expect <台数>`；任一主机失败，整组不启动。
+2. rank 0 主机等待 `nvidia-imex-ctl -N` 显示 `Domain State: UP`（`wait_ready_seconds`），超时则整组记为 error，不启动容器。
+3. 每台主机执行 `imex-check.sh --quiet --level 3`：L0/L1 失败算到该主机；L2/L3 是整个 domain 的状态，只在组上显示。
+4. mpi 模式启动 worker 容器（`images.sb_worker`），rank 0 执行 `node_scripts/imex_bench.sh`：T1 在每个容器内用 mpicc 编译 `imex_fabric_ipc_test.c`（链接自 `build-iso/scripts/`），先跑 2 节点再跑全部节点；T2 在 nvbandwidth 带 multinode 用例时运行，否则跳过并注明。
+
+报告的组卡片显示连接矩阵、READY、Domain State、T1/T2 结果。柜内 MNNVL 集合通信由 `superbench.nvl_domain` 测试（在 `imex` 之后执行）。
+
+### sharp：S7a NVLink SHARP 与 IB SHARP
+
+用 SuperBench 执行 `config_gb300_sharp.yaml`，每个操作（`ops`）、每组 NCCL 设置（`cases`）是一个 nccl-bw 条目 `nccl-bw:sharp:<op>:<case>`：
+
+| 组 | 设置 | 用于 |
+|---|---|---|
+| U-A / U-B | NVLS 关 / NVLS 开且 `NCCL_ALGO=NVLS` | `sharp.scale_up`，每个 rack 一组 |
+| O-A / O-B / O-C / O-D | 全关 / 柜内 NVLS（NVLSTree）/ 只开 IB SHARP（CollnetDirect）/ 两级 | `sharp.scale_out`，`groups` 指定跨 rack 组合 |
+
+每组都显式设置 `NCCL_NVLS_ENABLE`；O-C、O-D 把 HPC-X 的 SHARP 插件与库加入 `LD_LIBRARY_PATH` 并开启 SAT。报告显示每组 busbw 曲线、最大消息 busbw、U-B/U-A、O-B/O-A、O-D/O-B、O-D/O-C 倍数（只展示，不判定），以及 NCCL 日志中 NVLS、CollNet/SHARP、插件、算法相关的行；某组返回码非 0 记为失败。需要新版 NCCL 时用 `sharp.common.worker_image` 指定加层镜像。
+
 ### smoke：检查节点能否运行测试容器
 
 `smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在某台主机的 `env` 中设置 `MTEST_SMOKE_EXIT: "1"` 可让它单独失败。
@@ -249,7 +269,7 @@ benchmarks/testkit/e2e/run-e2e.sh [--keep]       # 执行器端到端测试，�
 benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3/S4 端到端测试，约 4 分钟
 ```
 
-端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错），和用 sb 替身镜像跑 `superbench`（替身经真实 SSH 用本次运行的密钥连每台主机并检查 worker 镜像，输出 SuperBench 格式结果；验证 include/exclude、按主机拆分、ib-traffic 节点对、运行后密钥删除、报告 RDMA 矩阵）。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
+端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `mtest`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`mtest cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错），和用 sb 替身镜像跑 `superbench`（替身经真实 SSH 用本次运行的密钥连每台主机并检查 worker 镜像，输出 SuperBench 格式结果；验证 include/exclude、按主机拆分、ib-traffic 节点对、运行后密钥删除、报告 RDMA 矩阵），以及 `imex`（主机上放替身 IMEX 脚本与 `nvidia-imex-ctl`；验证节点列表一致、等待 domain、矩阵解析，T1 经 mpirun 在各容器编译，无 CUDA 时报告编译失败，T2 跳过）、`superbench.nvl_domain` 与 `sharp.scale_up`（U-B/U-A 对比与 NCCL 日志提取）。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
 S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 dnsmasq 经 DHCP 分配地址，另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。主机由 `mtest import` 导入 CSV 规划表（含 PCI、网关、存储路由、`ib_mtu`）。覆盖：导入、识别与金样本比对、dry-run、按 PCI 下发（默认路由、LOM 固定路由与保留 DHCP 地址、BF3 MTU 不变、IB MTU、存储路由、跨 rail ping）、重新识别后重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、规划表 PCI 在主机上不存在时拒绝、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
 
@@ -266,7 +286,7 @@ S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、
 | P3 | S3 网卡识别、S4 网络配置 | 完成（实机待确认） |
 | P4 | S5 DCGM | 完成（实机待确认） |
 | P5 | S6 SuperBench（含 RDMA 打流） | 完成（实机待确认） |
-| P7 | S7 IMEX、S7a SHARP | 待做 |
+| P7 | S7 IMEX、S7a SHARP | 完成（实机待确认） |
 | P8 | S8 MoE | 待做 |
 | P9 | testkit 镜像、文档 | 待做 |
 | P10 | SuperBench 磁盘测试（安全检查） | 待做 |

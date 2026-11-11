@@ -2,7 +2,7 @@
 #
 # Items run in this built-in order; only "enabled: true" items run:
 #   smoke -> dcgm -> superbench.single_node -> superbench.disk -> superbench.pair -> superbench.rack
-#   -> superbench.all -> imex -> sharp.scale_up -> sharp.scale_out
+#   -> superbench.all -> imex -> superbench.nvl_domain -> sharp.scale_up -> sharp.scale_out
 #   -> moe.single -> moe.rack -> moe.cross_rack -> moe.all -> moe.moonep
 #
 # Host selection (hosts / groups): all | R1 | gb300-r1-t01 | tag:batch1, or a list of them.
@@ -23,7 +23,6 @@ images:                           # tag or tag@digest; the digest actually used 
   dcgm: nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04   # same DCGM version as the ISO
   sbcli: registry.local/metal-deployer/testkit:latest
   sb_worker: superbench/main:cuda13.0
-  sharp: ""                       # empty: use sb_worker
   moe_bench: registry.local/metal-deployer/moe-bench:latest
 image_pull: registry              # registry: hosts pull; push: copy over ssh (docker save | load); skip: only check
 
@@ -114,54 +113,45 @@ superbench:
     hosts: all
     config: config_gb300_multi_node.yaml
 
-# ---------------- S7 IMEX ----------------
-imex:
-  enabled: true
-  scope: rack
-  hosts: all
-  configure: true                 # run imex-configure.sh on the hosts, bound to the mgmt address
-  wait_ready_seconds: 300
-  bench:
-    t1_fabric_ipc: true
-    t2_nvbandwidth: true
-    t3_nccl: {enabled: true, ops: [sendrecv, alltoall, all_reduce], compare_mnnvl_off: true}
-  nvl_domain: {enabled: true}     # SuperBench config_gb300_nvl_domain.yaml
-
-# ---------------- S7a SHARP ----------------
-sharp:
-  common:
-    image: sharp
-    nccl_tests_dir: ""            # empty: nccl-tests in the image
-    nccl_lib_dir: ""              # empty: system NCCL in the image
-    ops: [all_reduce, reduce_scatter, all_gather]
-    msg: {min: 1M, max: 16G, factor: 2}
-    iters: 50
-    env:
-      NCCL_MNNVL_ENABLE: "1"
-      NCCL_CUMEM_ENABLE: "1"
-      NCCL_DEBUG: INFO
-      NCCL_DEBUG_SUBSYS: INIT,NET,COLL,NVLS,TUNING
-
-  scale_up:                       # NVLink SHARP inside a rack
+  nvl_domain:                     # S7: collectives over MNNVL inside each rack; runs after imex
     enabled: true
     scope: rack
     hosts: all
-    cases:
-      U-A: {NCCL_NVLS_ENABLE: "0"}
-      U-B: {NCCL_NVLS_ENABLE: "1", NCCL_ALGO: NVLS}
+    config: config_gb300_nvl_domain.yaml
 
+# ---------------- S7 IMEX ----------------
+imex:
+  enabled: true
+  scope: rack                     # one IMEX domain per rack
+  hosts: all
+  configure: true                 # imex-configure.sh on every host with the rack's mgmt IPs (rank order)
+  scripts_dir: /opt/resource/scripts   # imex-configure.sh / imex-check.sh installed by the ISO
+  wait_ready_seconds: 300         # wait for nvidia-imex-ctl -N "Domain State: UP"
+  bench:                          # in mpi-mode containers (images.sb_worker)
+    t1_fabric_ipc: true           # imex_fabric_ipc_test, compiled with mpicc in each container
+    t2_nvbandwidth: true          # skipped when nvbandwidth was built without MULTINODE=1
+    nvbandwidth: ""               # path of a multinode nvbandwidth in the image (empty: /opt/superbench/bin/nvbandwidth)
+
+# ---------------- S7a SHARP ----------------
+# SuperBench nccl-bw from config_gb300_sharp.yaml; each case is one NCCL setting defined there:
+#   U-A NVLS off, U-B NVLink SHARP (inside a rack); O-A off, O-B NVLS + IB, O-C IB SHARP, O-D both (racks).
+# Comparisons (U-B/U-A, O-D/O-B, ...) are shown in the report, not judged.
+sharp:
+  common:
+    config: config_gb300_sharp.yaml
+    ops: [allreduce, reducescatter, allgather]
+    worker_image: ""              # empty: images.sb_worker; or an image with a newer NCCL
+    timeout: 14400
+  scale_up:                       # NVLink SHARP inside a rack; needs imex
+    enabled: true
+    scope: rack
+    hosts: all
+    cases: [U-A, U-B]
   scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM
     enabled: false
     scope: group
     groups: [[R1, R2]]
-    sharp_env:                    # only for cases with use_sharp_env
-      LD_LIBRARY_PATH: "$HPCX_SHARP_DIR/lib:$HPCX_NCCL_RDMA_SHARP_PLUGIN_DIR/lib:$LD_LIBRARY_PATH"
-      SHARP_COLL_ENABLE_SAT: "1"
-    cases:
-      O-A: {NCCL_NVLS_ENABLE: "0", NCCL_COLLNET_ENABLE: "0"}
-      O-B: {NCCL_COLLNET_ENABLE: "0", NCCL_ALGO: NVLSTree}
-      O-C: {NCCL_NVLS_ENABLE: "0", NCCL_COLLNET_ENABLE: "1", NCCL_ALGO: CollnetDirect, use_sharp_env: true}
-      O-D: {NCCL_COLLNET_ENABLE: "1", NCCL_ALGO: NVLS, use_sharp_env: true}
+    cases: [O-A, O-B, O-C, O-D]
 
 # ---------------- S8 MoE ----------------
 moe:

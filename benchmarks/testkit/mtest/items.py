@@ -47,8 +47,9 @@ ITEMS = [
     Item("superbench.rack", "superbench", "rack", "delegate", "sbcli", "P5", "S6 SuperBench rack 内 IB"),
     Item("superbench.all", "superbench", "all", "delegate", "sbcli", "P5", "S6 SuperBench 全部节点 IB"),
     Item("imex", "imex", None, "mpi", "sb_worker", "P7", "S7 IMEX"),
-    Item("sharp.scale_up", "sharp", "scale_up", "mpi", "sharp", "P7", "S7a NVLink SHARP（柜内）"),
-    Item("sharp.scale_out", "sharp", "scale_out", "mpi", "sharp", "P7", "S7a IB SHARP（柜间）"),
+    Item("superbench.nvl_domain", "superbench", "nvl_domain", "delegate", "sbcli", "P7", "S7 SuperBench 柜内 MNNVL"),
+    Item("sharp.scale_up", "sharp", "scale_up", "delegate", "sbcli", "P7", "S7a NVLink SHARP（柜内）"),
+    Item("sharp.scale_out", "sharp", "scale_out", "delegate", "sbcli", "P7", "S7a IB SHARP（柜间）"),
     Item("moe.single", "moe", "single", "per-node", "moe_bench", "P8", "S8 MoE 单机（L1）"),
     Item("moe.rack", "moe", "rack", "per-node", "moe_bench", "P8", "S8 MoE rack 内（L2）"),
     Item("moe.cross_rack", "moe", "cross_rack", "per-node", "moe_bench", "P8", "S8 MoE 跨 rack（L3）"),
@@ -59,7 +60,7 @@ ITEMS = [
 BY_ID = {item.id: item for item in ITEMS}
 
 # Items that need a healthy IMEX domain (MNNVL) in the same run.
-NEEDS_IMEX = ("sharp.scale_up", "sharp.scale_out", "moe.rack", "moe.cross_rack", "moe.all")
+NEEDS_IMEX = ("superbench.nvl_domain", "sharp.scale_up", "sharp.scale_out", "moe.rack", "moe.cross_rack", "moe.all")
 
 
 def matches(item_id, selector):

@@ -196,6 +196,8 @@ class GroupRunner:
                 if self.ctx.cancelled():
                     for h in names:
                         self.set(h, "cancelled", "run cancelled before start")
+                elif not self.prepare_group():
+                    pass
                 elif self.start():
                     self.monitor()
                     self.collect()
@@ -266,6 +268,36 @@ class GroupRunner:
         for h in self.hosts:
             self.set(h, "stopped", "group not started: " + self.group_reason)
         return False
+
+    def prepare_group(self):
+        """job.group_pre on the rank 0 host, then job.host_collect on every host. False stops the group."""
+        ok = True
+        master = self.nodes[0].host
+        if self.job.group_pre:
+            command, timeout = self.job.group_pre
+            res = self.ops.host_run(master, command, timeout=timeout)
+            self.save_raw(master.name, "group-pre.txt", (res.out or "") + (res.err or ""))
+            if not res.ok:
+                ok = False
+                self.group_reason = "group preparation failed: " + res.message()
+        if self.job.host_collect:
+            def one(node):
+                for name, command in self.job.host_collect:
+                    res = self.ops.host_run(node.host, command, timeout=300)
+                    self.save_raw(node.host.name, name, (res.out or "") + (res.err or ""))
+            pmap(one, self.nodes, self.ctx.parallel)
+        if not ok:
+            for h in self.hosts:
+                self.set(h, "error", self.group_reason)
+            if self.job.parse_group:
+                self.parse_group(master.name)
+        return ok
+
+    def save_raw(self, host_name, name, text):
+        path = os.path.join(self.ctx.local_dir(host_name, self.item.id), "raw", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
 
     def start(self):
         self.started = []
@@ -480,9 +512,14 @@ class GroupRunner:
             write_json(path, summary)
             if parsed.get("own") and h != master:
                 # Per-host results (e.g. single-node benchmarks): the host's own verdict, not the group's.
-                self.result[h] = {"status": parsed["status"], "reason": parsed.get("reason", ""), "rc": None}
+                # A pass only fills in hosts without a result; it never hides an earlier group error.
                 if parsed["status"] in ("fail", "error"):
+                    self.result[h] = {"status": parsed["status"], "reason": parsed.get("reason", ""), "rc": None}
                     self.host_fault.add(h)
+                elif h not in self.result and self.item.batch:
+                    # Independent per-host runs: the host's pass is its result. In a real group the host
+                    # takes the group status instead (set in finish).
+                    self.result[h] = {"status": parsed["status"], "reason": parsed.get("reason", ""), "rc": None}
             elif parsed.get("own") and parsed.get("status") in ("fail", "error"):
                 self.result[h] = {"status": parsed["status"], "reason": parsed.get("reason", ""),
                                   "rc": self.result[h]["rc"]}

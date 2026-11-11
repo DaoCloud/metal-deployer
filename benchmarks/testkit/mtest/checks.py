@@ -92,6 +92,18 @@ def _check_item(tests, cluster, item, cfg, problems):
                 problems.warn("sharp.scale_out: group {} has only one rack; IB SHARP needs at least 2".format(g.id))
     if item.id == "smoke" and cfg.get("mode", item.mode) not in ("per-node", "mpi", "delegate"):
         problems.error("smoke: mode must be per-node, mpi or delegate")
+    if item.section == "sharp":
+        from mtest.runners import SHARP_CASES, SHARP_OPS
+        bad = [c for c in cfg.get("cases") or [] if c not in SHARP_CASES[item.id]]
+        if bad:
+            problems.error("{}: cases {} not in {}".format(where, bad, SHARP_CASES[item.id]))
+        bad = [o for o in cfg.get("ops") or [] if o not in SHARP_OPS]
+        if bad:
+            problems.error("{}: ops {} not in {}".format(where, bad, SHARP_OPS))
+        if not (cfg.get("worker_image") or tests.images.get("sb_worker")):
+            problems.error("{}: images.sb_worker (or sharp.common.worker_image) is required".format(where))
+    if item.section == "imex" and not tests.images.get("sb_worker"):
+        problems.error("imex: images.sb_worker is required (T1/T2 containers)")
     if item.section == "superbench" and item.id != "superbench.disk":
         if not cfg.get("config"):
             problems.error("{}: config is required (e.g. config_gb300_multi_node.yaml)".format(where))

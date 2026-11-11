@@ -28,7 +28,7 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(problems.warnings, [])
         self.assertEqual([i.id for i, _ in enabled_items(tests)],
                          ["dcgm", "superbench.single_node", "superbench.pair", "superbench.rack", "imex",
-                          "sharp.scale_up", "moe.single", "moe.rack"])
+                          "superbench.nvl_domain", "sharp.scale_up", "moe.single", "moe.rack"])
 
     def errors(self):
         return load(self.ws)[2]
@@ -44,10 +44,16 @@ class ChecksTest(unittest.TestCase):
         self.ws.edit("tests.yaml", "  moe_bench: registry.local/metal-deployer/moe-bench:latest\n", "")
         self.assertIn("moe.single: image 'moe_bench' is not set under images", self.errors().errors)
 
-    def test_sharp_falls_back_to_worker(self):
+    def test_sharp_runs_through_sbcli(self):
         cluster, tests, problems = load(self.ws)
         item, cfg = [x for x in enabled_items(tests) if x[0].id == "sharp.scale_up"][0]
-        self.assertEqual(tests.image_for(item, cfg), "superbench/main:cuda13.0")
+        self.assertEqual(tests.image_for(item, cfg), "registry.local/metal-deployer/testkit:latest")
+        self.assertEqual((cfg["config"], cfg["cases"]), ("config_gb300_sharp.yaml", ["U-A", "U-B"]))
+        self.ws.edit("tests.yaml", "    cases: [U-A, U-B]", "    cases: [U-A, O-D]")
+        self.ws.edit("tests.yaml", "    ops: [allreduce, reducescatter, allgather]", "    ops: [allreduce, alltoall]")
+        errors = load(self.ws)[2].errors
+        self.assertTrue(any("cases ['O-D'] not in" in e for e in errors), errors)
+        self.assertTrue(any("ops ['alltoall'] not in" in e for e in errors), errors)
 
     def test_runtime_and_scope(self):
         self.ws.edit("tests.yaml", "  run_timeout: 7200", "  run_timeout: 0")
@@ -62,7 +68,7 @@ class ChecksTest(unittest.TestCase):
         self.ws.edit("tests.yaml", "imex:\n  enabled: true", "imex:\n  enabled: false")
         self.ws.edit("tests.yaml", "  scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM\n    enabled: false",
                      "  scale_out:\n    enabled: true")
-        self.ws.edit("tests.yaml", "    groups: [[R1, R2]]\n    sharp_env", "    groups: [[R1]]\n    sharp_env")
+        self.ws.edit("tests.yaml", "    groups: [[R1, R2]]\n    cases: [O-A", "    groups: [[R1]]\n    cases: [O-A")
         self.ws.edit("tests.yaml", "    per_rank: {}", "    per_rank: {first: {}}")
         problems = self.errors()
         self.assertTrue(any("use MNNVL but imex is not enabled" in w for w in problems.warnings))

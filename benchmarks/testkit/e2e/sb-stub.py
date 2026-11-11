@@ -46,7 +46,25 @@ def run():
     with open(os.path.join(out, "override.txt"), "w") as f:
         f.write(override + "\n")
     lines = []
-    if "single" in arg("--config-file"):
+    config = arg("--config-file")
+    if "sharp" in config or "nvl_domain" in config:
+        names = [n for n, _ in hosts]
+        enable = override.split("=", 1)[1].strip("[]").replace('"', "").split(",") if override else []
+        if "nvl_domain" in config:
+            enable = ["nccl-bw:bw:allreduce:mnnvl"]
+        d = {"node": names[0]}
+        for i, bench in enumerate(enable):
+            d[bench + "/return_code"] = 0
+            op = bench.split(":")[2]
+            for size in (1048576, 8589934592):
+                d["{}/{}_{}_busbw".format(bench, op, size)] = (100.0 + 50 * (i % 2)) * (1 if size < 2 ** 30 else 8)
+            node_dir = os.path.join(out, "nodes", names[0], "benchmarks", bench, "rank0")
+            os.makedirs(node_dir, exist_ok=True)
+            with open(os.path.join(node_dir, "results.json"), "w") as f:
+                json.dump({"raw_data": {"raw_output_0": ["host:1:2 [0] NCCL INFO {} uses Algo {}".format(
+                    bench, "NVLS" if bench.endswith("U-B") else "Ring")]}}, f)
+        lines = [d] + [{"node": n} for n in names[1:]]
+    elif "single" in config:
         for i, (name, _) in enumerate(hosts):
             d = {"node": name}
             for r in range(4):

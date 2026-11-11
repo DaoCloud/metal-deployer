@@ -132,6 +132,9 @@ class FakeOps:
 
     def host_run(self, host, command, timeout=300):
         self.calls.append(("host_run", host.name, command))
+        for key, (rc, out) in (self.b(host, "host_out") or {}).items():
+            if key in command:
+                return Result(rc, out, "")
         return Result(1, "", "systemctl failed") if self.b(host, "host_run_fails") else Result(0)
 
     def remove_by_label(self, host, label):
