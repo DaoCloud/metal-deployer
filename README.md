@@ -10,6 +10,8 @@ Metal Deployer 是一个用于裸金属服务器部署和性能测试的工具�
 |---------|------|------|
 | **ISO 构建** | 自定义 Ubuntu Server 24.04 自动化安装镜像 | [`build-iso/`](./build-iso/) |
 | **GPU 性能测试** | 基于 SuperBench 的 GPU 集群一键性能测试 | [`superbenchmark/`](./superbenchmark/) |
+| **MoE 测试镜像** | GB300 DeepEP（HybridEP）+ DeepGEMM 测试镜像（arm64） | [`benchmarks/moe-bench/`](./benchmarks/moe-bench/) |
+| **NIXL 测试镜像** | NIXL + NIXLBench（UCX / libfabric / GDS / POSIX），按 profile 构建 GB300 arm64 与 x86 镜像 | [`benchmarks/nixl-benchmark/`](./benchmarks/nixl-benchmark/) |
 
 ---
 
@@ -53,6 +55,18 @@ sudo ./build.sh
 - 如果某次运行没有推送到内网地址，可去 Actions 运行页面下载 artifact `custom-ubuntu-iso`
 
 `.info.txt` 会列出该 ISO 内全部 basic/profile packages 与对应版本；相同内容也会写进 Release Notes
+
+### GB300 NVL72：NVLink 跨节点（IMEX）
+
+GB300 ISO 预装 `nvidia-imex` 及配置/检查/测试脚本，但装机阶段不启动（需柜内 18 节点管理 IP）。装机后在每个节点执行：
+
+```bash
+/opt/resource/scripts/imex-configure.sh --nodes /root/rack1.list   # 配置并启动
+/opt/resource/scripts/imex-check.sh                                  # L0-L3 分级检查
+/opt/resource/scripts/imex-bench.sh --nodes /root/rack1.list         # 一键跨节点测试
+```
+
+详见 [docs/imex.md](./docs/imex.md)。
 
 ### 如何使用 ISO
 
@@ -146,8 +160,10 @@ make help
 # 本地构建 sbcli 镜像
 make build-sbcli
 
-# 构建并推送 sbcli 镜像到仓库
-make build-sbcli-push
+# 本地构建 arm64 sbcli 镜像（GB300；非 arm64 主机需 QEMU binfmt）
+make build-sbcli-arm64
+# Docker Hub 不通时指定基础镜像
+make build-sbcli-arm64 SBCLI_BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
 
 # 测试本地构建的镜像
 make test-sbcli
@@ -158,6 +174,8 @@ make test-sbcli-interactive
 # 清理本地镜像
 make clean
 ```
+
+推送到 GHCR 由 CI（`.github/workflows/call-build-image.yaml`）完成，不提供本地推送目标。
 
 ### ISO 常用命令
 
@@ -189,8 +207,8 @@ cd build-iso && ./test.sh clean
 
 | 产物 | 发布位置 | 下载方式 |
 | --- | --- | --- |
-| `sbcli` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/sbcli:<version>` |
-| `gpu-rdma-bench` | GHCR | `docker pull ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:<version>` |
+| `sbcli` | GHCR（amd64 + arm64） | `docker pull ghcr.io/daocloud/metal-deployer/sbcli:<version>` |
+| `nixl-benchmark` | GHCR（每个 profile 一个 tag） | `docker pull ghcr.io/daocloud/metal-deployer/nixl-benchmark:<version>-cuda13-gb300`（x86: `-cuda13-x86`） |
 | ISO | 内网文件地址 | 去 Releases 页面查看 Release Notes 中的 ISO 直链，默认前缀 `http://10.64.40.200:5000/iso/GPU/` |
 | ISO 包清单 | 同名 `.info.txt` | 下载 Release Notes 里的 `.info.txt`，其中列出 ISO 内全部 packages 与 versions |
 
@@ -215,7 +233,9 @@ metal-deployer/
 │   ├── test.sh                       # QEMU 测试脚本
 │   ├── config/                       # 配置文件
 │   │   └── cloud-init/user-data      # Cloud-Init 模板
-│   ├── manifest.yaml                 # ISO 构建清单
+│   ├── manifests/
+│   │   ├── manifest.yaml             # ISO 构建清单（x86_64）
+│   │   └── manifest-gb300.yaml       # GB300 系列（arm64）构建清单
 │   ├── .ci-work/                     # 默认下载缓存、构建产物、QEMU 测试产物
 │   ├── packages/                     # 离线 .deb 包与镜像 tar 缓存
 │   └── scripts/                      # 初始化脚本
@@ -226,6 +246,7 @@ metal-deployer/
 │       ├── configs/                  # 测试配置文件
 │       └── scripts/                  # 一键测试脚本
 ├── docs/                             # 详细文档
+│   ├── imex.md                       # GB300 NVLink 跨节点（IMEX）配置与测试
 │   └── superbenchmark.md
 ├── Makefile                          # 本地构建工具
 └── README.md                         # 本文档
