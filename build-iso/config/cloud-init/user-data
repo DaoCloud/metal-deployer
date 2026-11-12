@@ -26,6 +26,10 @@ autoinstall:
       match:
         size: largest 
 
+  # 账号声明（用户名/密码/主机名）。注意：tools/render_user_data.rb 生成 ISO 内配置时
+  # 会把 identity 转成 autoinstall.user-data 的 cloud-init users，由装好的系统首启创建，
+  # 生成结果里不再有 identity —— Ubuntu 24.04.5 起安装器（subiquity）把 admin 视为
+  # 保留用户名，identity 里写 admin 会直接中止安装。
   identity:
     hostname: myserver
     username: admin
@@ -58,6 +62,9 @@ autoinstall:
     # 这里强制改为可读写可执行。
     - chmod -R 755 /target/opt/resource/scripts
     - chmod -R a+rX /target/opt/resource/config /target/opt/resource/packages
+    # 4. 平台内核（GB300: linux-nvidia-64k-hwe-24.04）装进目标系统，首次启动即进入该内核。
+    #    install.env 未设置 KERNEL_PACKAGE（x86）时脚本直接退出，不做任何事。
+    - curtin in-target --target=/target -- /opt/resource/scripts/install_target_kernel.sh
 
   # ====================================================
   # 阶段 2: User Data (第一次启动 ) （以下 全部都是以 root 身份执行）

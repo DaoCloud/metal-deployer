@@ -54,7 +54,8 @@ ensure_package_for_command() {
 }
 
 has_nvidia_gpu() {
-    lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'
+    lspci -n -d 10de: 2>/dev/null | grep -qE ' 030[02]: ' ||
+        lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'
 }
 
 has_rdma_adapter() {
@@ -74,8 +75,10 @@ detect_mpi_home() {
         fi
     fi
 
-    if [ -f /usr/lib/x86_64-linux-gnu/openmpi/include/mpi.h ]; then
-        echo /usr/lib/x86_64-linux-gnu/openmpi
+    local multiarch
+    multiarch="$(dpkg-architecture -qDEB_HOST_MULTIARCH 2>/dev/null || gcc -dumpmachine 2>/dev/null || echo x86_64-linux-gnu)"
+    if [ -f "/usr/lib/${multiarch}/openmpi/include/mpi.h" ]; then
+        echo "/usr/lib/${multiarch}/openmpi"
     fi
 }
 
@@ -165,7 +168,7 @@ build_nccl_tests() {
 }
 
 build_nvbandwidth() {
-    local archive cuda_arch
+    local archive cuda_arch multinode_flag
     archive=$(find "$PACKAGE_DIR" -maxdepth 1 -name 'nvbandwidth*.tar.gz' | head -n 1)
     [ -n "$archive" ] || return 0
     if [ "${SKIP_NVBANDWIDTH:-0}" = "1" ]; then
@@ -181,18 +184,29 @@ build_nvbandwidth() {
     mkdir -p "$BUILD_DIR/nvbandwidth"
     tar -xzf "$archive" -C "$BUILD_DIR/nvbandwidth" --strip-components=1
     cuda_arch="$(detect_cuda_build_arch)"
+    # Multi-node NVLink trays (IMEX installed): build the MPI-enabled variant so
+    # the multinode_* tests used by imex-bench.sh exist.
+    multinode_flag=()
+    case "${NVBANDWIDTH_MULTINODE:-auto}" in
+        1|true|yes) multinode_flag=(-DMULTINODE=1) ;;
+        auto)
+            if command -v nvidia-imex >/dev/null 2>&1 && has_command mpicc; then
+                multinode_flag=(-DMULTINODE=1)
+            fi
+            ;;
+    esac
     if [ -n "$cuda_arch" ]; then
         sed -i "s/^set(supported_archs .*/set(supported_archs \"${cuda_arch}\")/" "$BUILD_DIR/nvbandwidth/CMakeLists.txt"
         cmake -S "$BUILD_DIR/nvbandwidth" -B "$BUILD_DIR/nvbandwidth/build" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCUDAToolkit_ROOT="$CUDA_HOME" \
             -DCMAKE_CUDA_COMPILER="$CUDA_HOME/bin/nvcc" \
-            -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch"
+            -DCMAKE_CUDA_ARCHITECTURES="$cuda_arch" "${multinode_flag[@]}"
     else
         cmake -S "$BUILD_DIR/nvbandwidth" -B "$BUILD_DIR/nvbandwidth/build" \
             -DCMAKE_BUILD_TYPE=Release \
             -DCUDAToolkit_ROOT="$CUDA_HOME" \
-            -DCMAKE_CUDA_COMPILER="$CUDA_HOME/bin/nvcc"
+            -DCMAKE_CUDA_COMPILER="$CUDA_HOME/bin/nvcc" "${multinode_flag[@]}"
     fi
     cmake --build "$BUILD_DIR/nvbandwidth/build" -j"$(nproc)"
     find "$BUILD_DIR/nvbandwidth/build" -type f -perm -111 -name 'nvbandwidth*' -exec cp {} "$INSTALL_DIR/bin/" \;
@@ -277,6 +291,33 @@ build_cuda_bandwidthtest() {
     find "$sample_dir" -maxdepth 1 -type f -perm -111 -exec cp {} "$INSTALL_DIR/bin/" \;
 }
 
+build_imex_fabric_ipc_test() {
+    local self_dir src cc
+    self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    src="${IMEX_IPC_TEST_SRC:-${self_dir}/imex_fabric_ipc_test.c}"
+    [ -f "$src" ] || return 0
+    if ! has_nvidia_gpu; then
+        log "Skip imex_fabric_ipc_test: no NVIDIA GPU detected."
+        return 0
+    fi
+    if [ ! -f "$CUDA_HOME/include/cuda.h" ]; then
+        log "Skip imex_fabric_ipc_test: cuda.h missing."
+        return 0
+    fi
+    if has_command mpicc; then
+        cc=mpicc
+    elif [ -x /opt/hpcx/ompi/bin/mpicc ]; then
+        cc=/opt/hpcx/ompi/bin/mpicc
+    else
+        log "Skip imex_fabric_ipc_test: mpicc missing."
+        return 0
+    fi
+
+    # Driver-API only program (no kernels), so plain mpicc is enough.
+    "$cc" -O2 -o "$INSTALL_DIR/bin/imex_fabric_ipc_test" "$src" \
+        -I"$CUDA_HOME/include" -L"$CUDA_HOME/lib64" -L"$CUDA_HOME/lib64/stubs" -lcuda
+}
+
 ensure_apt_packages \
     cmake \
     libboost-program-options-dev \
@@ -292,6 +333,7 @@ build_nccl_tests
 build_nvbandwidth
 build_perftest
 build_cuda_bandwidthtest
+build_imex_fabric_ipc_test
 
 cat >/etc/profile.d/gpu-rdma-test-tools.sh <<EOF
 export PATH=${INSTALL_DIR}/bin:\$PATH

@@ -121,8 +121,11 @@ dump_vm_install_state() {
         echo \"===== scripts tail =====\"
         tail -n 120 /var/log/scripts.log || true
 
+        echo \"===== /var/lib/metal-deployer/state.json =====\"
+        cat /var/lib/metal-deployer/state.json || true
+
         echo \"===== stage status =====\"
-        for stage in apt_sources base_packages offline_debs doca_install gpu_debs rdma_modules ssh_keys container_runtime docker_images cpu_performance nvidia_setup hpcx_install gdrcopy_build test_tools_build gpu_burn; do
+        for stage in ssh_keys prepare apt_sources base_packages nouveau offline_debs doca_install gpu_debs rdma_modules container_runtime docker_images cpu_performance nvidia_setup hpcx_install gdrcopy_build test_tools_build gpu_burn; do
             stage_line=\$(grep -E \"= (START|DONE |FAIL ) +\${stage}( | =| rc=)\" /var/log/metal-deployer/install-summary.log 2>/dev/null | tail -n 1 || true)
             case \"\$stage_line\" in
                 *\"= FAIL  \"*) echo \"\${stage}: FAIL\" ;;
@@ -626,7 +629,7 @@ do_setup() {
     else
         echo '   [Check] containerd service inactive: FAIL'; exit 1
     fi
-    if lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'; then
+    if lspci -n -d 10de: 2>/dev/null | grep -qE ' 030[02]: ' || lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'; then
         if nvidia-smi -L >/dev/null 2>&1; then
             echo '   [Check] NVIDIA GPU usable by nvidia-smi: OK'
         else
@@ -650,6 +653,29 @@ do_setup() {
         fi
     else
         echo '   [Check] HPC-X absent: SKIP'
+    fi
+    if command -v nvidia-imex >/dev/null 2>&1; then
+        # Multi-node NVLink platforms (GB300): packaging smoke test with a
+        # throw-away no-GPU daemon on loopback; the real domain needs peers.
+        if echo '$SSH_PASS' | sudo -S /opt/resource/scripts/imex-check.sh --smoke --quiet; then
+            echo '   [Check] IMEX packaging smoke (nogpu): OK'
+        else
+            echo '   [Check] IMEX packaging smoke (nogpu): FAIL'; exit 1
+        fi
+        for f in /opt/resource/scripts/imex-configure.sh /opt/resource/scripts/imex-bench.sh /etc/systemd/system/nvidia-imex.service.d/10-wait-config.conf; do
+            if [ -e \"\$f\" ]; then
+                echo \"   [Check] IMEX asset \$f: OK\"
+            else
+                echo \"   [Check] IMEX asset \$f missing: FAIL\"; exit 1
+            fi
+        done
+        if systemctl is-enabled --quiet nvidia-imex.service 2>/dev/null && ! systemctl is-active --quiet nvidia-imex.service; then
+            echo '   [Check] nvidia-imex enabled but idle until nodes_config.cfg exists: OK'
+        else
+            echo '   [Check] nvidia-imex enable/condition state unexpected: WARN'
+        fi
+    else
+        echo '   [Check] IMEX absent: SKIP'
     fi
     "
     if ssh_vm "$TEST_CMD"; then

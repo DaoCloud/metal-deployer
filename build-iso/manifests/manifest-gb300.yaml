@@ -1,0 +1,2181 @@
+# =============================================================================
+# metal-deployer manifest — NVIDIA GB300 series (Grace Blackwell, ARM64/SBSA)
+# =============================================================================
+#
+# PLATFORM : DGX GB300 / GB300 NVL72 / OEM MGX GB300 (Grace CPU + Blackwell Ultra)
+# ARCH     : arm64 (aarch64, SBSA). NOT for DGX B300 (x86_64) — use manifest.yaml.
+#
+# VERSION ALIGNMENT SOURCE
+#   https://docs.nvidia.com/dgx/dgx-os-7-user-guide/release_notes.html
+#   Primary  : "DGX OS 7.6.0" ISO release set   (2026-09-14, Ubuntu 24.04.5)
+#   Fallback : "Current Software Versions" table (2026-10-27) where the 7.6.0
+#              artefact is not published as an offline-installable package.
+#   Package names/filenames cross-checked against the public DGX OS apt repo:
+#     https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/
+#
+# ALIGNMENT TABLE (DGX OS 7.6.0 ARM64 -> this manifest)
+#   Component        DGX OS 7.6.0            This manifest            Note
+#   OS base          Ubuntu 24.04.5          24.04.5 arm64            exact
+#   Kernel           7.0.0-1018-nvidia-64k   7.0.0-1024-nvidia-64k    1018 superseded in archive; 1024 is current
+#   GPU driver       580.178.04 (open)       580.178.04 server-open   exact; Canonical signed, prebuilt for nvidia-64k, no DKMS, Secure Boot OK
+#   CUDA toolkit     13.0 Update 3           13.0.3                   exact (local repo bundles 580.126.20; driver pinned to 580.178.04)
+#   DOCA-OFED        3.2.3-020000 LTS        3.2.3-019000 LTS         020000 has no offline doca-host deb; 019000 = "Current" table
+#   NCCL             2.31.2                  2.31.2-1+cuda13.3        exact
+#   cuDNN            9.24.0                  9.24.0.43                exact (optional)
+#   DCGM             4.6.1                   4.7.1                    newer; complete CUDA 13 diagnostic package set + multinode (mndiag)
+#   Container Toolkit 1.20.0                 1.20.0                   exact
+#   Docker Engine    29.6.2                  29.6.2 (DGX repo build)  exact
+#   GDRCopy          2.6                     2.6-1 (DGX repo arm64)   exact
+#   GDS              1.15 (CUDA 13.0)        nvidia-fs signed module + libcufile (via cuda-toolkit) + gds-tools 1.15.1.6
+#   NVSM / NVVCT     26.06.03 / 1.0.00-1     not shipped              DGX-only repo component, not publicly downloadable
+#   MIG manager      0.15.0                  0.15.0                   exact (optional)
+#   nvidia-system-*  2404.26.01              curated subset           DGX tuning debs, see dgx-system-tuning
+#   HPC-X            (not in DGX OS)         NGC hpc-benchmarks:25.09 optional (download: false); nccl-tests need only Ubuntu openmpi
+#   Containers       DLFW 26.07              cuda:13.0.3-runtime      smoke test; pytorch:26.09-py3 (12 GB) left out
+#   SuperBench       (not in DGX OS)         superbench/main:cuda13.0 main@9142bdfe, digest-pinned, sm_103 build
+#
+# TOOLING STATUS FOR THIS MANIFEST
+#   done prepare.sh : cross-arch offline package set. An isolated apt root (CI_WORK_DIR/apt-arm64,
+#                     ports.ubuntu.com noble{,-updates,-security}) seeded with the base ISO's dpkg status
+#                     solves ONE consistent install of: apt groups + KERNEL_PACKAGE + NVIDIA_DRIVER_PACKAGES
+#                     + every directly downloaded deb + CUDA_TOOLKIT_PACKAGE (CUDA local repo indexed,
+#                     its bundled 580.126.20 driver pinned out). Only the solution is downloaded; stale
+#                     closure debs are pruned. docker_images[].platform / .digest / .download=false honoured.
+#   done build.sh   : UEFI-only repack for arm64 (replays the source ISO's El Torito/ESP layout via
+#                     xorriso -report_el_torito as_mkisofs), console=ttyAMA0 from SERIAL_CONSOLE,
+#                     volume ID METAL-GB300-ARM64, /autoinstall.yaml (network boot / NICo) and
+#                     /.metal-deployer/release.json (paths + boot hints for ISO-unpacking tooling)
+#                     (verified 2026-11-05: QEMU aarch64 + AAVMF boots UEFI -> GRUB -> kernel -> casper)
+#   done kernel     : no first-boot reboot. autoinstall late-commands run scripts/install_target_kernel.sh
+#                     in the target, installing KERNEL_PACKAGE from /opt/resource/packages, so the first
+#                     boot already runs 7.0.0-1024-nvidia-64k (verified in an arm64 chroot of the ISO rootfs)
+#   done init_system.sh : NVIDIA_DRIVER_BRANCH=580-server-open-signed installs NVIDIA_DRIVER_PACKAGES verbatim,
+#                     refuses to run on a kernel other than KERNEL_RELEASE, pins the CUDA local repo driver
+#                     out; GPU detection by PCI vendor 10de + class 0300/0302 (GB300 may lack a pci.ids name)
+#   done install_test_tools.sh : MPI home uses the multiarch path
+#   todo test.sh    : qemu-system-aarch64 -M virt + AAVMF (manual QEMU run works, see build-iso/readme.md)
+#   todo on hardware: driver load, IMEX, DOCA on a real GB300 tray
+#
+# Build (separate work dir keeps x86 caches intact):
+#   CI_WORK_DIR=$PWD/build-iso/.ci-work/gb300 CACHE_BASE_DIR=$PWD/build-iso/.ci-work/gb300-cache \
+#     make prepare-iso ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA_PROFILE=cuda13-gb300
+#   sudo CI_WORK_DIR=$PWD/build-iso/.ci-work/gb300 \
+#     make build-iso ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA_PROFILE=cuda13-gb300
+#
+# Backup profile cuda13-gb300-aggressive (R615 + CUDA 13.4 + DOCA 3.5, kernel 1025):
+# see the comment above that profile under cuda.profiles.
+# =============================================================================
+manifest_version: '2.0'
+basic:
+  platform:
+    name: gb300
+    display_name: NVIDIA GB300 (Grace Blackwell Ultra)
+    arch: arm64
+    cpu: NVIDIA Grace (Arm Neoverse V2)
+    gpu: Blackwell Ultra (B300)
+    reference: https://docs.nvidia.com/dgx/dgx-os-7-user-guide/release_notes.html
+    reference_release: DGX OS 7.6.0
+    reference_date: '2026-09-14'
+    kernel_flavor: nvidia-64k
+    page_size: 64k
+    serial_console: ttyAMA0
+    boot: uefi-only
+  base_iso:
+    source: https://cdimage.ubuntu.com/releases/24.04/release/ubuntu-24.04.5-live-server-arm64.iso
+    checksum:
+      algorithm: sha256
+      value: f12484464c7d4d73e2167e0a7dbda1e669f8fae9bcf778dc0944937034b320cb
+    local_path: iso/ubuntu-24.04-base-arm64.iso
+  install_environment:
+    TARGET_ARCH: arm64
+    PLATFORM: gb300
+    KERNEL_PACKAGE: linux-nvidia-64k-hwe-24.04
+    KERNEL_RELEASE: 7.0.0-1024-nvidia-64k
+    SERIAL_CONSOLE: ttyAMA0
+    NVIDIA_DRIVER_FLAVOR: open
+    DOCA_PACKAGES: mlnx-ofed-kernel-dkms mlnx-ofed-kernel-utils ibverbs-providers libibverbs1 ibverbs-utils librdmacm1 infiniband-diags mft
+  packages:
+  # ---------------------------------------------------------------------------
+  # Kernel: Canonical linux-nvidia-64k HWE (Grace-patched, 64K pages, signed)
+  # Installed on first boot (generic installer kernel first), then reboot.
+  # Source: ports.ubuntu.com noble-updates main. Closure resolved with
+  # apt-cache depends --no-recommends on 2026-11-03.
+  # ---------------------------------------------------------------------------
+  - name: linux-nvidia-64k-hwe-24.04
+    description: Canonical NVIDIA 64K-page HWE kernel metapackage（GB200/GB300 官方推荐内核）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 2a363316c85fff5fdcd08d80af0f0225a17104f2e9fd68c976a338ebb3f6466e
+    required: true
+    filename: linux-nvidia-64k-hwe-24.04_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-image-nvidia-64k-hwe-24.04
+    description: NVIDIA 64K kernel image metapackage
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-image-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: f6acb13f8ecd68039ea6480159a86759100b3263f7b954a7dcf8a8d0acfe6124
+    required: true
+    filename: linux-image-nvidia-64k-hwe-24.04_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-headers-nvidia-64k-hwe-24.04
+    description: NVIDIA 64K kernel headers metapackage
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-headers-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: dc1125e10a2bed245d1e8a3f4caaad7a64cc678262c804f070cfdbd7bcee9173
+    required: true
+    filename: linux-headers-nvidia-64k-hwe-24.04_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-tools-nvidia-64k-hwe-24.04
+    description: NVIDIA 64K kernel tools metapackage（perf 等）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-tools-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 8a1c54a4155933257c90dfe484de15149b01650394027f7230fec61e5d53c33d
+    required: false
+    filename: linux-tools-nvidia-64k-hwe-24.04_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-image-7.0.0-1024-nvidia-64k
+    description: Signed kernel image 7.0.0-1024-nvidia-64k（Secure Boot 可用）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-signed-nvidia-7.0/linux-image-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 4028203bd005dab33fa718667564ec3c61d29c9c8892b16ed87e2f945862c400
+    required: true
+    filename: linux-image-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-modules-7.0.0-1024-nvidia-64k
+    description: Kernel modules for 7.0.0-1024-nvidia-64k
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-modules-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 4cf0e1de80ab6e9186b843127f3fa78aeb1ad877cfd1667f1aadd6f8b85dd1e2
+    required: true
+    filename: linux-modules-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-headers-7.0.0-1024-nvidia-64k
+    description: Kernel headers for 7.0.0-1024-nvidia-64k（DKMS 必需）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-headers-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 7fbffbd6653664434525c1d1d72ec207be744b161060752b75fa572b6f5b3efd
+    required: true
+    filename: linux-headers-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-nvidia-7.0-headers-7.0.0-1024
+    description: Common kernel headers for linux-nvidia-7.0（DKMS 必需,arch all）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-nvidia-7.0-headers-7.0.0-1024_7.0.0-1024.25~24.04.1_all.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 668f99e3dfa538b483a90d05d6061e4cecd00faeb8ab14dd0d27bf35d253b151
+    required: true
+    filename: linux-nvidia-7.0-headers-7.0.0-1024_7.0.0-1024.25_all.deb
+    install_method: apt
+    group: kernel
+  - name: linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k
+    description: Prebuilt signed nvidia-fs (GPUDirect Storage) module for 7.0.0-1024-nvidia-64k
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: e03d84c7f8438d21eb34632790f94c2b8be390f710f8d007acb1741ecd1975a6
+    required: false
+    filename: linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-tools-7.0.0-1024-nvidia-64k
+    description: Kernel tools for 7.0.0-1024-nvidia-64k
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-tools-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: 362dac8adeec6ac41cbecb218ce0710461131ed9ccb6ca6f127da0820c2b3dbb
+    required: false
+    filename: linux-tools-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-nvidia-7.0-tools-7.0.0-1024
+    description: Common kernel tools for linux-nvidia-7.0
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-nvidia-7.0-tools-7.0.0-1024_7.0.0-1024.25~24.04.1_arm64.deb
+    version: 7.0.0-1024.25~24.04.1
+    sha256: dbfd5cede3731a3fa5807d6afe9a9b0bffe95476f85ca07d796cee9dfd7070fa
+    required: false
+    filename: linux-nvidia-7.0-tools-7.0.0-1024_7.0.0-1024.25_arm64.deb
+    install_method: apt
+    group: kernel
+  - name: linux-firmware
+    description: linux-firmware（kernel 元包依赖版本 >= 该版本,ISO 自带版本可能更旧）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-firmware/linux-firmware_20240318.git3b128b60.0ubuntu3.1_all.deb
+    version: 20240318.git3b128b60.0ubuntu3.1
+    sha256: aa3204e819089c4c73c1e69a3d1048e034253e39090887e1020f162eff78071a
+    required: true
+    filename: linux-firmware_20240318.git3b128b60.0ubuntu3.1_all.deb
+    install_method: apt
+    group: kernel
+
+  # ---------------------------------------------------------------------------
+  # NVIDIA Container Toolkit 1.20.0 (DGX OS 7.6.0) — arm64
+  # ---------------------------------------------------------------------------
+  - name: libnvidia-container-tools
+    description: NVIDIA Container CLI 工具（Container Toolkit 1.20.0,arm64）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/libnvidia-container-tools_1.20.0-1_arm64.deb
+    version: 1.20.0
+    required: true
+    filename: libnvidia-container-tools-1.20.0-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: nvidia-container-toolkit-base
+    description: NVIDIA Container Toolkit 基础组件（nvidia-ctk, nvidia-cdi-hook, 1.20.0,arm64）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/nvidia-container-toolkit-base_1.20.0-1_arm64.deb
+    version: 1.20.0
+    required: true
+    filename: nvidia-container-toolkit-base-1.20.0-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: nvidia-container-toolkit
+    description: NVIDIA Container Toolkit（1.20.0,arm64）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/nvidia-container-toolkit_1.20.0-1_arm64.deb
+    version: 1.20.0
+    required: true
+    filename: nvidia-container-toolkit-1.20.0-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: libnvidia-container
+    description: NVIDIA Container Library（libnvidia-container1,1.20.0,arm64）
+    url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/libnvidia-container1_1.20.0-1_arm64.deb
+    version: 1.20.0
+    required: true
+    filename: libnvidia-container1-1.20.0-ubuntu2404_arm64.deb
+    install_method: apt
+
+  # ---------------------------------------------------------------------------
+  # Docker Engine 29.6.2 (DGX OS 7.6.0) — same builds DGX OS ships, arm64
+  # ---------------------------------------------------------------------------
+  - name: containerd.io
+    description: containerd 2.2.5（DGX OS 仓库同款,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/c/containerd.io/containerd.io_2.2.5-1~ubuntu.24.04~noble_arm64.deb
+    version: 2.2.5
+    sha256: 8652d4c7629e2c3c8f7115cbf29b30733f1db082b23cb858651ade36325ac1a0
+    required: true
+    filename: containerd.io-2.2.5-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: docker-ce-cli
+    description: Docker CLI 29.6.2（DGX OS 7.6.0 对齐,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/d/docker-ce/docker-ce-cli_29.6.2-1~ubuntu.24.04~noble_arm64.deb
+    version: 29.6.2
+    sha256: 95b1e7dfee15ffdcbfb8336c3c73fae64d3218ec2300264c489f721e35c7bccd
+    required: true
+    filename: docker-ce-cli-29.6.2-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: docker-ce
+    description: Docker Engine 29.6.2（DGX OS 7.6.0 对齐,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/d/docker-ce/docker-ce_29.6.2-1~ubuntu.24.04~noble_arm64.deb
+    version: 29.6.2
+    sha256: 92f6e8a8282823f82a27daaf80f4fd2b254188b37233cf787c7f6379b6710153
+    required: true
+    filename: docker-ce-29.6.2-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: docker-buildx-plugin
+    description: Docker Buildx 插件 0.35.0（arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/d/docker-buildx-plugin/docker-buildx-plugin_0.35.0-1~ubuntu.24.04~noble_arm64.deb
+    version: 0.35.0
+    sha256: 1ae9d1268fc991d1a0162d6701c1cf5d9214a80a93c585ff91c512abfb83ba37
+    required: true
+    filename: docker-buildx-plugin-0.35.0-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: docker-compose-plugin
+    description: Docker Compose v2 插件 5.2.0（arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/d/docker-compose-plugin/docker-compose-plugin_5.2.0-1~ubuntu.24.04~noble_arm64.deb
+    version: 5.2.0
+    sha256: 069df1cf4b71d503791574b77eeef9a9518d2e4925378d10e587ff4dfd510128
+    required: true
+    filename: docker-compose-plugin-5.2.0-ubuntu2404_arm64.deb
+    install_method: apt
+
+  # ---------------------------------------------------------------------------
+  # Inbox RDMA userspace (Ubuntu ports, rdma-core 50.0-2 = DGX OS 7 "Inbox OFED")
+  # ---------------------------------------------------------------------------
+  - name: rdma-core
+    description: RDMA core userspace（Inbox OFED 50.0-2,arm64）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/r/rdma-core/rdma-core_50.0-2ubuntu0.2_arm64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: rdma-core_50.0-2ubuntu0.2_arm64.deb
+    install_method: apt
+  - name: librdmacm-dev
+    description: RDMA CM development headers（perftest 构建依赖,arm64）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/r/rdma-core/librdmacm-dev_50.0-2ubuntu0.2_arm64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: librdmacm-dev_50.0-2ubuntu0.2_arm64.deb
+    install_method: apt
+  - name: libibumad-dev
+    description: InfiniBand UMAD development headers（perftest 构建依赖,arm64）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/r/rdma-core/libibumad-dev_50.0-2ubuntu0.2_arm64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: libibumad-dev_50.0-2ubuntu0.2_arm64.deb
+    install_method: apt
+  - name: ibverbs-utils
+    description: RDMA verbs user utilities（ibv_devinfo 等,arm64）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/universe/r/rdma-core/ibverbs-utils_50.0-2ubuntu0.2_arm64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: ibverbs-utils_50.0-2ubuntu0.2_arm64.deb
+    install_method: apt
+  - name: infiniband-diags
+    description: InfiniBand diagnostics utilities（ibstat 等,arm64）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/universe/r/rdma-core/infiniband-diags_50.0-2ubuntu0.2_arm64.deb
+    version: 50.0-2ubuntu0.2
+    required: true
+    filename: infiniband-diags_50.0-2ubuntu0.2_arm64.deb
+    install_method: apt
+
+  # ---------------------------------------------------------------------------
+  # DOCA-OFED 3.2.3 LTS — offline host repo deb, arm64-sbsa
+  # DGX OS 7.6.0 ISO uses 3.2.3-020000 (online repo only, no doca-host deb).
+  # 3.2.3-019000 is the published offline deb and the "Current" table version.
+  # Bundles MFT 4.34.1-25 and mlnx-ofed-kernel-dkms 25.10.
+  # ---------------------------------------------------------------------------
+  - name: doca-host
+    description: NVIDIA DOCA host offline repository 3.2.3-019000 LTS（Ubuntu 24.04 arm64,ConnectX-7/8 & BlueField-3）
+    url: https://content.mellanox.com/DOCA/DOCA_v3.2.3/host/doca-host_3.2.3-019000-25.10-ubuntu2404_arm64.deb
+    version: 3.2.3-019000
+    required: true
+    filename: doca-host_3.2.3-019000-25.10-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: libfuse2
+    description: legacy FUSE2 runtime for DOCA rshim compatibility（arm64）
+    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/f/fuse/libfuse2_2.9.9-3_arm64.deb
+    version: 2.9.9-3
+    required: true
+    filename: libfuse2_2.9.9-3_arm64.deb
+    install_method: apt
+
+  # ---------------------------------------------------------------------------
+  # GDRCopy 2.6 (DGX OS 7.6.0) — prebuilt arm64 debs from DGX OS repo
+  # Replaces source build; gdrdrv-dkms compiles against 7.0.0-1024-nvidia-64k on target.
+  # ---------------------------------------------------------------------------
+  - name: gdrdrv-dkms
+    description: GDRCopy 内核驱动 DKMS 2.6（DGX OS 仓库,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/g/gdrdrv-dkms/gdrdrv-dkms_2.6-1_arm64.deb
+    version: 2.6-1
+    sha256: 19f0564357f9e7e7e0f0a9f920cdfbb7c6004e030838ddc9038d49d45225f4a9
+    required: false
+    filename: gdrdrv-dkms_2.6-1_arm64.deb
+    install_method: apt
+  - name: libgdrapi
+    description: GDRCopy 用户态库 2.6（DGX OS 仓库,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/libg/libgdrapi/libgdrapi_2.6-1_arm64.deb
+    version: 2.6-1
+    sha256: 02f60084bdfdabbcab25fe6da1355cf97e1f1000d08d344bb5f93f52dcad8616
+    required: false
+    filename: libgdrapi_2.6-1_arm64.deb
+    install_method: apt
+  - name: gdrcopy
+    description: GDRCopy 命令行工具 2.6（DGX OS 仓库,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/g/gdrcopy/gdrcopy_2.6-1_arm64.deb
+    version: 2.6-1
+    sha256: f29942bd3993d2424b56da74e9863ff557ae1c6c4a8dffc336126e8b7a8356c8
+    required: false
+    filename: gdrcopy_2.6-1_arm64.deb
+    install_method: apt
+  - name: gdrcopy-source
+    description: GDRCopy 2.6 源码（仅作 install_gdrcopy.sh 回退,默认不下载）
+    download: false
+    url: https://github.com/NVIDIA/gdrcopy/archive/refs/tags/v2.6.tar.gz
+    version: '2.6'
+    required: false
+    filename: gdrcopy-2.6.tar.gz
+    install_method: build
+
+  # ---------------------------------------------------------------------------
+  # DCGM 4.7.1 — sbsa. Keep all split packages at 1:4.7.1-2.
+  # CUDA diagnostic libraries are private to DCGM; system CUDA/NCCL stay pinned.
+  # ---------------------------------------------------------------------------
+  - name: datacenter-gpu-manager
+    description: NVIDIA DCGM 4.7.1 proprietary（arm64/sbsa）
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-proprietary_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 0d315d9974d4a319f89050c2f128b13ef297ff59a85978159891deb2379cc21d
+    required: true
+    filename: dcgm-4.7.1-2-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-core
+    description: NVIDIA DCGM 4.7.1 core（arm64/sbsa）
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-core_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 4bd345390bb53f6cd0bddcd7a47fd20edd443985a7af6613e4007720e017d362
+    required: true
+    filename: dcgm-core-4.7.1-2-ubuntu2404_arm64.deb
+    install_method: apt
+  - name: dcgmi
+    description: DCGM 4.7.1 command-line client
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/dcgmi_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 8cf13a51ac7d7e2254cc08188e344b5d2a7593700b9b55bef7e669925ee0825f
+    required: true
+    filename: dcgmi_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: libdcgm
+    description: DCGM 4.7.1 runtime library
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libdcgm_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 2cfb67d6ba66e07e989e3efb9e797afaf922999f4897f730e39f2511e22f5731
+    required: true
+    filename: libdcgm_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: nv-hostengine
+    description: DCGM 4.7.1 host engine and system service
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/nv-hostengine_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: f3df8c55d96ddec339e8bfa0bb072de65b8f92895978b188f84780920c7c38cc
+    required: true
+    filename: nv-hostengine_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-python3
+    description: DCGM 4.7.1 Python bindings
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-python3_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: e6a16e51c6d9fc82a93f6d22789c4ef71b0112d6c622f7db4d92134f2b4077c6
+    required: true
+    filename: datacenter-gpu-manager-4-python3_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-dcgmproftesterkernels
+    description: DCGM 4.7.1 profiling kernel metadata
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-dcgmproftesterkernels_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 2d41e5ceea6cbfe84bf2915df6e38535f7518739cf7d684182d3e5c7d6790ec4
+    required: true
+    filename: datacenter-gpu-manager-4-dcgmproftesterkernels_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-config
+    description: DCGM 4.7.1 configuration module
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-config_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 8ac47c3fc1fc6b46e2b5db3996b3a2a8ad520c38a43470d9742a6f258d34d079
+    required: true
+    filename: datacenter-gpu-manager-4-module-config_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-diag
+    description: DCGM 4.7.1 diagnostic module and runner
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-diag_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: c6bc01c5604d25a51ba50a434f35ec93c3ab91a624e76002b7ceb3234e6e9794
+    required: true
+    filename: datacenter-gpu-manager-4-module-diag_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-health
+    description: DCGM 4.7.1 health module
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-health_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 1006ff4aecf0e1d8b1da693d0eb56d610458904fc42a48d9067db4fdb628a95e
+    required: true
+    filename: datacenter-gpu-manager-4-module-health_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-introspect
+    description: DCGM 4.7.1 introspection module
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-introspect_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: a0b533064f3dca44b0a113e883639b1dce434c4ea8b79e03bbe99eaf0f626576
+    required: true
+    filename: datacenter-gpu-manager-4-module-introspect_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-nvswitch
+    description: DCGM 4.7.1 NVSwitch and ConnectX monitoring module
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-nvswitch_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 9a98f4e9e1c1c335612bf9b7bc9a47695cc69f13d2ba0679530274faea2ecca7
+    required: true
+    filename: datacenter-gpu-manager-4-module-nvswitch_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-policy
+    description: DCGM 4.7.1 policy module
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-policy_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 21575864e5b74191e9a1841eed86c2ce56efad649e7b861207cb185e835da4bb
+    required: true
+    filename: datacenter-gpu-manager-4-module-policy_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-module-sysmon
+    description: DCGM 4.7.1 NVIDIA CPU telemetry module
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-sysmon_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 98dd1c352ce6d5caad556e4bf546b09472e812259666046ae8f6f699be2ce270
+    required: true
+    filename: datacenter-gpu-manager-4-module-sysmon_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-cuda13
+    description: DCGM 4.7.1 CUDA 13 diagnostic and profiling plugins
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 87c3d84cd467ea550d20ea82df8316ec21902efde0c6b2e5c8c6253c6f6c4d63
+    required: true
+    filename: datacenter-gpu-manager-4-cuda13_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-proprietary-cuda13
+    description: DCGM 4.7.1 proprietary CUDA 13 diagnostic plugins
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-proprietary-cuda13_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: ca4105955de06dedf0f5c3e2fce3d5c7305a8bf0014654bdb781096136342c37
+    required: true
+    filename: datacenter-gpu-manager-4-proprietary-cuda13_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-cuda13-cublas
+    description: DCGM-private cuBLAS library for CUDA 13 diagnostics
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-cublas_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 0e7ae5e31b61bb157a6f48d252117ad163412b0ecc80a6a9cc9de0fc47a2c970
+    required: true
+    filename: datacenter-gpu-manager-4-cuda13-cublas_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-cuda13-curand
+    description: DCGM-private cuRAND library for CUDA 13 diagnostics
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-curand_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 7b0fe1b280ab7dd3a37fd4d6297842b79bed558dcdffca426af7f611549aa2c7
+    required: true
+    filename: datacenter-gpu-manager-4-cuda13-curand_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-cuda13-cusparselt
+    description: DCGM-private cuSPARSELt library for CUDA 13 diagnostics
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-cusparselt_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 14e8295912d5cfe555145969b19c57f9a0f4e1522c321a87b7bf39533e7ffe53
+    required: true
+    filename: datacenter-gpu-manager-4-cuda13-cusparselt_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-cuda13-nccl
+    description: DCGM-private NCCL library for CUDA 13 diagnostics
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-nccl_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: f7d3e2415caf3c9d7678c22ac5a9e12d14ae6c5cc1c83fc1433897a82df7c91a
+    required: true
+    filename: datacenter-gpu-manager-4-cuda13-nccl_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-cuda13-ubergemm2
+    description: DCGM 4.7.1 UBERGEMM2 CUDA 13 diagnostic workload
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-ubergemm2_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: e05deb1133591e0151cd8f2a21680669a18f09ce931e4dc429f29822c22c2a50
+    required: true
+    filename: datacenter-gpu-manager-4-cuda13-ubergemm2_4.7.1-2_arm64.deb
+    install_method: apt
+  # Multi-node diagnostics (dcgmi mndiag): mnnvbandwidth / nvloom / mnubergemm for the
+  # rack-level NVLink fabric tests. Needs Open MPI (openmpi-bin from base_packages).
+  - name: datacenter-gpu-manager-4-multinode
+    description: DCGM 4.7.1 multi-node diagnostic module and nvidia-dcgm MPI environment generator
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-multinode_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: 5b64f17e49dc8846fdf283131f1b44b16e4af140acd8459b80a1056383726cda
+    required: true
+    filename: datacenter-gpu-manager-4-multinode_4.7.1-2_arm64.deb
+    install_method: apt
+  - name: datacenter-gpu-manager-4-multinode-cuda13
+    description: DCGM 4.7.1 CUDA 13 multi-node workloads (mnnvbandwidth, nvloom_cli, mnubergemm)
+    url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-multinode-cuda13_4.7.1-2_arm64.deb
+    version: '1:4.7.1-2'
+    sha256: be0920fd0f690cec46d07192b8df432a990fbbc28266087d2a969c6c89cec8d1
+    required: true
+    filename: datacenter-gpu-manager-4-multinode-cuda13_4.7.1-2_arm64.deb
+    install_method: apt
+
+  # ---------------------------------------------------------------------------
+  # DGX OS system tuning packages (Appendix C "nvidia-system-core/utils" subset)
+  # Public arm64 repo: repo.download.nvidia.com/baseos/ubuntu/noble/arm64 (common)
+  # Excluded on purpose: dgx-release/dgx-repo/cuda-compute-repo/hpc-sdk-repo (repo
+  # config), msecli/nvidia-raid-config/nvidia-redfish-config (DGX hardware only),
+  # nvsm (DGX only), nv-update-disable/nvidia-esm-hook-epilogue (policy).
+  # All are tiny config debs; postinst edits /etc/default/grub.d, sysctl.d,
+  # modprobe.d, modules-load.d. Grace-specific: nvidia-arm-cspmu-loader,
+  # nvidia-sbsa-gwdt-options, nvidia-cppc-cpufreq-options.
+  # ---------------------------------------------------------------------------
+  - name: nv-common-apis
+    description: DGX 公共脚本库（其余 nv-*/nvidia-* 调优包的依赖）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nv-common-apis/nv-common-apis_26.08-2_all.deb
+    version: 26.08-2
+    sha256: 8ef036df2e03016c7373e14578cdf0ff810312573a94bfa95a1ad9515b5770b5
+    required: false
+    filename: nv-common-apis_26.08-2_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-grub-params
+    description: /usr/share/nvidia/grub-params.json（平台内核参数表）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-grub-params/nvidia-grub-params_25.10-1_all.deb
+    version: 25.10-1
+    sha256: 441df24a02b92210ff79ff8ac9d0932cf940e2ae6fe5a9bedf890d8372652eb8
+    required: false
+    filename: nvidia-grub-params_25.10-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-kernel-defaults
+    description: /etc/sysctl.d/20-nvidia-defaults.conf（arp_announce/arp_ignore）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-kernel-defaults/nvidia-kernel-defaults_21.05-1_all.deb
+    version: 21.05-1
+    sha256: 7ce662b10eb55c87ffbb8853a7a0cd284c817ee39b14ada84c9ec3cb92142897
+    required: false
+    filename: nvidia-kernel-defaults_21.05-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nv-cpu-governor
+    description: CPU governor = performance（可替代仓库 cpu-performance.service）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nv-cpu-governor/nv-cpu-governor_22.05-1_all.deb
+    version: 22.05-1
+    sha256: 7073fb7e550fb20c0ace648ade376b2a6976e521436b4e2167f1c89c4099d662
+    required: false
+    filename: nv-cpu-governor_22.05-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-disable-numa-balancing
+    description: 关闭自动 NUMA balancing
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-disable-numa-balancing/nvidia-disable-numa-balancing_24.10-2_all.deb
+    version: 24.10-2
+    sha256: c687802f6eab58715d390cc05aab6e7866cffa7bcd78aa89dc071a133e9a4d05
+    required: false
+    filename: nvidia-disable-numa-balancing_24.10-2_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-disable-init-on-alloc
+    description: 内核参数 init_on_alloc=0
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-disable-init-on-alloc/nvidia-disable-init-on-alloc_24.10-1_all.deb
+    version: 24.10-1
+    sha256: 744d169812f6fd851b469b3cefa6ecdb03dba2fba220b76436fed2bf660c9d9f
+    required: false
+    filename: nvidia-disable-init-on-alloc_24.10-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nv-iommu
+    description: 内核参数 iommu=pt
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvhelpers/nv-iommu_25.12-1_all.deb
+    version: 25.12-1
+    sha256: 7e596646ca3e5c1acb499a3a730f7b1291d9d22298a189f5e0a78b81ed54f02d
+    required: false
+    filename: nv-iommu_25.12-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-acs-disable
+    description: 关闭 PCIe ACS（pci=disable_acs_redir,GPUDirect P2P 需要）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-acs-disable/nvidia-acs-disable_24.10.1_all.deb
+    version: 24.10.1
+    sha256: f9e6f26171dd0227eeeb5fb561892b121abdc336f9ac8e7bff56dcb5332743cc
+    required: false
+    filename: nvidia-acs-disable_24.10.1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-pci-bridge-power
+    description: PCI bridge power control = on
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-pci-bridge-power/nvidia-pci-bridge-power_25.01-1_all.deb
+    version: 25.01-1
+    sha256: 34b3f1359d9b8f0ed041bc4da5778084f7bed2ec4dd4bbda258fbe135c7d5542
+    required: false
+    filename: nvidia-pci-bridge-power_25.01-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-relaxed-ordering-gpu
+    description: modprobe NVreg_EnablePCIERelaxedOrderingMode=1
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-relaxed-ordering/nvidia-relaxed-ordering-gpu_25.07-2_all.deb
+    version: 25.07-2
+    sha256: f0025120aa5de61bb1cae749e3153d5eeaf8302465be6d663856fd437e51cb7a
+    required: false
+    filename: nvidia-relaxed-ordering-gpu_25.07-2_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-relaxed-ordering-nvme
+    description: NVMe PCIe Relaxed Ordering
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-relaxed-ordering/nvidia-relaxed-ordering-nvme_25.07-2_all.deb
+    version: 25.07-2
+    sha256: d88d5369f6c468a9e509eeb6df2c079f40bf73794f71a44dad3921402e2dab92
+    required: false
+    filename: nvidia-relaxed-ordering-nvme_25.07-2_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-nvme-options
+    description: NVMe interrupt coalescing（Samsung/Kioxia）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-nvme-options/nvidia-nvme-options_26.02-1_all.deb
+    version: 26.02-1
+    sha256: d9259126574e4866cfd55c19d5ca30262a52d8400cb60ffba8d83457cd3b214b
+    required: false
+    filename: nvidia-nvme-options_26.02-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nv-limits
+    description: 提高 nofile 等 ulimit
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvhelpers/nv-limits_25.10-1_all.deb
+    version: 25.10-1
+    sha256: cb377b88c6c129b462db2912d35a02275bd0106cc0ee80f0e2b2dc0b2525f79b
+    required: false
+    filename: nv-limits_25.10-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nv-ipmi-devintf
+    description: 开机加载 ipmi_devintf
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvhelpers/nv-ipmi-devintf_25.10-1_all.deb
+    version: 25.10-1
+    sha256: c08580f8bc00a16265e1d5edd456e20ebe2c35c41297c4b3cf58c63896c4ca0b
+    required: false
+    filename: nv-ipmi-devintf_25.10-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nv-persistence-mode
+    description: 启用 GPU persistence mode（可替代 nvidia_setup.sh 对应逻辑）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvhelpers/nv-persistence-mode_25.10-1_all.deb
+    version: 25.10-1
+    sha256: b692bbdb7cd63430731d984eb0d8c3e1eb71211a36c853487400d5095c334179
+    required: false
+    filename: nv-persistence-mode_25.10-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-fs-loader
+    description: 开机加载 nvidia-fs（GDS）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-fs-loader/nvidia-fs-loader_23.02-1_all.deb
+    version: 23.02-1
+    sha256: 5d9cec7d2e00c0fa9ed1dd2d7a4863c78060880f6c4159fc4fb793a272ab2a4b
+    required: false
+    filename: nvidia-fs-loader_23.02-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-peermem-loader
+    description: 开机加载 nvidia_peermem（legacy PeerDirect）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-peermem-loader/nvidia-peermem-loader_25.03-1_all.deb
+    version: 25.03-1
+    sha256: 111d74953782a8542efbcd698fea8707eb4511f739f15613834c2004b5714710
+    required: false
+    filename: nvidia-peermem-loader_25.03-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-ib-umad-loader
+    description: 开机加载 ib_umad
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-ib-umad-loader/nvidia-ib-umad-loader_24.10-1_all.deb
+    version: 24.10-1
+    sha256: 637118b1eda570ff1782ea11fd00483e64da24fa06331e99c0a5d84187b708c9
+    required: false
+    filename: nvidia-ib-umad-loader_24.10-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-arm-cspmu-loader
+    description: 开机加载 arm-cspmu（Grace CoreSight PMU,仅 arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-arm-cspmu-loader/nvidia-arm-cspmu-loader_23.05-1_arm64.deb
+    version: 23.05-1
+    sha256: 263a6a2a217c6ed0399632b31f74614cc25b511d47afbe3dfe47af3655734455
+    required: false
+    filename: nvidia-arm-cspmu-loader_23.05-1_arm64.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-sbsa-gwdt-options
+    description: SBSA generic watchdog 参数（仅 arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-sbsa-gwdt-options/nvidia-sbsa-gwdt-options_25.06-1_arm64.deb
+    version: 25.06-1
+    sha256: 8817462850580e3641818306f7c96eb0cef1026a4ccb0f1ea966dad58b3b7dde
+    required: false
+    filename: nvidia-sbsa-gwdt-options_25.06-1_arm64.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-cppc-cpufreq-options
+    description: CPPC cpufreq 参数（Grace）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-cppc-cpufreq-options/nvidia-cppc-cpufreq-options_25.06-1_all.deb
+    version: 25.06-1
+    sha256: 4004487aad8ea1e6ed044f8ae05ed256e1fc3c38bbef71d6d1d1c738573ac1fe
+    required: false
+    filename: nvidia-cppc-cpufreq-options_25.06-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-earlycon
+    description: 内核参数 earlycon
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-earlycon/nvidia-earlycon_25.06-1_all.deb
+    version: 25.06-1
+    sha256: 1eb7a034919a15a93afa787048f0c5e51096200c5636f83b23ab21cadaa193bc
+    required: false
+    filename: nvidia-earlycon_25.06-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-crashdump
+    description: crashkernel + kernel.*_panic sysctl（Pre-Depends kdump-tools/kexec-tools/linux-crashdump/makedumpfile,需进 apt 闭包）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-crashdump/nvidia-crashdump_25.08-1_all.deb
+    version: 25.08-1
+    sha256: 5ccc23091acf4f6c1e000b451a35551585e27811de7369ce6fcdec89739f9ef4
+    required: false
+    filename: nvidia-crashdump_25.08-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-dcgm-bind-all
+    description: DCGM nv-hostengine 监听所有地址
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-dcgm-bind-all/nvidia-dcgm-bind-all_24.07-1_all.deb
+    version: 24.07-1
+    sha256: 78f416a80dfa48edca9af34081c37e73b748c650c5fe260a7991e130af71b705
+    required: false
+    filename: nvidia-dcgm-bind-all_24.07-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-logrotate
+    description: NVIDIA logrotate 策略
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-logrotate/nvidia-logrotate_21.11-1_all.deb
+    version: 21.11-1
+    sha256: 5e1da252840c50d37f48d9f0d1f8aeec10d64473fd9d86971d7da9cfd740f98f
+    required: false
+    filename: nvidia-logrotate_21.11-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvgpu-services-list
+    description: 列出 GPU 相关 systemd 服务
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvgpu-services-list/nvgpu-services-list_22.05-1_all.deb
+    version: 22.05-1
+    sha256: 6a88b7b4b34d44db9b120465b7f1754dfe611a4a0880db11321b93b5081e161d
+    required: false
+    filename: nvgpu-services-list_22.05-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-mig-manager
+    description: NVIDIA MIG Partition Editor 0.15.0（mig-parted,DGX OS 7.6.0 对齐,arm64）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-mig-manager/nvidia-mig-manager_0.15.0-1_arm64.deb
+    version: 0.15.0-1
+    sha256: c15e1dc68cb6b29832061705b46f7e1e05fb8562cf57deb7e738693fd4ab81c4
+    required: false
+    filename: nvidia-mig-manager_0.15.0-1_arm64.deb
+    install_method: apt
+    group: dgx-system-tuning
+  - name: nvidia-chardev-links
+    description: udev 规则,nvidia 驱动加载时 nvidia-ctk 生成 /dev/char/* 软链（避免 cgroup v2 + systemd daemon-reload 后容器内 NVML Unknown Error,DGX OS 默认安装）
+    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-chardev-links/nvidia-chardev-links_23.01-1_all.deb
+    version: 23.01-1
+    sha256: 6f44520d88a287d9306cf6ff2373982247fd7578cab9b5f1c2671e40ed1992e0
+    required: false
+    filename: nvidia-chardev-links_23.01-1_all.deb
+    install_method: apt
+    group: dgx-system-tuning
+  # Intentionally NOT shipped from DGX OS arm64 "common" (verified 2026-11-05):
+  #   nvidia-enable-journaling 20.06 : postinst runs `tune2fs -o journal_data` on /,
+  #                                    roughly halves root-fs write throughput; and
+  #                                    init_system.sh installs every deb in packages/,
+  #                                    so it cannot be shipped as opt-in.
+  #   nvidia-pci-no-realloc 24.10    : calls plat_needs_pci_no_realloc, removed from
+  #                                    nv-common-apis 26.08 -> no-op; pci=realloc is now
+  #                                    handled by nvidia-grub-params via plat_get_pci_realloc.
+  #   nvidia-mstflint-loader 23.03   : only modprobes mstflint-access; no arm64 module
+  #                                    source (no mstflint-dkms on ports, DOCA ships
+  #                                    kernel-mft-dkms/mst_pci) -> systemd-modules-load
+  #                                    would fail. Firmware tooling comes from DOCA `mft`.
+  #   nvidia-mlnx-tools 23.04        : Conflicts: mlnx-tools, which DOCA-OFED installs.
+  #   NVSM 26.06 / NVVCT 1.0         : DGX-only "dgx" component, empty on the public repo.
+
+  # ---------------------------------------------------------------------------
+  # Ubuntu apt groups — closure resolved by prepare.sh against ports.ubuntu.com arm64
+  # ---------------------------------------------------------------------------
+  - name: diagnostic-tools
+    description: 系统诊断工具集合（Ubuntu 24.04 arm64）
+    packages:
+    - fping
+    - arping
+    - ipmitool
+    - net-tools
+    - iproute2
+    - ethtool
+    - tcpdump
+    - iperf3
+    - traceroute
+    - nvme-cli
+    - fio
+    - smartmontools
+    - mdadm
+    - lvm2
+    - stress-ng
+    - stressapptest
+    - memtester
+    - sysstat
+    - dmidecode
+    - pciutils
+    - usbutils
+    - hwloc
+    - numactl
+    - bc
+    - jq
+    - lldpd
+    - lshw
+    - unzip
+    - tar
+    - bzip2
+    - lbzip2
+    - xz-utils
+    - ca-certificates
+    - gnupg
+    - curl
+    - wget
+    - vim
+    - htop
+    - tmux
+    - rsync
+    - chrony
+    - build-essential
+    - gcc
+    - make
+    - dkms
+    - cmake
+    - git
+    - pkg-config
+    - libglvnd-dev
+    - autoconf
+    - automake
+    - libpmix-dev
+    - libboost-program-options-dev
+    - libnuma1
+    - libnuma-dev
+    - libsubunit0
+    - libpci-dev
+    - libudev-dev
+    - libtool
+    - libtool-bin
+    - devscripts
+    - debhelper
+    - fakeroot
+    - check
+    - openmpi-bin
+    - libopenmpi-dev
+    - tpm2-tools
+    - rasdaemon
+    - kexec-tools
+    - kdump-tools
+    - linux-crashdump
+    - makedumpfile
+    install_method: apt
+    required: true
+  - name: doca-offline-deps
+    description: DOCA offline install dependencies（Ubuntu 24.04 arm64 archives）
+    packages:
+    - libunbound8
+    - libyaml-dev
+    - libssl-dev
+    - libelf-dev
+    - libglib2.0-dev
+    - libzip-dev
+    - libbz2-dev
+    - libbsd-dev
+    - libmnl-dev
+    - libpcap-dev
+    - libjansson-dev
+    - libboost-random1.83.0
+    - libzip4t64
+    install_method: apt
+    required: true
+
+  # ---------------------------------------------------------------------------
+  # Benchmark / validation tools built on target (arch-neutral sources)
+  # ---------------------------------------------------------------------------
+  - name: perftest
+    description: perftest（RDMA 性能测试工具,从源码构建）
+    url: https://github.com/linux-rdma/perftest/archive/refs/tags/24.07.0-0.44.tar.gz
+    version: 24.07.0-0.44
+    required: false
+    filename: perftest-24.07.0.tar.gz
+    install_method: build
+    build_deps:
+    - libibverbs-dev
+    - librdmacm-dev
+    - libibumad-dev
+    - automake
+    - libtool
+    - libtool-bin
+    - libpci-dev
+    - libudev-dev
+    - make
+  - name: nccl-tests
+    description: NCCL Tests（GPU 集合通信性能测试）
+    url: https://github.com/NVIDIA/nccl-tests/archive/refs/tags/v2.18.3.tar.gz
+    version: 2.18.3
+    required: false
+    filename: nccl-tests-2.18.3.tar.gz
+    install_method: build
+    build_deps:
+    - mpi
+    - nccl
+    - cuda
+  - name: nvbandwidth
+    description: nvbandwidth（NVIDIA GPU 带宽测试工具,v0.8 支持 Blackwell）
+    url: https://github.com/NVIDIA/nvbandwidth/archive/refs/tags/v0.8.tar.gz
+    version: '0.8'
+    required: false
+    filename: nvbandwidth-0.8.tar.gz
+    install_method: build
+    build_deps:
+    - cmake
+    - cuda
+  docker_images:
+  # Offline container payload. All images below verified multi-arch (arm64)
+  # via `skopeo inspect --raw` on 2026-11-03. Sizes are arm64 compressed;
+  # `docker save` output is roughly 2x. prepare.sh pulls with --platform from
+  # docker_images[].platform (and by .digest when set) and skips download: false.
+  #
+  # Role of hpc-benchmarks: NVIDIA-maintained HPC-X / UCX / NCCL / nccl-tests
+  # / HPL / HPCG stack for arm64. DGX OS does not ship HPC-X on the host; the
+  # NGC container is the supported delivery path. It is NOT required for basic
+  # nccl-tests validation (nccl-tests are built on the host against libnccl-dev
+  # + Ubuntu openmpi; NCCL carries its own IB/NVLink transport). Enable it only
+  # for SHARP in-network reduction or HPL/HPCG acceptance runs.
+  - name: hpc-benchmarks
+    description: NGC HPC-Benchmarks 25.09（HPC-X 2.24.1, NCCL 2.27.7, CUDA 13.0.1, nccl-tests/HPL/HPCG；arm64 约 6.0 GB 压缩,匹配 R580/CUDA 13.0 宿主机；默认不打包,SHARP/HPL 验收时开启）
+    image: nvcr.io/nvidia/hpc-benchmarks:25.09
+    platform: linux/arm64
+    filename: images/nvidia-hpc-benchmarks-25.09-arm64.tar
+    required: false
+    download: false
+  # SuperBench: the v0.12.0 release (2025-08) has no CC 10.3 entry in
+  # gemm-flops and builds no sm_103 code, so it is not usable on GB300. The
+  # main-branch CUDA 13.0 image is used instead, pinned by digest because the
+  # tag is rebuilt on every push to main:
+  #   source   : microsoft/superbenchmark main @ 9142bdfe (CI run 41276177350, 2026-11-01)
+  #   index    : sha256:7d2acaabb4773f79eb040d0c0ad4e1726d47b5aa7bbe38b75fb42d608119c80d
+  #   arm64    : sha256:3828087ecb299adb72538a2e8abd7a759b7a0170df261cda397f730bfbedadd4
+  #   base     : nvcr.io/nvidia/pytorch:25.08-py3, CUDA 13.0, NCCL 2.27.7, HPC-X 2.24.1
+  #   GB300    : sm_103 built for in-tree CUDA benchmarks (cuda_common.cmake),
+  #              CUTLASS v4.1.0 (100;103), nvbench (100;103), MSCCL (100 103)
+  # Known GB300 gaps in this image:
+  #   - gemm-flops maps CC 10.3 to the Ampere (CC 8.0) CUTLASS kernels; results
+  #     are far below Blackwell peak. Real SM103a FP8/NVFP4 kernels arrive with
+  #     microsoft/superbenchmark#883 (open). Use cublaslt-gemm for peak FLOPS.
+  #   - cpu-memory-bw-latency (Intel MLC) and cpu-hpl (AOCC/BLIS) are amd64-only.
+  #   - cuda bandwidthTest is not built for CUDA >= 12.9; use nvbandwidth.
+  # Pulled straight from Docker Hub: docker.m.daocloud.io only proxies
+  # allow-listed repos and docker.io/superbench/main is not on that list
+  # (only superbench/superbench is). The ISO build host needs Docker Hub access.
+  - name: superbench
+    description: SuperBench main（CUDA 13.0,arm64,按 digest 固定；支持 GB300 sm_103。gemm-flops 在 GB300 上仅为 Ampere kernel,数值不代表峰值；arm64 约 16 GB 压缩）
+    image: docker.io/superbench/main:cuda13.0
+    digest: sha256:7d2acaabb4773f79eb040d0c0ad4e1726d47b5aa7bbe38b75fb42d608119c80d
+    platform: linux/arm64
+    filename: images/superbench-main-cuda13.0-9142bdfe-arm64.tar
+    required: false
+  runtime_config:
+    ssh:
+      authorized_keys_file: config/ssh_authorized_keys
+      install_users:
+      - admin
+      - root
+      generate_node_private_key: false
+    rdma:
+      modules_file: config/rdma_modules.conf
+      modules:
+      - ib_core
+      - ib_uverbs
+      - ib_umad
+      - ib_ipoib
+      - rdma_cm
+      - iw_cm
+      - mlx5_core
+      - mlx5_ib
+    # Multi-node NVLink (IMEX). The ISO installs nvidia-imex and prepares the
+    # host, but the daemon only starts once the per-rack node list exists:
+    # Day-2 run `imex-configure.sh --nodes <rack.list>` on every tray.
+    imex:
+      systemd_dropin: config/imex/10-wait-config.conf
+      nodes_config_example: config/imex/nodes_config.cfg.example
+      modprobe_options: options nvidia NVreg_CreateImexChannel0=1
+      server_port: 50000
+      cmd_port: 50005
+      nodes_per_domain: 18
+      start_on_first_boot: false
+      fabric_manager_on_node: false
+  scripts:
+  - name: init_system
+    description: 系统初始化脚本（首次启动时执行；GB300 平台内核已在安装阶段装好,首启直接装 580-server-open-signed 驱动）
+    source: scripts/init_system.sh
+    target: scripts/init_system.sh
+    executable: true
+  - name: install_target_kernel
+    description: 安装阶段（autoinstall late-commands）在目标系统中离线安装平台内核 KERNEL_PACKAGE（linux-nvidia-64k-hwe-24.04）
+    source: scripts/install_target_kernel.sh
+    target: scripts/install_target_kernel.sh
+    executable: true
+  - name: select_root_disk
+    description: 安装阶段（autoinstall early-commands）检查系统盘选择（默认 size smallest 选 M.2）；内核参数 md.root_disk=<spec> 可临时改选盘规则，不需要重做 ISO
+    source: scripts/select_root_disk.sh
+    target: scripts/select_root_disk.sh
+    executable: true
+  - name: nvidia_setup
+    description: NVIDIA 驱动额外配置（Persistence Mode、IMEX 预置：modprobe channel0 / systemd drop-in / enable；GB300 不启用 Fabric Manager）
+    source: scripts/nvidia_setup.sh
+    target: scripts/nvidia_setup.sh
+    executable: true
+  - name: imex_configure
+    description: Day-2 IMEX 配置脚本：输入柜内 18 节点管理 IP 列表 -> 写 nodes_config.cfg / config.cfg -> 启动 nvidia-imex（ISO 装机阶段无法启动,需装机后执行）
+    source: scripts/imex-configure.sh
+    target: scripts/imex-configure.sh
+    executable: true
+  - name: imex_check
+    description: IMEX 分级检查（L0 包/版本、L1 本机 daemon、L2 domain 矩阵、L3 fabric/sanity）；--smoke 为 QEMU 无 GPU 打包自检
+    source: scripts/imex-check.sh
+    target: scripts/imex-check.sh
+    executable: true
+  - name: imex_bench
+    description: NVLink 跨节点一键测试：T1 fabric handle 跨节点 import 正确性、T2 nvbandwidth multinode、T3 nccl-tests MNNVL 开/关对照,报告写 /var/log/metal-deployer/imex-bench-*.log
+    source: scripts/imex-bench.sh
+    target: scripts/imex-bench.sh
+    executable: true
+  - name: imex_fabric_ipc_test_src
+    description: 跨节点 fabric handle export/import 正确性与带宽小程序源码（CUDA driver API + MPI,由 install_test_tools.sh 编译到 /opt/gpu-rdma-test-tools/bin）
+    source: scripts/imex_fabric_ipc_test.c
+    target: scripts/imex_fabric_ipc_test.c
+  - name: install_doca
+    description: DOCA 安装脚本（ConnectX-7/8、BlueField-3）
+    source: scripts/install_doca.sh
+    target: scripts/install_doca.sh
+    executable: true
+  - name: setup_container_runtime
+    description: 配置 containerd/docker 支持 NVIDIA Container Runtime
+    source: scripts/setup_container_runtime.sh
+    target: scripts/setup_container_runtime.sh
+    executable: true
+  - name: load_docker_images
+    description: 预加载 packages/images 下的 Docker 镜像 tar 包
+    source: scripts/load_docker_images.sh
+    target: scripts/load_docker_images.sh
+    executable: true
+  - name: configure_ssh
+    description: 配置 SSH authorized_keys
+    source: scripts/configure_ssh.sh
+    target: scripts/configure_ssh.sh
+    executable: true
+  - name: configure_rdma_modules
+    description: 配置 /etc/rdma/modules/rdma.conf 并加载 RDMA 模块
+    source: scripts/configure_rdma_modules.sh
+    target: scripts/configure_rdma_modules.sh
+    executable: true
+  - name: install_hpcx
+    description: 安装 HPC-X（解压到 /opt/hpcx）
+    source: scripts/install_hpcx.sh
+    target: scripts/install_hpcx.sh
+    executable: true
+  - name: install_test_tools
+    description: 安装 GPU 测试工具（NCCL tests, bandwidthTest, nvbandwidth, perftest）
+    source: scripts/install_test_tools.sh
+    target: scripts/install_test_tools.sh
+    executable: true
+  - name: install_gpu_burn
+    description: 编译安装 GPU Burn
+    source: scripts/install_gpu_burn.sh
+    target: scripts/install_gpu_burn.sh
+    executable: true
+  - name: install_gdrcopy
+    description: 安装 GDRCopy（GB300 优先用 DGX 仓库预编译 deb,源码构建为回退）
+    source: scripts/install_gdrcopy.sh
+    target: scripts/install_gdrcopy.sh
+    executable: true
+  - name: set_nic_rdma_mode
+    description: Spiderpool RDMA 网卡模式切换脚本
+    url: https://raw.githubusercontent.com/spidernet-io/spiderpool/main/tools/scripts/setNicRdmaMode.sh
+    source: scripts/setNicRdmaMode.sh
+    target: scripts/setNicRdmaMode.sh
+    executable: true
+  - name: cpu_performance_service
+    description: CPU 性能模式 systemd 服务（若安装 nv-cpu-governor 可省略）
+    source: scripts/cpu-performance.service
+    target: systemd/cpu-performance.service
+  - name: apt_source_config
+    description: APT 源配置脚本（默认 local 离线仓库；在线模式需用 ports.ubuntu.com）
+    source: scripts/configure-apt-sources.sh
+    target: scripts/configure-apt-sources.sh
+    executable: true
+cuda:
+  default_profile: cuda13-gb300
+  profiles:
+    # =========================================================================
+    # cuda13-gb300 — DGX OS 7.6.0 ARM64 stack: CUDA 13.0 U3 + R580 open driver
+    # =========================================================================
+    cuda13-gb300:
+      install_environment:
+        CUDA_PROFILE: cuda13-gb300
+        CUDA_TOOLKIT_PACKAGE: cuda-toolkit-13-0
+        # Canonical signed R580 server-open driver, prebuilt for linux-nvidia-64k.
+        # init_system.sh needs a new branch value: install NVIDIA_DRIVER_PACKAGES
+        # verbatim, no DKMS, no cuda-drivers metapackage.
+        NVIDIA_DRIVER_BRANCH: 580-server-open-signed
+        NVIDIA_DRIVER_VERSION: 580.178.04
+        NVIDIA_DRIVER_FLAVOR: open
+        NVIDIA_DRIVER_PKG_SUFFIX: 0ubuntu0.24.04.1
+        NVIDIA_DRIVER_PACKAGES: nvidia-headless-no-dkms-580-server-open nvidia-utils-580-server linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04 nvidia-fabricmanager-580 libnvidia-nscq-580 nvidia-imex-580 nvidia-modprobe
+      packages:
+      # -----------------------------------------------------------------------
+      # GPU driver: Canonical signed R580 server-open 580.178.04 (ports.ubuntu.com
+      # noble-updates restricted/multiverse). Same upstream version as DGX OS
+      # 7.6.0, and the exact path Canonical documents for GB200/GB300
+      # (`ubuntu-drivers install --gpgpu nvidia:580-server-open`).
+      #   + kernel modules prebuilt and signed for 7.0.0-1024-nvidia-64k -> no
+      #     DKMS build on first boot, works with Secure Boot enabled
+      #   + headless set: no X11 / libnvidia-gl / nvidia-settings
+      # Closure resolved with apt-cache depends --no-recommends (arm64) on
+      # 2026-11-03; 15 debs, ~170 MB. Do NOT also ship the NVIDIA local-repo
+      # deb: its "-1ubuntu1" revision sorts higher than "-0ubuntu0.24.04.1" and
+      # apt would silently prefer the unsigned DKMS build.
+      # -----------------------------------------------------------------------
+      - name: nvidia-headless-no-dkms-580-server-open
+        description: R580 server-open headless 元包（无 DKMS、无 X11,Canonical 签名路径入口）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/nvidia-headless-no-dkms-580-server-open_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: nvidia-headless-no-dkms-580-server-open_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04
+        description: 签名 NVIDIA 580 open 内核模块元包（跟随 linux-nvidia-64k-hwe-24.04 内核）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/l/linux-restricted-modules-nvidia-7.0/linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+        version: 7.0.0-1024.25~24.04.1
+        required: true
+        filename: linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04_7.0.0-1024.25_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k
+        description: 签名 NVIDIA 580 open 内核模块（nvidia.ko/nvidia-uvm/peermem,7.0.0-1024-nvidia-64k）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/l/linux-restricted-signatures-nvidia-7.0/linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+        version: 7.0.0-1024.25~24.04.1
+        required: true
+        filename: linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      # Not shipped: linux-objects-nvidia-580-server-open-<kver> and
+      # linux-signatures-nvidia-<kver> are the self-link/self-sign path; their
+      # .ko files overlap the prebuilt signed linux-modules-nvidia-580-server-open
+      # package and dpkg aborts (verified 2026-11-06 in an arm64 chroot).
+      - name: nvidia-kernel-common-580-server
+        description: NVIDIA 580 server 内核公共文件（modprobe.d、udev）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/nvidia-kernel-common-580-server_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: nvidia-kernel-common-580-server_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-kernel-source-580-server-open
+        description: NVIDIA 580 open 内核源码（headless 元包依赖,签名路径下不触发编译）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/nvidia-kernel-source-580-server-open_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: nvidia-kernel-source-580-server-open_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-firmware-580-server-580.178.04
+        description: NVIDIA GSP firmware 580.178.04（open 驱动必需,约 72 MB）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/nvidia-firmware-580-server-580.178.04_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: nvidia-firmware-580-server-580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: libnvidia-compute-580-server
+        description: libcuda / libnvidia-ml 等计算库 580.178.04
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/libnvidia-compute-580-server_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: libnvidia-compute-580-server_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: libnvidia-cfg1-580-server
+        description: libnvidia-cfg 580.178.04（nvidia-compute-utils / persistenced 依赖）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/libnvidia-cfg1-580-server_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: libnvidia-cfg1-580-server_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-compute-utils-580-server
+        description: nvidia-cuda-mps 等计算工具 580.178.04
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/nvidia-compute-utils-580-server_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: nvidia-compute-utils-580-server_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-utils-580-server
+        description: nvidia-smi / nvidia-debugdump 580.178.04
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/n/nvidia-graphics-drivers-580-server/nvidia-utils-580-server_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: true
+        filename: nvidia-utils-580-server_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-fabricmanager-580
+        description: NVSwitch Fabric Manager 580.178.04（Ubuntu multiverse；NVL72 交换托盘由 NMX-C 管理,节点侧安装但 nvidia_setup.sh 保持 disabled）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/f/fabric-manager-580/nvidia-fabricmanager-580_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: false
+        filename: nvidia-fabricmanager-580_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: libnvidia-nscq-580
+        description: NVSwitch Configuration and Query library 580.178.04（Ubuntu multiverse）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/libn/libnvidia-nscq-580/libnvidia-nscq-580_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: false
+        filename: libnvidia-nscq-580_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-imex-580
+        description: NVIDIA IMEX daemon 580.178.04（多节点 NVLink 域,GB300 NVL72）。ISO 只安装+预置（channel0 modprobe、systemd drop-in、enable）,不启动：nodes_config.cfg 需柜内 18 节点管理 IP,装机后运行 scripts/imex-configure.sh 生成并启动
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-imex-580/nvidia-imex-580_580.178.04-0ubuntu0.24.04.1_arm64.deb
+        version: 580.178.04-0ubuntu0.24.04.1
+        required: false
+        filename: nvidia-imex-580_580.178.04_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      # nvidia-persistenced: shipped by nvidia-compute-utils-580-server (same
+      # 580.178.04 build, binary + systemd unit), which Provides/Conflicts/Replaces
+      # the standalone package. Do NOT add NVIDIA's sbsa nvidia-persistenced: it
+      # conflicts and needs NVIDIA's libnvidia-cfg1 naming (verified 2026-11-05).
+      # Ubuntu only has a 535 nvidia-modprobe; take 580 from the NVIDIA sbsa repo.
+      - name: nvidia-modprobe
+        description: nvidia-modprobe 580.178.04（设备节点创建,fabricmanager/imex 依赖,arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/nvidia-modprobe_580.178.04-1ubuntu1_arm64.deb
+        version: 580.178.04
+        required: true
+        filename: nvidia-modprobe-580.178.04-ubuntu2404_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      # Alternative (NOT default): NVIDIA's own driver local repo, unsigned
+      # DKMS open modules. Only for Secure-Boot-off hosts that must track
+      # NVIDIA packaging; mutually exclusive with the Canonical set above.
+      - name: nvidia-driver-local-repo
+        description: NVIDIA R580 driver local repo 580.178.04（arm64,DKMS 非签名；与 Canonical 签名集互斥,默认不下载）
+        download: false
+        url: https://us.download.nvidia.com/tesla/580.178.04/nvidia-driver-local-repo-ubuntu2404-580.178.04_1.0-1_arm64.deb
+        version: 580.178.04
+        required: false
+        filename: nvidia-driver-local-repo-ubuntu2404-580.178.04_1.0-1_arm64.deb
+        install_method: apt
+      # CUDA 13.0 Update 3 local repo. Bundled driver is 580.126.20 — lower than
+      # 580.178.04 so apt never picks it; still pin cuda-drivers/nvidia-driver-580*
+      # to avoid the proprietary flavour if someone installs the `cuda` metapackage.
+      - name: cuda-toolkit
+        description: NVIDIA CUDA Toolkit 13.0 Update 3 local repo（Ubuntu 24.04 arm64,DGX OS 7.6.0 对齐；约 3.8 GB）
+        url: https://developer.download.nvidia.com/compute/cuda/13.0.3/local_installers/cuda-repo-ubuntu2404-13-0-local_13.0.3-580.126.20-1_arm64.deb
+        version: 13.0.3
+        md5: c64a40fb5393280477383f12a1140c5f
+        required: true
+        filename: cuda-toolkit-13.0.3-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: nccl
+        description: NVIDIA NCCL 2.31.2（DGX OS 7.6.0 对齐,built with CUDA 13.3,arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnccl2_2.31.2-1+cuda13.3_arm64.deb
+        version: 2.31.2
+        required: true
+        filename: libnccl2-2.31.2-ubuntu2404-cuda13.3_arm64.deb
+        install_method: apt
+      - name: nccl-dev
+        description: NVIDIA NCCL development headers 2.31.2（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnccl-dev_2.31.2-1+cuda13.3_arm64.deb
+        version: 2.31.2
+        required: true
+        filename: libnccl-dev-2.31.2-ubuntu2404-cuda13.3_arm64.deb
+        install_method: apt
+      - name: cudnn
+        description: NVIDIA cuDNN 9.24.0 for CUDA 13（DGX OS 7.6.0 对齐,arm64/sbsa,可选）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcudnn9-cuda-13_9.24.0.43-1_arm64.deb
+        version: 9.24.0.43
+        required: false
+        filename: libcudnn9-cuda-13-9.24.0.43-ubuntu2404_arm64.deb
+        install_method: apt
+      # GPUDirect Storage 1.15 for CUDA 13.0 (DGX OS 7.6.0 "GDS 1.15").
+      #   kernel : linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k (signed) + nvidia-fs-loader
+      #   libs   : libcufile-13-0 / libcufile-dev-13-0 come in via cuda-toolkit-13-0
+      #   tools  : gds-tools-13-0 below (gdscheck, gdsio)
+      # Do NOT install the nvidia-gds-13-0 metapackage: it Depends on nvidia-fs ->
+      # nvidia-fs-dkms, which conflicts with the signed prebuilt nvidia-fs module.
+      - name: gds-tools-13-0
+        description: GPUDirect Storage 工具 1.15.1.6（gdscheck/gdsio,CUDA 13.0,arm64/sbsa；不装 nvidia-gds 元包以免引入 nvidia-fs-dkms）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/gds-tools-13-0_1.15.1.6-1_arm64.deb
+        version: 1.15.1.6-1
+        sha256: fea529024dbb46530766897c92a4361e7543d7a4b8c4f6bd80953ab7370cb8c5
+        required: false
+        filename: gds-tools-13-0_1.15.1.6-1_arm64.deb
+        install_method: apt
+      - name: gdrcopy-tests
+        description: GDRCopy 测试工具 2.6（DGX OS 仓库,arm64）
+        url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/g/gdrcopy-tests/gdrcopy-tests_2.6-1_arm64.deb
+        version: 2.6-1
+        sha256: d22b3a6d4aec163ebe3f0820609e28684b5e8c23a29fb7c0a2723a5b7c1fb46b
+        required: false
+        filename: gdrcopy-tests_2.6-1_arm64.deb
+        install_method: apt
+      - name: gpu-burn
+        description: GPU Burn（GPU 压力测试,需 sm_103 支持,从 master 构建）
+        url: https://github.com/wilicc/gpu-burn/archive/refs/heads/master.tar.gz
+        version: '1.0'
+        required: false
+        filename: gpu-burn-1.0.tar.gz
+        install_method: build
+        build_deps:
+        - cuda
+        - build-essential
+        install_path: "/usr/local/bin"
+      - name: hpcx
+        description: NVIDIA HPC-X aarch64 宿主机 tarball（仅有 v2.23 cuda12 构建,无 cuda13 aarch64 包；默认关闭,改由 hpc-benchmarks 容器提供 HPC-X 2.24.1）
+        download: false
+        url: https://content.mellanox.com/hpc/hpc-x/v2.23/hpcx-v2.23-gcc-doca_ofed-ubuntu24.04-cuda12-aarch64.tbz
+        version: '2.23'
+        required: false
+        filename: hpcx-v2.23-ubuntu2404-cuda12-aarch64.tbz
+        install_method: extract
+        install_path: "/opt/hpcx"
+      - name: cuda-samples-bandwidthtest
+        description: CUDA Bandwidth Test（CUDA 13.0 配套）
+        url: https://github.com/NVIDIA/cuda-samples/archive/refs/tags/v13.0.tar.gz
+        version: '13.0'
+        required: false
+        filename: cuda-samples-13.0.tar.gz
+        install_method: build
+        build_target: Samples/1_Utilities/bandwidthTest
+      docker_images:
+      - name: cuda-runtime-smoke-test
+        description: CUDA 13.0.3 runtime 冒烟测试镜像（arm64 约 1.8 GB 压缩）,docker run --gpus all nvidia-smi
+        image: nvcr.io/nvidia/cuda:13.0.3-runtime-ubuntu24.04
+        platform: linux/arm64
+        filename: images/nvidia-cuda-13.0.3-runtime-ubuntu24.04-arm64.tar
+        required: false
+    # =========================================================================
+    # cuda13-gb300-aggressive — aggressive fallback stack (NOT DGX OS aligned)
+    # =========================================================================
+    # Backup ISO for when a performance feature or bug fix needs a newer stack
+    # than DGX OS 7.6.0. Same install flow as cuda13-gb300 (Canonical signed
+    # modules, no DKMS for the GPU driver, Secure Boot OK); only versions move.
+    # Versions checked against the upstream repos on 2026-11-09:
+    #
+    #   Component        cuda13-gb300           cuda13-gb300-aggressive        Note
+    #   Kernel           7.0.0-1024-nvidia-64k  7.0.0-1025-nvidia-64k    current noble-updates
+    #   GPU driver       580.178.04 LTSB        615.71.09 NFB            Canonical signed for 1025; NVIDIA 615.71.10 not yet in Ubuntu
+    #   CUDA toolkit     13.0.3                 13.4.3                   13.4 pairs with R615; local repo bundles no driver
+    #   NCCL             2.31.2                 2.32.3 (+cuda13.4)
+    #   cuDNN            9.24.0                 9.28.1
+    #   DCGM             4.7.1                  4.8.0
+    #   DOCA-OFED        3.2.3 LTS              3.5.0 (MFT 4.37, mlnx-ofed-kernel 2607)  not LTS
+    #   Container Toolkit 1.20.0                1.20.1
+    #   GDS tools        1.15 (13-0)            1.19.1 (13-4)
+    #   Docker / GDRCopy / DGX tuning / SuperBench: unchanged (basic)
+    #
+    # Why not R620 + CUDA 13.5: R620 is the new LTSB (2026-11-04) but Ubuntu
+    # has no signed linux-modules-nvidia-620-server-open-nvidia-64k yet, so it
+    # would need DKMS + MOK. Switch this profile once Canonical publishes it.
+    # R615 is a New Feature Branch: short support window, keep as backup only.
+    #
+    # Build (separate work dir keeps the default GB300 caches intact):
+    #   CI_WORK_DIR=$PWD/build-iso/.ci-work/gb300-aggressive CACHE_BASE_DIR=$PWD/build-iso/.ci-work/gb300-cache \
+    #     make prepare-iso ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA_PROFILE=cuda13-gb300-aggressive
+    #   sudo CI_WORK_DIR=$PWD/build-iso/.ci-work/gb300-aggressive \
+    #     make build-iso ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA_PROFILE=cuda13-gb300-aggressive
+    cuda13-gb300-aggressive:
+      install_environment:
+        CUDA_PROFILE: cuda13-gb300-aggressive
+        CUDA_TOOLKIT_PACKAGE: cuda-toolkit-13-4
+        KERNEL_RELEASE: 7.0.0-1025-nvidia-64k
+        NVIDIA_DRIVER_BRANCH: 615-server-open-signed
+        NVIDIA_DRIVER_VERSION: 615.71.09
+        NVIDIA_DRIVER_FLAVOR: open
+        NVIDIA_DRIVER_PKG_SUFFIX: 0ubuntu0.24.04.2
+        NVIDIA_DRIVER_PACKAGES: nvidia-headless-no-dkms-615-server-open nvidia-utils-615-server linux-modules-nvidia-615-server-open-nvidia-64k-hwe-24.04 nvidia-fabricmanager-615 libnvidia-nscq-615 nvidia-imex-615 nvidia-modprobe
+      # basic entries tied to the 1024 kernel ABI; replaced by 1025 below.
+      exclude_packages:
+      - linux-image-7.0.0-1024-nvidia-64k
+      - linux-modules-7.0.0-1024-nvidia-64k
+      - linux-headers-7.0.0-1024-nvidia-64k
+      - linux-nvidia-7.0-headers-7.0.0-1024
+      - linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k
+      - linux-tools-7.0.0-1024-nvidia-64k
+      - linux-nvidia-7.0-tools-7.0.0-1024
+      packages:
+      # -----------------------------------------------------------------------
+      # Kernel 7.0.0-1025-nvidia-64k. Metapackages override basic by name; the
+      # 1024 ABI packages are dropped via exclude_packages above.
+      # -----------------------------------------------------------------------
+      - name: linux-nvidia-64k-hwe-24.04
+        description: NVIDIA 64K HWE kernel metapackage 7.0.0-1025（aggressive）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-nvidia-64k-hwe-24.04_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: a27a8b2d33bfb114d918980282fd44e445253730c780a1e216e68e7ee725a086
+        required: true
+        filename: linux-nvidia-64k-hwe-24.04_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-image-nvidia-64k-hwe-24.04
+        description: NVIDIA 64K kernel image metapackage（aggressive）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-image-nvidia-64k-hwe-24.04_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 9f4631b74168dfb67f0d2f1c3a6d10b0341764cf060453b5403a43b2de305385
+        required: true
+        filename: linux-image-nvidia-64k-hwe-24.04_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-headers-nvidia-64k-hwe-24.04
+        description: NVIDIA 64K kernel headers metapackage（aggressive）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-headers-nvidia-64k-hwe-24.04_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: ee909b1aee61d4aaf334ec59ad9c5b19525fbf5520e69efa2ec5609c5412f93c
+        required: true
+        filename: linux-headers-nvidia-64k-hwe-24.04_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-tools-nvidia-64k-hwe-24.04
+        description: NVIDIA 64K kernel tools metapackage（aggressive）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-tools-nvidia-64k-hwe-24.04_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 413ef84734ada3d4b9077b2d27727bdc7f16cf91a52a2ace8cc584b835410281
+        required: false
+        filename: linux-tools-nvidia-64k-hwe-24.04_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-image-7.0.0-1025-nvidia-64k
+        description: Signed kernel image 7.0.0-1025-nvidia-64k（Secure Boot 可用）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-signed-nvidia-7.0/linux-image-7.0.0-1025-nvidia-64k_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 7187259fa4f471cd72fe4e895c351915d0fb267268e8701a2368f80f32442a69
+        required: true
+        filename: linux-image-7.0.0-1025-nvidia-64k_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-modules-7.0.0-1025-nvidia-64k
+        description: Kernel modules for 7.0.0-1025-nvidia-64k
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-modules-7.0.0-1025-nvidia-64k_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 41ae04cfea7f00df29e9cf19c6eb8b3f36314c593fd8fcd1ae9fbb5d13f8e4db
+        required: true
+        filename: linux-modules-7.0.0-1025-nvidia-64k_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-headers-7.0.0-1025-nvidia-64k
+        description: Kernel headers for 7.0.0-1025-nvidia-64k（DKMS 必需）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-headers-7.0.0-1025-nvidia-64k_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 6ec664c1ec9c470876fe0af336fa5db3fb8a4a6fb7dd2878f919f39765ec3080
+        required: true
+        filename: linux-headers-7.0.0-1025-nvidia-64k_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-nvidia-7.0-headers-7.0.0-1025
+        description: Common kernel headers for linux-nvidia-7.0（DKMS 必需,arch all）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-nvidia-7.0-headers-7.0.0-1025_7.0.0-1025.26~24.04.1_all.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: ca71e093319bb3d524d7948d24d476dfb89e60463a64d6b0127d2ae04bdc8bc0
+        required: true
+        filename: linux-nvidia-7.0-headers-7.0.0-1025_7.0.0-1025.26_all.deb
+        install_method: apt
+        group: kernel
+      - name: linux-modules-nvidia-fs-7.0.0-1025-nvidia-64k
+        description: Prebuilt signed nvidia-fs (GPUDirect Storage) module for 7.0.0-1025-nvidia-64k
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-modules-nvidia-fs-7.0.0-1025-nvidia-64k_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 728c442b1ac330ca34ee6be4e8d262500c3258b81315286ce5959592824101bb
+        required: false
+        filename: linux-modules-nvidia-fs-7.0.0-1025-nvidia-64k_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-tools-7.0.0-1025-nvidia-64k
+        description: Kernel tools for 7.0.0-1025-nvidia-64k
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-tools-7.0.0-1025-nvidia-64k_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 62eea5ce1e607a02c69e93d9c605bdf4bcd1e853cbbf8ce855f85caed7fb6a02
+        required: false
+        filename: linux-tools-7.0.0-1025-nvidia-64k_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      - name: linux-nvidia-7.0-tools-7.0.0-1025
+        description: Common kernel tools for linux-nvidia-7.0
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-nvidia-7.0-tools-7.0.0-1025_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: b957bdee01f536d31be06f15c2263e7722f70fde067b3c1b71ae0bd62a8cebad
+        required: false
+        filename: linux-nvidia-7.0-tools-7.0.0-1025_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: kernel
+      # -----------------------------------------------------------------------
+      # GPU driver: Canonical signed R615 server-open 615.71.09 (ports.ubuntu.com
+      # noble-updates multiverse + restricted signed modules for 1025). Same
+      # package layout as the R580 set in cuda13-gb300; every userspace piece,
+      # fabricmanager, nscq and imex is 615.71.09 (verified 2026-11-09).
+      # -----------------------------------------------------------------------
+      - name: nvidia-headless-no-dkms-615-server-open
+        description: R615 server-open headless 元包（无 DKMS、无 X11,Canonical 签名路径入口）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/nvidia-headless-no-dkms-615-server-open_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: f2f9cb155cde0358e86cba7fb9423162ba47bbe71a8ba04142e417df35f6ec89
+        required: true
+        filename: nvidia-headless-no-dkms-615-server-open_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: linux-modules-nvidia-615-server-open-nvidia-64k-hwe-24.04
+        description: 签名 NVIDIA 615 open 内核模块元包（跟随 linux-nvidia-64k-hwe-24.04 内核）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/l/linux-restricted-modules-nvidia-7.0/linux-modules-nvidia-615-server-open-nvidia-64k-hwe-24.04_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: 54a2451520664d1d80903b05839e85f47f14fa2c99263d9e0767b6a1ea5cafc2
+        required: true
+        filename: linux-modules-nvidia-615-server-open-nvidia-64k-hwe-24.04_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: linux-modules-nvidia-615-server-open-7.0.0-1025-nvidia-64k
+        description: 签名 NVIDIA 615 open 内核模块（nvidia.ko/nvidia-uvm/peermem,7.0.0-1025-nvidia-64k）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/l/linux-restricted-signatures-nvidia-7.0/linux-modules-nvidia-615-server-open-7.0.0-1025-nvidia-64k_7.0.0-1025.26~24.04.1_arm64.deb
+        version: 7.0.0-1025.26~24.04.1
+        sha256: b3dfc88fce5d5a683b5b530ad7200608d001ced63f9705041fecfb3e21723d94
+        required: true
+        filename: linux-modules-nvidia-615-server-open-7.0.0-1025-nvidia-64k_7.0.0-1025.26_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-kernel-common-615-server
+        description: NVIDIA 615 server 内核公共文件（modprobe.d、udev）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/nvidia-kernel-common-615-server_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: 6cadf8010dd667a451701f540c4edc5f528d8a41fe4f8194d0b1fa2d4fc1d832
+        required: true
+        filename: nvidia-kernel-common-615-server_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-kernel-source-615-server-open
+        description: NVIDIA 615 open 内核源码（headless 元包依赖,签名路径下不触发编译）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/nvidia-kernel-source-615-server-open_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: 12ea15adf69ab66d0f2c72e90002340decc85e20ec279c25a5e53cf190bd14f6
+        required: true
+        filename: nvidia-kernel-source-615-server-open_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-firmware-615-server-615.71.09
+        description: NVIDIA GSP firmware 615.71.09（open 驱动必需）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/nvidia-firmware-615-server-615.71.09_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: d94d93464541dccf41aa2f7ed56440dbb52a549cd31c3d4a60b93fb5fd80d9c0
+        required: true
+        filename: nvidia-firmware-615-server-615.71.09_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: libnvidia-compute-615-server
+        description: libcuda / libnvidia-ml 等计算库 615.71.09
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/libnvidia-compute-615-server_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: 7f086339bf08aa7b997077b538da1af475ae2b513b9359bd6725fbcb986e5c04
+        required: true
+        filename: libnvidia-compute-615-server_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: libnvidia-cfg1-615-server
+        description: libnvidia-cfg 615.71.09（nvidia-compute-utils / persistenced 依赖）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/libnvidia-cfg1-615-server_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: f8961c3b2d8fcff8c654c76a849f2fd9ebd2769268fbed28eb4fd56b91f13045
+        required: true
+        filename: libnvidia-cfg1-615-server_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-compute-utils-615-server
+        description: nvidia-cuda-mps / nvidia-persistenced 等计算工具 615.71.09
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/nvidia-compute-utils-615-server_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: 1d3d86c6d0c6274a69cef084bf26163c5820b05612d4bd1c5b7a1ee3a6463d15
+        required: true
+        filename: nvidia-compute-utils-615-server_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-utils-615-server
+        description: nvidia-smi / nvidia-debugdump 615.71.09
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-graphics-drivers-615-server/nvidia-utils-615-server_615.71.09-0ubuntu0.24.04.2_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.2
+        sha256: 614a436ebbad17b6350610342fbf09912a05cedcbc13def179c6ebba51c8f361
+        required: true
+        filename: nvidia-utils-615-server_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-fabricmanager-615
+        description: NVSwitch Fabric Manager 615.71.09（Ubuntu multiverse；NVL72 交换托盘由 NMX-C 管理,节点侧安装但 nvidia_setup.sh 保持 disabled）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/f/fabric-manager-615/nvidia-fabricmanager-615_615.71.09-0ubuntu0.24.04.1_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.1
+        sha256: e70d7e76db4b3b097bfa3e8d53101312b8cd0fc46d6e315a4481d973ed1c42a6
+        required: false
+        filename: nvidia-fabricmanager-615_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: libnvidia-nscq-615
+        description: NVSwitch Configuration and Query library 615.71.09（Ubuntu multiverse）
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/libn/libnvidia-nscq-615/libnvidia-nscq-615_615.71.09-0ubuntu0.24.04.1_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.1
+        sha256: 76f32707df05436e62cf6555d44bae82e2fa9e0d13ca7e4e7790004eb1d7a5a2
+        required: false
+        filename: libnvidia-nscq-615_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-imex-615
+        description: NVIDIA IMEX daemon 615.71.09（多节点 NVLink 域,GB300 NVL72）。ISO 只安装+预置,装机后运行 scripts/imex-configure.sh 生成 nodes_config.cfg 并启动
+        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-imex-615/nvidia-imex-615_615.71.09-0ubuntu0.24.04.1_arm64.deb
+        version: 615.71.09-0ubuntu0.24.04.1
+        sha256: e23c7b116322baea91ff2b5e6eb822d1a1d39a0b5db34acdb734042a4fe81b90
+        required: false
+        filename: nvidia-imex-615_615.71.09_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      - name: nvidia-modprobe
+        description: nvidia-modprobe 615.71.09（设备节点创建,fabricmanager/imex 依赖,arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/nvidia-modprobe_615.71.09-2ubuntu1_arm64.deb
+        version: '615.71.09'
+        sha256: 9831cdf3236d34c1091e71a8896c88e3d357db176b8e97ee4c7758a9c2614633
+        required: true
+        filename: nvidia-modprobe-615.71.09-ubuntu2404_arm64.deb
+        install_method: apt
+        group: gpu-driver
+      # -----------------------------------------------------------------------
+      # Basic overrides (same name as basic -> replaced in place)
+      # -----------------------------------------------------------------------
+      - name: libnvidia-container-tools
+        description: NVIDIA Container CLI 工具（Container Toolkit 1.20.1,arm64）
+        url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/libnvidia-container-tools_1.20.1-1_arm64.deb
+        version: '1.20.1'
+        sha256: ed68dc5c5bc257bc2ba149c450463482daaf2e1fe971342a1e1da19d87234894
+        required: true
+        filename: libnvidia-container-tools-1.20.1-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: nvidia-container-toolkit-base
+        description: NVIDIA Container Toolkit 基础组件（nvidia-ctk, nvidia-cdi-hook, 1.20.1,arm64）
+        url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/nvidia-container-toolkit-base_1.20.1-1_arm64.deb
+        version: '1.20.1'
+        sha256: e9bcd4367ea53510f3c9557871cde8757d793206a49dbea01bef027fa4264575
+        required: true
+        filename: nvidia-container-toolkit-base-1.20.1-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: nvidia-container-toolkit
+        description: NVIDIA Container Toolkit（1.20.1,arm64）
+        url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/nvidia-container-toolkit_1.20.1-1_arm64.deb
+        version: '1.20.1'
+        sha256: 606e7b8dbf02cc31a21ffe8350d4afa9447eab6225f36feefc579017a2e3a3a8
+        required: true
+        filename: nvidia-container-toolkit-1.20.1-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: libnvidia-container
+        description: NVIDIA Container Library（libnvidia-container1,1.20.1,arm64）
+        url: https://nvidia.github.io/libnvidia-container/stable/deb/arm64/libnvidia-container1_1.20.1-1_arm64.deb
+        version: '1.20.1'
+        sha256: e798239ca7579ad37d1429b347211a8105a79415ee71a02a81afc1db486aa776
+        required: true
+        filename: libnvidia-container1-1.20.1-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: doca-host
+        description: NVIDIA DOCA host offline repository 3.5.0-082000（Ubuntu 24.04 arm64,MFT 4.37.0,mlnx-ofed-kernel-dkms 2607；非 LTS）
+        url: https://content.mellanox.com/DOCA/DOCA_v3.5.0/host/doca-host_3.5.0-082000-26.07-ubuntu2404_arm64.deb
+        version: 3.5.0-082000
+        required: true
+        filename: doca-host_3.5.0-082000-26.07-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager
+        description: NVIDIA DCGM 4.8.0 proprietary（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-proprietary_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 2db58ed8e02aaf94b9d0d2ec033b7bf53520a66646a61659e24585d626da5837
+        required: true
+        filename: dcgm-4.8.0-1-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-core
+        description: NVIDIA DCGM 4.8.0 core（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-core_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 5e2352d57305063950670a9c263a20eabfc7e4f2a3b37a608dbdf3d5104b64ea
+        required: true
+        filename: datacenter-gpu-manager-4-core_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: dcgmi
+        description: NVIDIA DCGM 4.8.0 dcgmi（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/dcgmi_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 92522e4fc9fc6cb3461137dcf8382241c18ea47f8d2c817aea52b952184cf0ee
+        required: true
+        filename: dcgmi_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: libdcgm
+        description: NVIDIA DCGM 4.8.0 libdcgm（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libdcgm_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 9a22f882e8f300ec391286e1f91e448847add548c4806e346b6d64a3d9344a4f
+        required: true
+        filename: libdcgm_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: nv-hostengine
+        description: NVIDIA DCGM 4.8.0 nv-hostengine（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/nv-hostengine_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: f81fa31a3ed12655fface1a5c0ba7e2e5323db4f1bd370fd2bbd01ff2bca75b5
+        required: true
+        filename: nv-hostengine_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-python3
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-python3（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-python3_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 0744347b65eedd8f1acd45d7519d833a25965becc1f5424442584a1051ff86f0
+        required: true
+        filename: datacenter-gpu-manager-4-python3_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-dcgmproftesterkernels
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-dcgmproftesterkernels（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-dcgmproftesterkernels_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 6658a83141bf10c44291b8b8591242a8b0dfc30209510e18ebfe514bf601e5b9
+        required: true
+        filename: datacenter-gpu-manager-4-dcgmproftesterkernels_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-config
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-config（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-config_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 64118a5325b5dcbea560bdef8d71dcd8075d078fe91568634a87f3b091e99faf
+        required: true
+        filename: datacenter-gpu-manager-4-module-config_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-diag
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-diag（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-diag_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 22f550a768bb510599269c300f9ae5cd7ff3b130091f1876da4cbb03b12c19f9
+        required: true
+        filename: datacenter-gpu-manager-4-module-diag_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-health
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-health（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-health_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 2ecefb862925cd197a27b98fe0b98b9d95da35ada1ae55e0d8e6b106f7a025f8
+        required: true
+        filename: datacenter-gpu-manager-4-module-health_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-introspect
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-introspect（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-introspect_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: c9fa8d5885e247c50e84257c6ead39d1e8b78c876b255edb7f263467b29c110c
+        required: true
+        filename: datacenter-gpu-manager-4-module-introspect_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-nvswitch
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-nvswitch（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-nvswitch_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 4f2ba941da615414823c7c1d7ad074efa4bd18f9df52ae34c3986a686810db93
+        required: true
+        filename: datacenter-gpu-manager-4-module-nvswitch_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-policy
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-policy（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-policy_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: bf212a5ea73910a9d5bad3c8a007cf0815f08bd47b8dc59d452fa63f078fd9e8
+        required: true
+        filename: datacenter-gpu-manager-4-module-policy_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-module-sysmon
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-module-sysmon（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-module-sysmon_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: c9480d78aabf1742be03d645c89b2b935e421458e66ac551880dce00de32ae19
+        required: true
+        filename: datacenter-gpu-manager-4-module-sysmon_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-cuda13
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-cuda13（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 0778e5592951083e435c1a18753182172819c2711e725ea0eec639627acabe09
+        required: true
+        filename: datacenter-gpu-manager-4-cuda13_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-proprietary-cuda13
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-proprietary-cuda13（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-proprietary-cuda13_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: fee2c216cb22d69b1fd7cb804513ba92071646fe2fc318a6207bdb3609c56a8b
+        required: true
+        filename: datacenter-gpu-manager-4-proprietary-cuda13_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-cuda13-cublas
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-cuda13-cublas（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-cublas_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 5949e8e43122b6073e4940f6d47e4e7253880ca4ab2e925a19893163aa8509ff
+        required: true
+        filename: datacenter-gpu-manager-4-cuda13-cublas_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-cuda13-curand
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-cuda13-curand（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-curand_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 044a1bca08bebc136c80078d617d9cdf92d945c0d8c159cc5130724cda3c261b
+        required: true
+        filename: datacenter-gpu-manager-4-cuda13-curand_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-cuda13-cusparselt
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-cuda13-cusparselt（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-cusparselt_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: e743956660b9729c445653becee5b12bb7ddb2ea82c6b13404d0abd0d800767f
+        required: true
+        filename: datacenter-gpu-manager-4-cuda13-cusparselt_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-cuda13-nccl
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-cuda13-nccl（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-nccl_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: ccf52f05efda1f4488b431b1cbfd5e902c079f84fcb39bf271c39c3bdff901c6
+        required: true
+        filename: datacenter-gpu-manager-4-cuda13-nccl_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-cuda13-ubergemm2
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-cuda13-ubergemm2（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-cuda13-ubergemm2_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: aeb97690c273a6aa34c64d164da02a0c574db0adac0b1405857383d591cc5ddd
+        required: true
+        filename: datacenter-gpu-manager-4-cuda13-ubergemm2_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-multinode
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-multinode（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-multinode_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: aba0a02eb2fd0967e2b341fd56c606745456ac01e7d4524bf1906d146fc40cac
+        required: true
+        filename: datacenter-gpu-manager-4-multinode_4.8.0-1_arm64.deb
+        install_method: apt
+      - name: datacenter-gpu-manager-4-multinode-cuda13
+        description: NVIDIA DCGM 4.8.0 datacenter-gpu-manager-4-multinode-cuda13（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/datacenter-gpu-manager-4-multinode-cuda13_4.8.0-1_arm64.deb
+        version: '1:4.8.0-1'
+        sha256: 32f79596d5b71a4db5d87ea139dba1109da5ace6da7b91478d7fbf9da8963bec
+        required: true
+        filename: datacenter-gpu-manager-4-multinode-cuda13_4.8.0-1_arm64.deb
+        install_method: apt
+      # -----------------------------------------------------------------------
+      # CUDA 13.4 Update 3 local repo. Toolkit only: unlike 13.0.3 it bundles
+      # no driver, so prepare.sh / init_system.sh have nothing to pin out.
+      # -----------------------------------------------------------------------
+      - name: cuda-toolkit
+        description: NVIDIA CUDA Toolkit 13.4 Update 3 local repo（Ubuntu 24.04 arm64,不含驱动；约 3.7 GB）
+        url: https://developer.download.nvidia.com/compute/cuda/13.4.3/local_installers/cuda-repo-ubuntu2404-13-4-local_13.4.3-1_arm64.deb
+        version: 13.4.3
+        md5: cd6db24a1a9dac7c82f37da218b1772a
+        required: true
+        filename: cuda-toolkit-13.4.3-ubuntu2404_arm64.deb
+        install_method: apt
+      - name: nccl
+        description: NVIDIA NCCL 2.32.3（built with CUDA 13.4,arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnccl2_2.32.3-1+cuda13.4_arm64.deb
+        version: 2.32.3
+        sha256: 809a6eea2f8a570050229bc218e30d4280829cbe01e824e052c96ee9203a7fe5
+        required: true
+        filename: libnccl2-2.32.3-ubuntu2404-cuda13.4_arm64.deb
+        install_method: apt
+      - name: nccl-dev
+        description: NVIDIA NCCL development headers 2.32.3（arm64/sbsa）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libnccl-dev_2.32.3-1+cuda13.4_arm64.deb
+        version: 2.32.3
+        sha256: 9d42ad81976cad0f75d9cc9f81b47a298f8fc8f527994e259f5d023b62e54696
+        required: true
+        filename: libnccl-dev-2.32.3-ubuntu2404-cuda13.4_arm64.deb
+        install_method: apt
+      - name: cudnn
+        description: NVIDIA cuDNN 9.28.1 for CUDA 13（arm64/sbsa,可选）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/libcudnn9-cuda-13_9.28.1.4-1_arm64.deb
+        version: 9.28.1.4
+        sha256: f72cc05e3eee7acc18d9179c7f73a1865c305f70ff5545767563706ebf7b3d57
+        required: false
+        filename: libcudnn9-cuda-13-9.28.1.4-ubuntu2404_arm64.deb
+        install_method: apt
+      # GDS: signed linux-modules-nvidia-fs-7.0.0-1025 + libcufile-13-4 (via
+      # cuda-toolkit-13-4) + gds-tools-13-4. Same no-nvidia-gds rule as above.
+      - name: gds-tools-13-4
+        description: GPUDirect Storage 工具 1.19.1.55（gdscheck/gdsio,CUDA 13.4,arm64/sbsa；不装 nvidia-gds 元包以免引入 nvidia-fs-dkms）
+        url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/gds-tools-13-4_1.19.1.55-1_arm64.deb
+        version: 1.19.1.55-1
+        sha256: 0b97f8f4cbbff9875e12c82a00efc46beb3a37a27a35fa6c8711a711b0d2223a
+        required: false
+        filename: gds-tools-13-4_1.19.1.55-1_arm64.deb
+        install_method: apt
+      - name: gdrcopy-tests
+        description: GDRCopy 测试工具 2.6（DGX OS 仓库,arm64）
+        url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/g/gdrcopy-tests/gdrcopy-tests_2.6-1_arm64.deb
+        version: 2.6-1
+        sha256: d22b3a6d4aec163ebe3f0820609e28684b5e8c23a29fb7c0a2723a5b7c1fb46b
+        required: false
+        filename: gdrcopy-tests_2.6-1_arm64.deb
+        install_method: apt
+      - name: gpu-burn
+        description: GPU Burn（GPU 压力测试,需 sm_103 支持,从 master 构建）
+        url: https://github.com/wilicc/gpu-burn/archive/refs/heads/master.tar.gz
+        version: '1.0'
+        required: false
+        filename: gpu-burn-1.0.tar.gz
+        install_method: build
+        build_deps:
+        - cuda
+        - build-essential
+        install_path: "/usr/local/bin"
+      - name: hpcx
+        description: NVIDIA HPC-X aarch64 宿主机 tarball（仅有 v2.23 cuda12 构建,默认关闭,改由 hpc-benchmarks 容器提供）
+        download: false
+        url: https://content.mellanox.com/hpc/hpc-x/v2.23/hpcx-v2.23-gcc-doca_ofed-ubuntu24.04-cuda12-aarch64.tbz
+        version: '2.23'
+        required: false
+        filename: hpcx-v2.23-ubuntu2404-cuda12-aarch64.tbz
+        install_method: extract
+        install_path: "/opt/hpcx"
+      - name: cuda-samples-bandwidthtest
+        description: CUDA Bandwidth Test（CUDA 13.4 配套）
+        url: https://github.com/NVIDIA/cuda-samples/archive/refs/tags/v13.4.tar.gz
+        version: '13.4'
+        required: false
+        filename: cuda-samples-13.4.tar.gz
+        install_method: build
+        build_target: Samples/1_Utilities/bandwidthTest
+      docker_images:
+      - name: cuda-runtime-smoke-test
+        description: CUDA 13.4.3 runtime 冒烟测试镜像（arm64）,docker run --gpus all nvidia-smi
+        image: nvcr.io/nvidia/cuda:13.4.3-runtime-ubuntu24.04
+        platform: linux/arm64
+        filename: images/nvidia-cuda-13.4.3-runtime-ubuntu24.04-arm64.tar
+        required: false
+user_data:
+  source: user-data
+  autoinstall:
+    apt:
+      fallback: offline-install
+      preserve_sources_list: false
+      geoip: false
+    codecs:
+      install: false
+    drivers:
+      install: false
+    kernel:
+      # arm64 live-server pool only ships linux-generic. linux-nvidia-64k-hwe is
+      # installed from the ISO local repo on first boot, followed by a reboot
+      # (same sequence Canonical documents for GB200/GB300).
+      package: linux-generic
+    shutdown: reboot
+    # Runs before disk probing. Checks which disk storage.layout.match selects and
+    # stops the install if it is ambiguous or a USB disk. Kernel parameter
+    # md.root_disk=<spec> replaces the match without rebuilding the ISO; see
+    # scripts/select_root_disk.sh.
+    early-commands:
+    - bash /cdrom/resource/scripts/select_root_disk.sh
+    updates: security
+    locale: en_US.UTF-8
+    timezone: Etc/UTC
+    keyboard:
+      layout: us
+      variant: ''
+    network:
+      version: 2
+      ethernets:
+        default:
+          match:
+            name: e*
+          dhcp4: true
+          dhcp6: false
+    storage:
+      layout:
+        name: direct
+        # GB300 compute tray: 1 x M.2 NVMe OS drive (1.92/2 TB) + 4-8 x E1.S NVMe
+        # data drives (3.84/4 TB). "largest" would install onto an E1.S drive.
+        # "smallest" picks the M.2, matching the NICo image-install recommendation
+        # (boot_disk: smallest). Override per site with md.root_disk=<spec>.
+        match:
+          size: smallest
+    identity:
+      hostname: gb300-node
+      realname: admin
+      username: admin
+      password: "$6$tY22hWWMnPlGHjLQ$Oz16kbvmSDYccQVUiFBP5jlqRktAQVebHmEDcuhooC9Yh189GJ1L.VAQOJxwXkghejh9fVOc1l2piYJ2vWo0K0"
+    ssh:
+      install-server: true
+      allow-pw: true
+      authorized-keys: []
+  installation:
+    # Declarative view of the GB300 install sequence (documentation only; the
+    # executed order lives in config/cloud-init/user-data and init_system.sh).
+    # Single first boot: the platform kernel is installed during autoinstall,
+    # so there is no kernel -> reboot -> driver split anymore.
+    autoinstall_early_commands:
+    - name: select_root_disk
+      description: 安装阶段 early-commands 中执行 select_root_disk.sh：按 storage.layout.match（默认 size smallest，即 M.2）推算系统盘，USB/可移动盘或同容量不同型号的歧义时在分区前中止；内核参数 md.root_disk=<spec> 覆盖选盘规则，md.root_disk_check=0 关闭检查
+      script: select_root_disk.sh
+      enabled: true
+      log: "/var/log/installer/metal-deployer-root-disk.log"
+    autoinstall_late_commands:
+    - name: nvidia_kernel
+      description: 安装阶段 late-commands 中执行 install_target_kernel.sh：从 /opt/resource/packages 离线安装 linux-nvidia-64k-hwe-24.04（7.0.0-1024）并 hold,安装器重启后直接进入该内核
+      script: install_target_kernel.sh
+      enabled: true
+      log: "/var/log/metal-deployer-target-kernel.log"
+    boot1:
+    - name: apt_sources
+      description: 配置 APT 源（默认 local 离线仓库）
+      script: configure-apt-sources.sh
+      enabled: true
+      log: "/var/log/apt-sources.log"
+    - name: diagnostic_tools
+      description: 安装系统诊断工具与构建链
+      enabled: true
+      log: "/var/log/diagnostic-tools.log"
+    - name: kernel_check
+      description: 确认运行内核为 KERNEL_RELEASE（7.0.0-1024-nvidia-64k）,否则 gpu_driver 阶段中止（签名模块只匹配该内核）
+      command: uname -r | grep -q nvidia-64k
+      enabled: true
+    - name: dgx_system_tuning
+      description: 安装 DGX 系统调优包（grub/sysctl/modprobe/modules-load）
+      command: apt-get install -y --no-install-recommends nv-common-apis nvidia-grub-params nvidia-kernel-defaults nv-cpu-governor nvidia-disable-numa-balancing nvidia-disable-init-on-alloc nv-iommu nvidia-acs-disable nvidia-pci-bridge-power nvidia-relaxed-ordering-gpu nvidia-relaxed-ordering-nvme nvidia-nvme-options nv-limits nv-ipmi-devintf nv-persistence-mode nvidia-fs-loader nvidia-peermem-loader nvidia-ib-umad-loader nvidia-arm-cspmu-loader nvidia-sbsa-gwdt-options nvidia-cppc-cpufreq-options nvidia-earlycon nvidia-crashdump nvidia-logrotate nvgpu-services-list nvidia-chardev-links && update-grub
+      enabled: true
+      log: "/var/log/dgx-system-tuning.log"
+    - name: apt_packages
+      description: 安装本地仓库 deb（驱动 local repo、CUDA 13.0.3 local repo、容器工具等）
+      enabled: true
+      log: "/var/log/apt-install.log"
+    - name: gpu_driver
+      description: 安装 Canonical 签名 R580 server-open 580.178.04（预编译模块,无 DKMS）+ FM + NSCQ + IMEX + GDS tools 1.15 + DCGM 4.7.1 + NCCL 2.31.2
+      command: apt-get install -y --no-install-recommends nvidia-headless-no-dkms-580-server-open nvidia-utils-580-server linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04 nvidia-fabricmanager-580 libnvidia-nscq-580 nvidia-imex-580 nvidia-modprobe cuda-toolkit-13-0 gds-tools-13-0 libnccl2 libnccl-dev datacenter-gpu-manager-4-core datacenter-gpu-manager-4-proprietary datacenter-gpu-manager-4-cuda13 datacenter-gpu-manager-4-proprietary-cuda13
+      enabled: true
+      condition: "lspci -d 10de: | grep -qiE '3d|vga|display'"
+      log: "/var/log/gpu-driver.log"
+    - name: doca_install
+      description: DOCA-OFED 3.2.3 LTS（mlnx-ofed-kernel-dkms 对 7.0.0-1024-nvidia-64k 编译）
+      script: install_doca.sh
+      enabled: true
+      condition: lspci | grep -iE 'mellanox|connectx|bluefield'
+      log: "/var/log/doca-install.log"
+    - name: gdrcopy
+      description: 安装 GDRCopy 2.6 预编译 deb（gdrdrv-dkms 在目标机编译）
+      command: apt-get install -y --no-install-recommends gdrdrv-dkms libgdrapi gdrcopy gdrcopy-tests
+      enabled: true
+      log: "/var/log/gdrcopy.log"
+    - name: test_tools_build
+      description: 编译安装 RDMA/GPU 性能测试工具（nccl-tests、nvbandwidth -DMULTINODE=1、perftest、imex_fabric_ipc_test）
+      script: install_test_tools.sh
+      enabled: true
+      condition: test -d /usr/local/cuda
+      log: "/var/log/test-tools-build.log"
+      timeout: 1800
+    - name: gpu_burn_build
+      description: 编译安装 GPU Burn
+      script: install_gpu_burn.sh
+      enabled: false
+      condition: test -d /usr/local/cuda
+      log: "/var/log/gpu-burn-build.log"
+      timeout: 600
+    - name: container_runtime
+      description: 配置 containerd/docker + NVIDIA Container Runtime
+      script: setup_container_runtime.sh
+      enabled: true
+      log: "/var/log/container-runtime.log"
+    - name: docker_images
+      description: 预加载 Docker 镜像 tar 包
+      script: load_docker_images.sh
+      enabled: true
+      condition: test -d /opt/resource/packages/images
+      log: "/var/log/docker-image-load.log"
+    - name: rdma_modules
+      description: 配置 /etc/rdma/modules/rdma.conf
+      script: configure_rdma_modules.sh
+      enabled: true
+      log: "/var/log/rdma-modules.log"
+    - name: ssh_keys
+      description: 配置 SSH 公钥
+      script: configure_ssh.sh
+      enabled: true
+      log: "/var/log/ssh-keys.log"
+    - name: nvidia_config
+      description: NVIDIA 驱动额外配置（Persistence Mode、nvidia-smi topo；IMEX 预置：channel0 modprobe、systemd drop-in、enable 但不启动；GB300 不启用 Fabric Manager）
+      script: nvidia_setup.sh
+      enabled: true
+      log: "/var/log/nvidia-setup.log"
+    # Day-2 (not run by the ISO): per rack, on every tray
+    #   /opt/resource/scripts/imex-configure.sh --nodes /root/rackN.list
+    #   /opt/resource/scripts/imex-check.sh
+    #   /opt/resource/scripts/imex-bench.sh --nodes /root/rackN.list
+    ignore_install_errors: false
+    logging:
+      base_dir: "/var/log/metal-deployer"
+      summary_log: "/var/log/metal-deployer/install-summary.log"

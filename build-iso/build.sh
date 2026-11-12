@@ -17,7 +17,7 @@ PKG_DIR="${PACKAGE_DIR:-${CI_WORK_DIR}/packages}"
 SCRIPT_DIR="${BASE_DIR}/scripts"
 CONFIG_DIR="${CONFIG_DIR:-${BASE_DIR}/config}"
 USER_DATA_FILE="${BASE_DIR}/config/cloud-init/user-data"
-MANIFEST_FILE="${MANIFEST_FILE:-${BASE_DIR}/manifest.yaml}"
+MANIFEST_FILE="${MANIFEST_FILE:-${BASE_DIR}/manifests/manifest.yaml}"
 RESOLVE_MANIFEST="${BASE_DIR}/tools/resolve_manifest.rb"
 RENDER_USER_DATA="${BASE_DIR}/tools/render_user_data.rb"
 
@@ -79,6 +79,31 @@ fi
 # Generate effective manifest for current CUDA profile
 MANIFEST_EFFECTIVE=$(resolve_manifest)
 
+# Target platform: arm64 ISOs (GB300) are UEFI-only and use a different serial port.
+TARGET_ARCH=""
+SERIAL_CONSOLE=""
+if [ -f "$MANIFEST_EFFECTIVE" ]; then
+    TARGET_ARCH=$(ruby -ryaml -e 'm = YAML.safe_load_file(ARGV.fetch(0), aliases: true) || {}; puts((m.dig("platform", "arch") || m.dig("install_environment", "TARGET_ARCH")).to_s)' "$MANIFEST_EFFECTIVE")
+    SERIAL_CONSOLE=$(ruby -ryaml -e 'm = YAML.safe_load_file(ARGV.fetch(0), aliases: true) || {}; puts((m.dig("install_environment", "SERIAL_CONSOLE") || m.dig("platform", "serial_console")).to_s)' "$MANIFEST_EFFECTIVE")
+fi
+SERIAL_CONSOLE="${SERIAL_CONSOLE:-ttyS0}"
+PLATFORM_NAME=""
+if [ -f "$MANIFEST_EFFECTIVE" ]; then
+    PLATFORM_NAME=$(ruby -ryaml -e 'm = YAML.safe_load_file(ARGV.fetch(0), aliases: true) || {}; puts((m.dig("platform", "name") || m.dig("install_environment", "PLATFORM")).to_s)' "$MANIFEST_EFFECTIVE")
+fi
+# Volume ID lets ISO consumers (NICo artifact tooling, BMC media lists) tell
+# platforms apart; x86 keeps the historical label. Override with ISO_VOLUME_ID.
+if [ -z "${ISO_VOLUME_ID:-}" ]; then
+    if [ -n "$PLATFORM_NAME" ]; then
+        ISO_VOLUME_ID=$(echo "METAL-${PLATFORM_NAME}-${TARGET_ARCH:-x86_64}" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9_\n-' '_' | cut -c1-32)
+    else
+        ISO_VOLUME_ID="CUSTOM_SERVER"
+    fi
+fi
+UEFI_ONLY=false
+[ "$TARGET_ARCH" = "arm64" ] && UEFI_ONLY=true
+echo "🎯 Target arch: ${TARGET_ARCH:-default} (UEFI-only: ${UEFI_ONLY}, serial: ${SERIAL_CONSOLE}, volume: ${ISO_VOLUME_ID})"
+
 if [ -f "$MANIFEST_EFFECTIVE" ]; then
     ruby -ryaml -rshellwords -e '
       env = YAML.safe_load_file(ARGV.fetch(0), aliases: true).fetch("install_environment", {}) || {}
@@ -106,20 +131,100 @@ if [ -f "$USER_DATA_FILE" ]; then
     fi
     touch "$WORK_DIR/iso-content/nocloud/meta-data"
     touch "$WORK_DIR/iso-content/nocloud/vendor-data"
+    # Same config at the ISO root: when the installer is network-booted
+    # (NICo: kernel/initrd via iPXE, url=<ISO>, ds=nocloud-net) the ISO's GRUB
+    # and /nocloud are bypassed. Subiquity falls back to /cdrom/autoinstall.yaml
+    # when the served cloud-config has no autoinstall section.
+    cp "$WORK_DIR/iso-content/nocloud/user-data" "$WORK_DIR/iso-content/autoinstall.yaml"
 else
     echo "❌ Missing cloud-init user-data file: ${USER_DATA_FILE}"; exit 1
 fi
 
+# Machine-readable description for tooling that unpacks the ISO (e.g. the
+# NICo artifact publisher): where kernel/initrd/autoinstall live and how to boot it.
+mkdir -p "$WORK_DIR/iso-content/.metal-deployer"
+ISO_VERSION="${ISO_VERSION:-$(git -C "$BASE_DIR" describe --tags --always --dirty 2>/dev/null || echo unknown)}"
+# init_system.sh reports it in /var/lib/metal-deployer/state.json.
+printf 'ISO_VERSION=%q\n' "$ISO_VERSION" >> "$TARGET_RES_DIR/config/install.env"
+ISO_VERSION="$ISO_VERSION" ISO_VOLUME_ID="$ISO_VOLUME_ID" \
+    ruby -ryaml -rjson -rtime - "$MANIFEST_EFFECTIVE" "$WORK_DIR/iso-content" <<'RUBY' > "$WORK_DIR/iso-content/.metal-deployer/release.json"
+manifest_path, root = ARGV
+m = File.file?(manifest_path) ? (YAML.safe_load_file(manifest_path, aliases: true) || {}) : {}
+env = m["install_environment"] || {}
+disk_info = File.read(File.join(root, ".disk/info")).strip rescue nil
+present = ->(p) { File.exist?(File.join(root, p)) ? p : nil }
+release = {
+  "schema" => 1,
+  "product" => "metal-deployer",
+  "version" => ENV.fetch("ISO_VERSION", "unknown"),
+  "build_time" => Time.now.utc.iso8601,
+  "volume_id" => ENV.fetch("ISO_VOLUME_ID", ""),
+  "platform" => m.dig("platform", "name") || env["PLATFORM"],
+  "arch" => m.dig("platform", "arch") || env["TARGET_ARCH"] || "amd64",
+  "base_os" => disk_info,
+  "cuda_profile" => ENV["CUDA_PROFILE"] || env["CUDA_PROFILE"],
+  "target_kernel" => { "package" => env["KERNEL_PACKAGE"], "release" => env["KERNEL_RELEASE"] }.compact,
+  "nvidia_driver_branch" => ENV["NVIDIA_DRIVER_BRANCH"] || env["NVIDIA_DRIVER_BRANCH"],
+  "serial_console" => env["SERIAL_CONSOLE"] || m.dig("platform", "serial_console"),
+  "boot" => {
+    "kernel" => present.("casper/vmlinuz"),
+    "initrd" => present.("casper/initrd"),
+    "autoinstall" => present.("autoinstall.yaml"),
+    "nocloud" => present.("nocloud/user-data"),
+  }.compact,
+  "network_boot" => {
+    "nico_ipxe_template" => "ubuntu-autoinstall",
+    "artifacts" => { "install_iso" => "<this ISO>", "kernel" => "casper/vmlinuz", "initrd" => "casper/initrd" },
+    "kernel_params" => "ip=dhcp url=<ISO URL> autoinstall ds=nocloud-net;s=<seed URL>",
+    "user_data" => "optional: autoinstall.yaml is used when the served cloud-config has no autoinstall section; supply nocloud/user-data as userData when NICo phone-home is enabled",
+    "note" => "url= downloads the whole ISO into RAM; the node needs more free RAM than the ISO size",
+  },
+}
+puts JSON.pretty_generate(release)
+RUBY
+
 # 6. Modify GRUB (With Serial Console Fix)
 echo "🔧 Modifying GRUB..."
-GRUB_CFG=$(find "$WORK_DIR/iso-content" -name "grub.cfg" -print -quit)
+GRUB_CFG="$WORK_DIR/iso-content/boot/grub/grub.cfg"
+[ -f "$GRUB_CFG" ] || GRUB_CFG=$(find "$WORK_DIR/iso-content" -name "grub.cfg" -print -quit)
 if [ -n "$GRUB_CFG" ]; then
-    # Added console=ttyS0 for QEMU logging
-    CMD_INJECT='autoinstall ds=nocloud\\;s=/cdrom/nocloud/ console=ttyS0,115200n8 console=tty0'
+    # Serial console for QEMU / BMC SOL logging (ttyS0 on x86, ttyAMA0 on Grace)
+    CMD_INJECT="autoinstall ds=nocloud\\\\;s=/cdrom/nocloud/ console=${SERIAL_CONSOLE},115200n8 console=tty0"
     sed -i "s|/casper/vmlinuz|/casper/vmlinuz $CMD_INJECT|g" "$GRUB_CFG"
     sed -i 's/set timeout=[0-9]*/set timeout=1/g' "$GRUB_CFG"
 else
     echo "❌ grub.cfg not found"; exit 1
+fi
+
+if [ "$UEFI_ONLY" = "true" ]; then
+    # arm64 Ubuntu ISOs have no El Torito BIOS image; the ESP is an appended
+    # GPT partition. Replay the original ISO's boot setup (ESP read straight
+    # from the source ISO) instead of hand-building BIOS+UEFI options.
+    echo "📦 Generating UEFI-only ISO (replaying original boot layout)..."
+    # Absolute path: the replayed --interval options reference the source ISO
+    # by the path given here, and xorriso runs from iso-content below.
+    # --modification-date is kept on purpose: it defines the ISO9660 UUID.
+    BOOT_OPTS=$(xorriso -indev "$(realpath "$INPUT_ISO")" -report_el_torito as_mkisofs 2>/dev/null | grep -v '^-V ')
+    [ -n "$BOOT_OPTS" ] || { echo "❌ Cannot read boot layout from ${INPUT_ISO}"; exit 1; }
+    echo "$BOOT_OPTS" > "$WORK_DIR/boot-options.txt"
+    eval "set -- $(tr '\n' ' ' <<< "$BOOT_OPTS")"
+    cd "$WORK_DIR/iso-content"
+    set +e
+    xorriso -as mkisofs -r \
+      -V "$ISO_VOLUME_ID" \
+      -J -joliet-long -l \
+      -iso-level 3 \
+      "$@" \
+      -o "$OUTPUT_ISO" \
+      . 2>&1 | grep -v "UPDATE"
+    EXIT_CODE=${PIPESTATUS[0]}
+    set -e
+    echo ""
+    if [ "$EXIT_CODE" -eq 0 ]; then
+        echo "✅ Success: $OUTPUT_ISO"
+        exit 0
+    fi
+    echo "❌ Build Failed"; exit 1
 fi
 
 # 7. Prepare EFI (Auto-Generate)
@@ -150,7 +255,7 @@ echo "📦 Generating Hybrid ISO..."
 cd "$WORK_DIR/iso-content"
 set +e
 xorriso -as mkisofs -r \
-  -V "CUSTOM_SERVER" \
+  -V "$ISO_VOLUME_ID" \
   -J -joliet-long -l \
   -iso-level 3 \
   -partition_offset 16 \
@@ -167,7 +272,7 @@ xorriso -as mkisofs -r \
   -isohybrid-gpt-basdat \
   -o "$OUTPUT_ISO" \
   . 2>&1 | grep -v "UPDATE"
-EXIT_CODE=$?
+EXIT_CODE=${PIPESTATUS[0]}
 set -e
 
 echo ""

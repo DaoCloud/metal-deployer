@@ -52,7 +52,7 @@ cd build-iso
 
 主要配置文件是：
 
-- `build-iso/manifest.yaml`：统一配置文件，包含通用 basic 配置和 CUDA profile 配置
+- `build-iso/manifests/manifest.yaml`：统一配置文件，包含通用 basic 配置和 CUDA profile 配置
 - `build-iso/config/cloud-init/user-data`：Cloud-Init/autoinstall 模板，保留资源复制和首次启动入口
 - `build-iso/config/ssh_authorized_keys`：可选，写入需要安装到目标机的 SSH 公钥
 
@@ -60,7 +60,7 @@ cd build-iso
 
 ### 4.1 基础 ISO 来源
 
-编辑统一 manifest，例如 `build-iso/manifest.yaml`：
+编辑统一 manifest，例如 `build-iso/manifests/manifest.yaml`：
 
 ```yaml
 base_iso:
@@ -258,7 +258,7 @@ CI 或临时构建环境可以把下载缓存和中间产物统一放到一个�
 
 ```bash
 export ISO_WORK_DIR="$PWD/build-iso/.ci-work"
-export MANIFEST_FILE="$PWD/build-iso/manifest.yaml"
+export MANIFEST_FILE="$PWD/build-iso/manifests/manifest.yaml"
 export ISO_DIR="$ISO_WORK_DIR/iso"
 export PACKAGE_DIR="$ISO_WORK_DIR/packages"
 export IMAGE_DIR="$ISO_WORK_DIR/packages/images"

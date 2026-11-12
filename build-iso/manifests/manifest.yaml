@@ -299,11 +299,6 @@ basic:
     image: docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9
     filename: images/superbench-v0.12.0-cuda12.9.tar
     required: false
-  - name: deepep-ucx
-    description: DeepEP with UCX for high-performance GPU communication
-    image: ghcr.io/daocloud/metal-deployer/deepep-ucx:latest
-    filename: images/deepep-ucx-latest.tar
-    required: false
   runtime_config:
     ssh:
       authorized_keys_file: config/ssh_authorized_keys

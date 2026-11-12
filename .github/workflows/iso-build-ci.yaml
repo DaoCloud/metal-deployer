@@ -57,7 +57,7 @@ jobs:
 
     env:
       CUDA_PROFILE: ${{ matrix.cuda_profile }}
-      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifests/manifest.yaml
 
     steps:
       - name: Checkout repository
@@ -97,7 +97,7 @@ jobs:
           # GitHub-hosted runner 访问不到内网 mirror,跳过 *.intranet.* 域名。
           ruby -rjson -ryaml -e '
             urls = []
-            manifest = JSON.parse(`ruby build-iso/tools/resolve_manifest.rb build-iso/manifest.yaml #{ENV.fetch("CUDA_PROFILE")} json`)
+            manifest = JSON.parse(`ruby build-iso/tools/resolve_manifest.rb build-iso/manifests/manifest.yaml #{ENV.fetch("CUDA_PROFILE")} json`)
             base = manifest["base_iso"] && manifest["base_iso"]["source"]
             urls << base if base && base =~ %r{^https?://}
             Array(manifest["packages"]).each do |p|
@@ -141,7 +141,7 @@ jobs:
       DISK_SIZE: 40G
       CUDA_PROFILE: cuda12
       MIRROR_SOURCE: local
-      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifests/manifest.yaml
       CACHE_BASE_DIR: /home/runner/actions-runner/_work/metal-deployer-cache
       ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12
       ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/iso
@@ -186,7 +186,7 @@ jobs:
           path: |
             build-iso/.ci-work/${{ env.CUDA_PROFILE }}/iso
             build-iso/.ci-work/${{ env.CUDA_PROFILE }}/packages
-          key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
+          key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifests/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
           restore-keys: |
             iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-
 

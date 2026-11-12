@@ -67,11 +67,37 @@ effective["install_environment"] = deep_merge(
 )
 effective["install_environment"]["CUDA_PROFILE"] ||= profile
 
-effective["packages"] = Array(basic["packages"]).map { |item| deep_copy(item) } +
-  Array(profile_data["packages"]).map { |item| deep_copy(item) }
+# A profile entry whose name matches a basic entry replaces it in place, and
+# profile "exclude_packages" drops basic entries by name. This lets a profile
+# move components that live in basic (kernel ABI, DOCA, DCGM, ...) to other
+# versions without duplicating the whole basic list.
+def merge_items(base_items, profile_items, excluded)
+  overrides = profile_items.each_with_object({}) { |item, acc| acc[item["name"]] = item if item["name"] }
+  merged = base_items.reject { |item| excluded.include?(item["name"]) }.map do |item|
+    overrides.key?(item["name"]) ? overrides.delete(item["name"]) : item
+  end
+  merged + profile_items.select { |item| item["name"].nil? || overrides.key?(item["name"]) }
+end
 
-effective["docker_images"] = Array(basic["docker_images"]).map { |item| deep_copy(item) } +
-  Array(profile_data["docker_images"]).map { |item| deep_copy(item) }
+excluded = Array(profile_data["exclude_packages"]).map(&:to_s)
+missing = excluded - Array(basic["packages"]).map { |item| item["name"] } - Array(basic["docker_images"]).map { |item| item["name"] }
+unless missing.empty?
+  warn "CUDA profile #{profile}: exclude_packages not found in basic: #{missing.join(", ")}"
+  exit 1
+end
+
+effective.delete("exclude_packages")
+effective["packages"] = merge_items(
+  Array(basic["packages"]).map { |item| deep_copy(item) },
+  Array(profile_data["packages"]).map { |item| deep_copy(item) },
+  excluded
+)
+
+effective["docker_images"] = merge_items(
+  Array(basic["docker_images"]).map { |item| deep_copy(item) },
+  Array(profile_data["docker_images"]).map { |item| deep_copy(item) },
+  excluded
+)
 
 # 从顶层读取 user_data（不再与 basic 或 profile 合并）
 effective["user_data"] = deep_copy(manifest["user_data"]) if manifest.key?("user_data")
