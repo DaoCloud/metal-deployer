@@ -5,13 +5,15 @@ on:
     types: [opened, reopened, synchronize]
     paths:
       - 'benchmarks/superbenchmark/image/**'
-      - 'benchmarks/gpu-rdma-bench/image/**'
+      - 'benchmarks/nixl-benchmark/image/**'
+      - 'benchmarks/moe-bench/image/**'
   push:
     branches:
       - main
     paths:
       - 'benchmarks/superbenchmark/image/**'
-      - 'benchmarks/gpu-rdma-bench/image/**'
+      - 'benchmarks/nixl-benchmark/image/**'
+      - 'benchmarks/moe-bench/image/**'
   workflow_dispatch:
     inputs:
       image:
@@ -22,7 +24,8 @@ on:
         options:
           - all
           - sbcli
-          - gpu-rdma-bench
+          - nixl-benchmark
+          - moe-bench
       push:
         description: Push image to registry
         required: true
@@ -52,7 +55,6 @@ jobs:
       images: ${{ steps.detect.outputs.images }}
     steps:
       - name: Checkout repository
-        if: ${{ github.event_name != 'workflow_dispatch' }}
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -63,15 +65,29 @@ jobs:
         run: |
           set -euo pipefail
 
-          all_images='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"},{"image":"gpu-rdma-bench","context":"./benchmarks/gpu-rdma-bench/image","image_name":"gpu-rdma-bench"}]'
-          sbcli_image='[{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"}]'
-          gpu_rdma_bench_image='[{"image":"gpu-rdma-bench","context":"./benchmarks/gpu-rdma-bench/image","image_name":"gpu-rdma-bench"}]'
+          sbcli='{"image":"sbcli","context":"./benchmarks/superbenchmark/image","image_name":"sbcli"}'
+          # One matrix entry per profile (benchmarks/nixl-benchmark/image/profiles/*.env); arm64 profiles
+          # build natively on the GitHub-hosted arm64 runner
+          nixl_benchmark=""
+          for f in benchmarks/nixl-benchmark/image/profiles/*.env; do
+            [ -e "$f" ] || continue
+            p=$(basename "$f" .env)
+            runner=ubuntu-latest
+            case "$(benchmarks/nixl-benchmark/image/profile.sh "$p" get PLATFORM)" in *arm64*) runner=ubuntu-24.04-arm ;; esac
+            nixl_benchmark="${nixl_benchmark:+$nixl_benchmark,}{\"image\":\"nixl-benchmark\",\"context\":\"./benchmarks/nixl-benchmark/image\",\"image_name\":\"nixl-benchmark\",\"profile\":\"$p\",\"runner\":\"$runner\"}"
+          done
+          moe_bench='{"image":"moe-bench","context":"./benchmarks/moe-bench/image","image_name":"moe-bench","runner":"ubuntu-24.04-arm"}'
+          all_images="[$sbcli,$nixl_benchmark,$moe_bench]"
+          sbcli_image="[$sbcli]"
+          nixl_benchmark_image="[$nixl_benchmark]"
+          moe_bench_image="[$moe_bench]"
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             case "${{ inputs.image }}" in
               all) images="$all_images" ;;
               sbcli) images="$sbcli_image" ;;
-              gpu-rdma-bench) images="$gpu_rdma_bench_image" ;;
+              nixl-benchmark) images="$nixl_benchmark_image" ;;
+              moe-bench) images="$moe_bench_image" ;;
               *) echo "Unsupported image: ${{ inputs.image }}" >&2; exit 1 ;;
             esac
             echo "images=$images" >> "$GITHUB_OUTPUT"
@@ -94,29 +110,17 @@ jobs:
 
           printf 'Changed files:\n%s\n' "$changed_files"
 
-          sbcli_changed=false
-          gpu_rdma_bench_changed=false
-
+          selected=()
           if printf '%s\n' "$changed_files" | grep -Eq '^benchmarks/superbenchmark/image/'; then
-            sbcli_changed=true
+            selected+=("$sbcli")
           fi
-          if printf '%s\n' "$changed_files" | grep -Eq '^benchmarks/gpu-rdma-bench/image/'; then
-            gpu_rdma_bench_changed=true
+          if printf '%s\n' "$changed_files" | grep -Eq '^benchmarks/nixl-benchmark/image/'; then
+            selected+=("$nixl_benchmark")
           fi
-
-          images='[]'
-          if [ "$sbcli_changed" = true ] || [ "$gpu_rdma_bench_changed" = true ]; then
-            images='['
-            sep=''
-            if [ "$sbcli_changed" = true ]; then
-              images="${images}${sep}{\"image\":\"sbcli\",\"context\":\"./benchmarks/superbenchmark/image\",\"image_name\":\"sbcli\"}"
-              sep=','
-            fi
-            if [ "$gpu_rdma_bench_changed" = true ]; then
-              images="${images}${sep}{\"image\":\"gpu-rdma-bench\",\"context\":\"./benchmarks/gpu-rdma-bench/image\",\"image_name\":\"gpu-rdma-bench\"}"
-            fi
-            images="${images}]"
+          if printf '%s\n' "$changed_files" | grep -Eq '^benchmarks/moe-bench/image/'; then
+            selected+=("$moe_bench")
           fi
+          images="[$(IFS=,; echo "${selected[*]}")]"
 
           echo "Selected image matrix: $images"
           echo "images=$images" >> "$GITHUB_OUTPUT"
