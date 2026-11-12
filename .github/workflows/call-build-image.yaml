@@ -107,6 +107,21 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost
           docker system prune -af
           df -h /
+          # nvcc for DeepEP/DeepGEMM can exhaust the runner's 16GB RAM
+          sudo swapoff -a || true
+          sudo rm -f /swapfile /mnt/swapfile
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      # Records memory and disk usage while building; printed after the build.
+      - name: Monitor resources
+        if: ${{ matrix.image == 'moe-bench' }}
+        shell: bash
+        run: |
+          nohup bash -c 'while true; do date -u +%H:%M:%S; free -h; df -h /; sleep 300; done' >/tmp/resources.log 2>&1 &
 
       - name: Resolve nixl-benchmark profile
         id: profile
@@ -187,7 +202,7 @@ jobs:
           build-args: ${{ steps.profile.outputs.args }}
 
       # moe-bench is ~35GB (NGC PyTorch base), above the 10GB GHA cache limit,
-      # so it builds without layer cache. MAX_JOBS fits the 16GB arm64 runner.
+      # so it builds without layer cache. MAX_JOBS=2 keeps nvcc within RAM + swap.
       - name: Build moe-bench image
         if: ${{ matrix.image == 'moe-bench' }}
         uses: docker/build-push-action@v5
@@ -198,7 +213,11 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            MAX_JOBS=4
+            MAX_JOBS=2
+
+      - name: Show resource usage
+        if: ${{ always() && matrix.image == 'moe-bench' }}
+        run: cat /tmp/resources.log || true
 
   update-release-notes:
     name: Update image release notes
