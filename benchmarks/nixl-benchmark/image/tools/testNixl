@@ -6,7 +6,7 @@
 # 模式（MODE）：
 #   single  在当前容器内跑单机测试（S1/S2，可选 S3L NIC 环回），无需 SSH。
 #   multi   driver 模式：读 HOSTS_FILE，按 TOPOLOGY 分组，通过 SSH 在各
-#           host 上起 gpu-rdma-bench 容器跑跨节点测试（S3-S6）。
+#           host 上起 nixl-benchmark 容器跑跨节点测试（S3-S6）。
 #   all     先对每台 host 跑单机测试（phase 1，全部 host 并行），再跑跨
 #           节点测试（phase 2，串行）。单机先跑：单机失败可直接定位本机
 #           GPU/驱动问题，跨节点再挂可用排除法定位到网络。
@@ -84,10 +84,10 @@ HOSTS_FILE=${HOSTS_FILE:-""}
 SSH_USER=${SSH_USER:-"root"}
 SSH_PORT=${SSH_PORT:-22}
 CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-"docker"}   # docker | nerdctl
-IMAGE=${IMAGE:-"ghcr.io/daocloud/metal-deployer/gpu-rdma-bench:latest"}
+IMAGE=${IMAGE:-"ghcr.io/daocloud/metal-deployer/nixl-benchmark:latest-cuda13-gb300"}
 GPU_FLAGS=${GPU_FLAGS:-"--gpus all"}
 REMOTE_GPU=${REMOTE_GPU:-"0"}               # CUDA device used on remote hosts for VRAM tests
-# Optional bind-mount for phase-1 containers, e.g. "-v /tmp/testNixl:/usr/sbin/testNixl:ro"
+# Optional bind-mount for phase-1 containers, e.g. "-v /tmp/testNixl:/usr/local/bin/testNixl:ro"
 # Useful when iterating on this script without rebuilding IMAGE (file must exist on each host).
 TESTNIXL_MOUNT=${TESTNIXL_MOUNT:-""}
 
@@ -140,7 +140,7 @@ Multi/all variables:
   HOSTS_FILE=/hosts               Management IPs, one per line (# comments OK).
   SSH_USER=root SSH_PORT=22       SSH to hosts (host sshd, passwordless).
   CONTAINER_RUNTIME=docker        docker | nerdctl (nerdctl uses -n k8s.io).
-  IMAGE=ghcr.io/.../gpu-rdma-bench:latest   Must be pre-loaded on all hosts.
+  IMAGE=ghcr.io/.../nixl-benchmark:latest-cuda13-gb300 Must be pre-loaded on all hosts.
   GPU_FLAGS="--gpus all"          GPU flags for container runtime.
   REMOTE_GPU=0                    CUDA device index on remote hosts for VRAM tests.
 
