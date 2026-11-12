@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+ARG BASE_IMAGE=python:3.11-slim
+FROM ${BASE_IMAGE}
 
 ARG SUPERBENCH_REPO_URL=https://github.com/microsoft/superbenchmark
 ARG SUPERBENCH_TAG=v0.12.0
@@ -27,6 +28,10 @@ RUN git clone --branch ${SUPERBENCH_TAG} --depth 1 ${SUPERBENCH_REPO_URL} /opt/s
 RUN git apply /tmp/control-node-use-inventory-hosts.patch
 
 RUN python -m pip install --retries 10 --timeout 300 .
+
+# sb v0.12.0 only requires pandas>=1.1.5; pandas 3.x breaks `sb result summary`
+# ("Cannot specify both 'axis' and 'index'/'columns'").
+RUN python -m pip install --retries 10 --timeout 300 'pandas<3'
 
 RUN mkdir -p /etc/ssh && \
     printf '%s\n' \

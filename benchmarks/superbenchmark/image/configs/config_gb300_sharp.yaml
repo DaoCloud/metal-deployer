@@ -1,0 +1,130 @@
+# SuperBench SHARP config for GB300 NVL72: NVLink SHARP (NVLS) inside a rack and IB SHARP (CollNet)
+# across racks, each case compared with SHARP off. Used by mtest items sharp.scale_up / sharp.scale_out,
+# which select benchmarks by name: nccl-bw:sharp:<op>:<case>.
+#
+#   U-A  rack, MNNVL, NVLS off                         baseline inside the NVLink domain
+#   U-B  rack, MNNVL, NVLS on, NCCL_ALGO=NVLS          NVLink SHARP
+#   O-A  >= 2 racks, NVLS off, CollNet off             Ring/Tree baseline across racks
+#   O-B  >= 2 racks, CollNet off, NCCL_ALGO=NVLSTree   NVLS inside racks, plain IB between them
+#   O-C  >= 2 racks, NVLS off, NCCL_ALGO=CollnetDirect IB SHARP only
+#   O-D  >= 2 racks, CollNet on, NCCL_ALGO=NVLS        NVLS inside racks + IB SHARP between them
+#
+# Every case sets NCCL_NVLS_ENABLE explicitly: with the default (2), NCCL 2.27 falls back per rank when
+# NVLS multicast binding fails, which can leave ranks in disagreement. A forced NCCL_ALGO that cannot be
+# used makes NCCL fail instead of silently picking another algorithm.
+# IB SHARP needs the SHARP aggregation manager enabled in UFM. The SHARP plugin and libraries come from
+# HPC-X in the worker image (/opt/hpcx); confirm the paths on the first host.
+# No "enable" list: every benchmark below is a candidate and mtest passes the selection
+# (superbench.enable=[...]) for the cases of each item.
+version: v0.13
+superbench:
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  var:
+    default_timeout: 1800
+    mpi_mca: &mpi_mca
+      pml: ob1
+      btl: ^openib
+      btl_tcp_if_exclude: lo,docker0
+      coll_hcoll_enable: 0
+      plm_rsh_args: >-
+        "-F /root/.ssh/config -i /root/.ssh/key"
+    base_env: &base_env
+      NCCL_DEBUG: INFO
+      NCCL_DEBUG_SUBSYS: INIT,NET,COLL,NVLS,TUNING
+      NCCL_MNNVL_ENABLE: '1'
+      NCCL_CUMEM_ENABLE: '1'
+      PATH: null
+      LD_LIBRARY_PATH: null
+      SB_MICRO_PATH: null
+      SB_WORKSPACE: null
+    sharp_env: &sharp_env
+      <<: *base_env
+      LD_LIBRARY_PATH: /opt/hpcx/nccl_rdma_sharp_plugin/lib:/opt/hpcx/sharp/lib:$LD_LIBRARY_PATH
+      SHARP_COLL_ENABLE_SAT: '1'
+    mode_ua: &mode_ua
+      name: mpi
+      proc_num: 4
+      node_num: all
+      mca: *mpi_mca
+      env:
+        <<: *base_env
+        NCCL_NVLS_ENABLE: '0'
+    mode_ub: &mode_ub
+      name: mpi
+      proc_num: 4
+      node_num: all
+      mca: *mpi_mca
+      env:
+        <<: *base_env
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_ALGO: NVLS
+    mode_oa: &mode_oa
+      name: mpi
+      proc_num: 4
+      node_num: all
+      mca: *mpi_mca
+      env:
+        <<: *base_env
+        NCCL_NVLS_ENABLE: '0'
+        NCCL_COLLNET_ENABLE: '0'
+    mode_ob: &mode_ob
+      name: mpi
+      proc_num: 4
+      node_num: all
+      mca: *mpi_mca
+      env:
+        <<: *base_env
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_COLLNET_ENABLE: '0'
+        NCCL_ALGO: NVLSTree
+    mode_oc: &mode_oc
+      name: mpi
+      proc_num: 4
+      node_num: all
+      mca: *mpi_mca
+      env:
+        <<: *sharp_env
+        NCCL_NVLS_ENABLE: '0'
+        NCCL_COLLNET_ENABLE: '1'
+        NCCL_ALGO: CollnetDirect
+    mode_od: &mode_od
+      name: mpi
+      proc_num: 4
+      node_num: all
+      mca: *mpi_mca
+      env:
+        <<: *sharp_env
+        NCCL_NVLS_ENABLE: '1'
+        NCCL_COLLNET_ENABLE: '1'
+        NCCL_ALGO: NVLS
+    nccl_param: &nccl_param
+      minbytes: 1M
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 5
+      iters: 50
+      ngpus: 1
+      in_place: true
+  benchmarks:
+    nccl-bw:sharp:allreduce:U-A: {timeout: 1800, modes: [*mode_ua], parameters: {<<: *nccl_param, operation: allreduce, data_type: half}}
+    nccl-bw:sharp:allreduce:U-B: {timeout: 1800, modes: [*mode_ub], parameters: {<<: *nccl_param, operation: allreduce, data_type: half}}
+    nccl-bw:sharp:reducescatter:U-A: {timeout: 1800, modes: [*mode_ua], parameters: {<<: *nccl_param, operation: reducescatter, data_type: half}}
+    nccl-bw:sharp:reducescatter:U-B: {timeout: 1800, modes: [*mode_ub], parameters: {<<: *nccl_param, operation: reducescatter, data_type: half}}
+    nccl-bw:sharp:allgather:U-A: {timeout: 1800, modes: [*mode_ua], parameters: {<<: *nccl_param, operation: allgather}}
+    nccl-bw:sharp:allgather:U-B: {timeout: 1800, modes: [*mode_ub], parameters: {<<: *nccl_param, operation: allgather}}
+    nccl-bw:sharp:allreduce:O-A: {timeout: 1800, modes: [*mode_oa], parameters: {<<: *nccl_param, operation: allreduce, data_type: half}}
+    nccl-bw:sharp:allreduce:O-B: {timeout: 1800, modes: [*mode_ob], parameters: {<<: *nccl_param, operation: allreduce, data_type: half}}
+    nccl-bw:sharp:allreduce:O-C: {timeout: 1800, modes: [*mode_oc], parameters: {<<: *nccl_param, operation: allreduce, data_type: half}}
+    nccl-bw:sharp:allreduce:O-D: {timeout: 1800, modes: [*mode_od], parameters: {<<: *nccl_param, operation: allreduce, data_type: half}}
+    nccl-bw:sharp:reducescatter:O-A: {timeout: 1800, modes: [*mode_oa], parameters: {<<: *nccl_param, operation: reducescatter, data_type: half}}
+    nccl-bw:sharp:reducescatter:O-B: {timeout: 1800, modes: [*mode_ob], parameters: {<<: *nccl_param, operation: reducescatter, data_type: half}}
+    nccl-bw:sharp:reducescatter:O-C: {timeout: 1800, modes: [*mode_oc], parameters: {<<: *nccl_param, operation: reducescatter, data_type: half}}
+    nccl-bw:sharp:reducescatter:O-D: {timeout: 1800, modes: [*mode_od], parameters: {<<: *nccl_param, operation: reducescatter, data_type: half}}
+    nccl-bw:sharp:allgather:O-A: {timeout: 1800, modes: [*mode_oa], parameters: {<<: *nccl_param, operation: allgather}}
+    nccl-bw:sharp:allgather:O-B: {timeout: 1800, modes: [*mode_ob], parameters: {<<: *nccl_param, operation: allgather}}
+    nccl-bw:sharp:allgather:O-C: {timeout: 1800, modes: [*mode_oc], parameters: {<<: *nccl_param, operation: allgather}}
+    nccl-bw:sharp:allgather:O-D: {timeout: 1800, modes: [*mode_od], parameters: {<<: *nccl_param, operation: allgather}}

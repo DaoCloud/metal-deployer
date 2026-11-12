@@ -1,0 +1,112 @@
+# SuperBench NVLink-domain config for GB300 NVL72: cross-tray collectives over MNNVL.
+#
+# Every host in the hosts file MUST be in the same NVLink domain (same rack), with the host IMEX
+# daemon running and the IMEX channel created (build-iso/scripts/imex-check.sh). The worker
+# container is started with --privileged, so /dev/nvidia-caps-imex-channels is visible.
+# NCCL_MNNVL_ENABLE=1 makes NCCL fail instead of silently falling back to IB, so a pass here means
+# the MNNVL path was used. Check the NCCL_DEBUG=INFO output for the actual transport as well.
+version: v0.13
+superbench:
+  enable:
+  - nccl-bw:bw:allreduce:mnnvl
+  - nccl-bw:bw:allreduce:mnnvl-nvls
+  - nccl-bw:bw:allgather:mnnvl
+  - nccl-bw:bw:reducescatter:mnnvl
+  - nccl-bw:bw:alltoall:mnnvl
+  - nccl-bw:bw:broadcast:mnnvl
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  var:
+    default_timeout: 600
+    mpi_mca: &mpi_mca
+      pml: ob1
+      btl: ^openib
+      btl_tcp_if_exclude: lo,docker0
+      coll_hcoll_enable: 0
+      plm_rsh_args: >-
+        "-F /root/.ssh/config -i /root/.ssh/key"
+    nccl_mnnvl_mode: &nccl_mnnvl_mode
+      name: mpi
+      proc_num: 4
+      node_num: all
+      env:
+        NCCL_DEBUG: INFO
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '0'
+        PATH: null
+        LD_LIBRARY_PATH: null
+        SB_MICRO_PATH: null
+        SB_WORKSPACE: null
+      mca: *mpi_mca
+    nccl_mnnvl_nvls_mode: &nccl_mnnvl_nvls_mode
+      name: mpi
+      proc_num: 4
+      node_num: all
+      env:
+        NCCL_DEBUG: INFO
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        PATH: null
+        LD_LIBRARY_PATH: null
+        SB_MICRO_PATH: null
+        SB_WORKSPACE: null
+      mca: *mpi_mca
+    nccl_param: &nccl_param
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+      in_place: true
+  benchmarks:
+    nccl-bw:bw:allreduce:mnnvl:
+      timeout: 900
+      modes:
+      - *nccl_mnnvl_mode
+      parameters:
+        <<: *nccl_param
+        operation: allreduce
+        data_type: half
+    # NVLink SHARP (NVLS) over the NVLink Switch trays; compare with the plain MNNVL allreduce above.
+    nccl-bw:bw:allreduce:mnnvl-nvls:
+      timeout: 900
+      modes:
+      - *nccl_mnnvl_nvls_mode
+      parameters:
+        <<: *nccl_param
+        operation: allreduce
+        data_type: half
+    nccl-bw:bw:allgather:mnnvl:
+      timeout: 900
+      modes:
+      - *nccl_mnnvl_mode
+      parameters:
+        <<: *nccl_param
+        operation: allgather
+    nccl-bw:bw:reducescatter:mnnvl:
+      timeout: 900
+      modes:
+      - *nccl_mnnvl_mode
+      parameters:
+        <<: *nccl_param
+        operation: reducescatter
+        data_type: half
+    nccl-bw:bw:alltoall:mnnvl:
+      timeout: 900
+      modes:
+      - *nccl_mnnvl_mode
+      parameters:
+        <<: *nccl_param
+        operation: alltoall
+        data_type: half
+    nccl-bw:bw:broadcast:mnnvl:
+      timeout: 900
+      modes:
+      - *nccl_mnnvl_mode
+      parameters:
+        <<: *nccl_param
+        operation: broadcast

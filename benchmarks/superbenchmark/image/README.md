@@ -5,7 +5,7 @@
 
 ## 镜像内容
 
-当前镜像定义位于 `image/Dockerfile`，基于 `python:3.11-slim` 构建，主要包含以下内容：
+当前镜像定义位于 `image/Dockerfile`，基于 `python:3.11-slim` 构建（可用构建参数 `BASE_IMAGE` 替换），同时提供 `linux/amd64` 和 `linux/arm64`（GB300 / Grace），主要包含以下内容：
 
 - **Superbenchmark 源码**
   - 构建时从 `https://github.com/microsoft/superbenchmark` 拉取源码。
@@ -74,6 +74,26 @@ docker build \
   --build-arg SUPERBENCH_REPO_URL=https://github.com/microsoft/superbenchmark \
   --build-arg SUPERBENCH_TAG=v0.12.0
 ```
+
+Docker Hub 不通时可替换基础镜像：
+
+```bash
+--build-arg BASE_IMAGE=docker.m.daocloud.io/library/python:3.11-slim
+```
+
+## 构建 arm64 镜像
+
+在仓库根目录执行（非 arm64 主机需已注册 QEMU binfmt，pip 安装在模拟下约 30–40 分钟）：
+
+```bash
+make build-sbcli-arm64
+# 或
+docker buildx build --platform linux/arm64 --load -t sbcli:arm64 benchmarks/superbenchmark/image
+```
+
+CI（`.github/workflows/call-build-image.yaml`）会同时构建 amd64 与 arm64 并推送为同一个多架构 tag。
+
+> 说明：sbcli 内的 `sb` CLI 为 v0.12.0。GB300 被测节点使用 SuperBench main 分支镜像（`docker.io/superbench/main:cuda13.0`）和 `config_gb300_*.yaml` 配置，见 `../README.md`。
 
 ## 构建结果验证
 

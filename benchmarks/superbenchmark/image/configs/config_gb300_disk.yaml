@@ -1,0 +1,39 @@
+# SuperBench disk config for GB300. DESTRUCTIVE: sequential and random WRITE tests overwrite the
+# target block devices. run-tests.sh only runs this file when --disk is given, and injects the
+# devices with: -C superbench.benchmarks.disk-benchmark.parameters.block_devices=[/dev/xxx]
+# Never point it at the system disk or a disk that holds data.
+version: v0.13
+superbench:
+  enable:
+  - disk-benchmark
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  benchmarks:
+    disk-benchmark:
+      timeout: 3600
+      modes:
+      - name: local
+        proc_num: 1
+        prefix: ''
+        parallel: false
+        env: {}
+      parameters:
+        block_devices: []
+        seq_read_ramp_time: 10
+        seq_read_runtime: 60
+        seq_read_iodepth: 64
+        seq_read_numjobs: 1
+        seq_write_ramp_time: 10
+        seq_write_runtime: 60
+        seq_write_iodepth: 64
+        seq_write_numjobs: 1
+        rand_read_ramp_time: 10
+        rand_read_runtime: 60
+        rand_read_iodepth: 64
+        rand_read_numjobs: 4
+        rand_write_ramp_time: 10
+        rand_write_runtime: 60
+        rand_write_iodepth: 64
+        rand_write_numjobs: 4
