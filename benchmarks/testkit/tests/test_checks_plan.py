@@ -27,14 +27,16 @@ class ChecksTest(unittest.TestCase):
         self.assertEqual(problems.errors, [])
         self.assertEqual(problems.warnings, [])
         self.assertEqual([i.id for i, _ in enabled_items(tests)],
-                         ["dcgm", "superbench.single_node", "superbench.pair", "superbench.rack", "imex",
-                          "superbench.nvl_domain", "sharp.scale_up", "moe.single", "moe.rack"])
+                         ["links", "dcgm", "superbench.single_node", "superbench.rack", "superbench.cross_rack", "imex", "nvlink.pairs",
+                          "nvlink.fabric", "superbench.nccl_node", "superbench.nvl_domain", "superbench.all",
+                          "moe.single", "moe.rack"])
 
     def errors(self):
         return load(self.ws)[2]
 
     def test_bad_selector_and_vars(self):
-        self.ws.edit("tests.yaml", "hosts: [gb300-r1-t01, gb300-r1-t02]", "hosts: [gb300-r1-t01, R7]")
+        self.ws.edit("tests.yaml", "    enabled: false\n    scope: group\n    hosts: [gb300-r1-t01, gb300-r1-t02]",
+                     "    enabled: true\n    scope: group\n    hosts: [gb300-r1-t01, R7]")
         self.ws.edit("tests.yaml", 'TOPK: "8"', 'TOPK: "{topk}"')
         errors = self.errors().errors
         self.assertIn("superbench.pair: 'R7' is not a host, rack, tag:<name> or all", errors)
@@ -46,13 +48,16 @@ class ChecksTest(unittest.TestCase):
 
     def test_sharp_runs_through_sbcli(self):
         cluster, tests, problems = load(self.ws)
-        item, cfg = [x for x in enabled_items(tests) if x[0].id == "sharp.scale_up"][0]
+        self.ws.edit("tests.yaml", "  scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM\n    enabled: false",
+                     "  scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM\n    enabled: true")
+        cluster, tests, problems = load(self.ws)
+        item, cfg = [x for x in enabled_items(tests) if x[0].id == "sharp.scale_out"][0]
         self.assertEqual(tests.image_for(item, cfg), "registry.local/metal-deployer/testkit:latest")
-        self.assertEqual((cfg["config"], cfg["cases"]), ("config_gb300_sharp.yaml", ["U-A", "U-B"]))
-        self.ws.edit("tests.yaml", "    cases: [U-A, U-B]", "    cases: [U-A, O-D]")
+        self.assertEqual((cfg["config"], cfg["cases"]), ("config_gb300_sharp.yaml", ["O-A", "O-B", "O-C", "O-D"]))
+        self.ws.edit("tests.yaml", "    cases: [O-A, O-B, O-C, O-D]", "    cases: [U-A, O-D]")
         self.ws.edit("tests.yaml", "    ops: [allreduce, reducescatter, allgather]", "    ops: [allreduce, alltoall]")
         errors = load(self.ws)[2].errors
-        self.assertTrue(any("cases ['O-D'] not in" in e for e in errors), errors)
+        self.assertTrue(any("cases ['U-A'] not in" in e for e in errors), errors)
         self.assertTrue(any("ops ['alltoall'] not in" in e for e in errors), errors)
 
     def test_runtime_and_scope(self):

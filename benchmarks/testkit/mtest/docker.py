@@ -105,6 +105,11 @@ class DockerOps:
     def host_run(self, host, command, timeout=300):
         return self._run(host, command, timeout=timeout)
 
+    def host_script(self, host, name, args, timeout=300):
+        """Run node_scripts/<name> (python3) on the host; returns its JSON output. Raises NodeError."""
+        from mtest.nodecmd import run_script
+        return run_script(self.remote, host, name, args, timeout=timeout)
+
     def exec_run(self, host, name, command, timeout):
         return self._run(host, "docker exec {} sh -c {}".format(q(name), q(command)), timeout=timeout)
 

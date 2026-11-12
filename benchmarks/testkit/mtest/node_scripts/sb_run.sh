@@ -8,6 +8,7 @@
 #      MTEST_SB_RULE        rule file name for "sb result summary"
 #      MTEST_SB_WORKER      worker image already present on every host (sb deploy --no-image-pull)
 #      MTEST_SB_INCLUDE / MTEST_SB_EXCLUDE   comma-separated benchmark names (empty: all enabled ones)
+#      MTEST_SB_OVERRIDES   space separated extra key=value config overrides
 # Exit: 0 when sb produced results (benchmark failures are judged by mtest), 2 otherwise.
 set -u
 OUT=/results/sb
@@ -35,8 +36,12 @@ print("[" + ",".join('"%s"' % b for b in sel) + "]" if (inc or exc) else "")
 EOF
 ) || exit 2
 OVERRIDE=()
-[ -n "$ENABLE" ] && OVERRIDE=(--config-override "superbench.enable=$ENABLE")
-echo "config $MTEST_SB_CONFIG ${ENABLE:+enable=$ENABLE}"
+VALUES=()
+[ -n "$ENABLE" ] && VALUES+=("superbench.enable=$ENABLE")
+# MTEST_SB_OVERRIDES: space separated key=value, e.g. the ib-traffic pairing file made by mtest.
+for v in ${MTEST_SB_OVERRIDES:-}; do VALUES+=("$v"); done
+[ ${#VALUES[@]} -gt 0 ] && OVERRIDE=(--config-override "${VALUES[@]}")
+echo "config $MTEST_SB_CONFIG ${VALUES[*]}"
 echo "hosts: $(grep -c ansible_host "$INV")"
 
 echo "== sb deploy"

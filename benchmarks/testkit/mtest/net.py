@@ -1,9 +1,11 @@
-"""S4: configure BF3 (mgmt, storage), IPoIB and the LOM pin routes with netplan, then verify.
+"""S4: configure the mgmt and storage ports, IPoIB and LOM policy routing with netplan, then verify.
 
-Per host: render /etc/netplan/60-mtest.yaml from cluster.yaml + S3 data, apply it behind a
-systemd rollback timer, reconnect over the LOM, run the critical checks (control route via
-LOM, default route, gateway ping) and only then cancel the rollback. After all hosts are
-done, the full checks (addresses, MTU, IB ports, pings to a peer in the same rack) run.
+Per host: render /etc/netplan/90-static-mgmt-storage.yaml (mgmt, storage, LOM policy routing) and
+90-static-compute.yaml (IPoIB) from cluster.yaml + S3 data, move the LOM default route of the
+existing LOM netplan file into the policy table, apply them behind a systemd rollback timer, reconnect over
+the LOM, run the critical checks (replies to the control machine leave via the LOM, default route,
+gateway ping) and only then cancel the rollback. After all hosts are done, the full checks
+(addresses, MTU, IB ports, pings to a peer in the same rack) run.
 """
 
 import difflib
@@ -15,6 +17,7 @@ import time
 
 import yaml
 
+from mtest import profiles
 from mtest.executor import pmap
 from mtest.nic import STRUCTURAL
 from mtest.nodecmd import NodeError, run_script
@@ -23,7 +26,8 @@ from mtest.state import HostLocks, StateStore, load_nic, new_run_id, now_iso, wr
 from mtest.util import dig
 
 ITEM = "network"
-OWN_FILE = "60-mtest.yaml"
+# mgmt + storage (+ the LOM policy routing) in one file, the compute rails in another.
+FILES = {"mgmt_storage": "90-static-mgmt-storage.yaml", "compute": "90-static-compute.yaml"}
 CRITICAL = ("route_control", "default_route", "ping:mgmt-gateway", "iface:mgmt")
 
 
@@ -85,9 +89,11 @@ def _guid(value):
 
 
 def _devices(nic):
-    """PCI address -> discovered port (BF3 ports and CX8 rails) from the S3 record."""
+    """PCI address -> discovered port (BF3 ports, plain NICs and CX8 rails) from the S3 record."""
     raw = nic.get("raw") or {}
     out = {}
+    for p in raw.get("nics") or []:
+        out[p["pci"]] = dict(p, kind="nic")
     for p in (raw.get("bf3") or {}).get("pfs") or []:
         out[p["pci"]] = dict(p, kind="bf3")
     for r in raw.get("rails") or nic.get("rails") or []:
@@ -100,7 +106,7 @@ def resolve_ports(host, nic, network):
 
     Returns {"mgmt", "storage": {netdev, mac, pci} or None, "rails": [{rail, netdev, ibdev, pci, addr, mtu}],
     "mgmt_gateway", "storage_gateway", "storage_routes", "lom_gateway"}; raises NetError when the plan
-    and the host do not agree.
+    and the host do not agree. mgmt is None when it is not configured by S4 (no address, or device lom).
     """
     plan = host.plan
     require = network.get("require_pci", True)
@@ -108,13 +114,19 @@ def resolve_ports(host, nic, network):
     found_bf3 = ", ".join(sorted(k for k, v in devs.items() if v["kind"] == "bf3")) or "none"
     found_cx8 = ", ".join(sorted(k for k, v in devs.items() if v["kind"] == "cx8")) or "none"
 
-    def bf3_port(role, fallback_if, fallback_mac):
+    def role_port(role, fallback_if, fallback_mac):
+        kind = profiles.device(network, role)
         pci = plan.get(role + "_pci")
         if pci:
             d = devs.get(pci)
-            if d is None or d["kind"] != "bf3":
+            if kind == "bf3" and (d is None or d["kind"] != "bf3"):
                 raise NetError("{}_pci {} is not a BF3 port on this host (BF3 ports: {})".format(role, pci, found_bf3))
+            if kind == "nic" and (d is None or d["kind"] == "cx8"):
+                raise NetError("{}_pci {} is not a network port found on this host by S3{}".format(
+                    role, pci, "" if d is None else " (it is a compute rail)"))
             port = {"netdev": d.get("netdev", ""), "mac": (d.get("mac") or "").lower(), "pci": pci}
+        elif kind == "nic":
+            raise NetError("{}_pci is empty in the IP plan (network.{}.device is nic)".format(role, role))
         elif require:
             raise NetError("{}_pci is empty in the IP plan (network.require_pci is true)".format(role))
         else:
@@ -127,8 +139,9 @@ def resolve_ports(host, nic, network):
                                                                                  port["mac"], want))
         return port
 
-    out = {"mgmt": bf3_port("mgmt", "mgmt_if", "mgmt_mac") if host.mgmt is not None else None,
-           "storage": bf3_port("storage", "storage_if", "storage_mac") if host.storage is not None else None,
+    out = {"mgmt": role_port("mgmt", "mgmt_if", "mgmt_mac")
+           if host.mgmt is not None and profiles.device(network, "mgmt") != "lom" else None,
+           "storage": role_port("storage", "storage_if", "storage_mac") if host.storage is not None else None,
            "rails": []}
     ib_mtu = plan.get("ib_mtu") or dig(network, "ipoib.mtu")
     pcis = plan.get("ib_pci") or []
@@ -161,48 +174,107 @@ def resolve_ports(host, nic, network):
     out["mgmt_gateway"] = plan.get("mgmt_gateway") or mgmt.get("gateway")
     out["storage_gateway"] = plan.get("storage_gateway") or storage.get("gateway")
     out["storage_routes"] = plan.get("storage_routes") or storage.get("routes") or []
-    out["lom_gateway"] = (nic.get("lom") or {}).get("gateway") or plan.get("lom_gateway")
+    out["lom_gateway"] = plan.get("lom_gateway") or (nic.get("lom") or {}).get("gateway")
     return out
 
 
 def _mgmt_default(host, network, ports):
-    return bool((network.get("mgmt") or {}).get("default_route", True) and host.mgmt is not None
+    """True when S4 moves the default route from the LOM to the mgmt port."""
+    return bool((network.get("mgmt") or {}).get("default_route", True) and ports["mgmt"] is not None
                 and ports["mgmt_gateway"])
 
 
-def pin_routes(network, nic, ports, mgmt_default):
-    """lom.pin_routes, or when none are configured and the default route leaves the LOM, a host
-    route to the control machine so this ssh session keeps working."""
-    pins = [str(n) for n in ((network.get("lom") or {}).get("pin_routes") or [])]
-    if pins or not mgmt_default:
-        return pins
-    lom = nic.get("lom") or {}
-    ctl = lom.get("control_ip")
-    if not ctl:
-        return []
+def _is_default(route):
+    return str((route or {}).get("to", "")) in ("default", "0.0.0.0/0") and not (route or {}).get("table")
+
+
+def move_lom_default(text, lom_id, table):
+    """New text of the netplan file that configures the LOM, with its main-table default route
+    (gateway4 or a "to: default" route) moved into the policy table; None when there is none.
+    YAML comments of the file are not kept."""
+    data = yaml.safe_load(text)
+    entry = data["network"]["ethernets"][lom_id]
+    moved = False
+    routes = []
+    if entry.get("gateway4"):
+        routes.append({"to": "default", "via": entry.pop("gateway4"), "table": table})
+        moved = True
+    for r in entry.get("routes") or []:
+        if _is_default(r):
+            r = dict(r, to="default", table=table)
+            moved = True
+        routes.append(r)
+    if not moved:
+        return None
+    entry["routes"] = routes
+    head = "# mtest (S4) moved the default route of {} into routing table {}.\n".format(lom_id, table)
+    return head + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
+
+def lom_policy(nic, network, ports, host_files):
+    """(entry merged into the LOM id, {file: new text}) when the default route moves to mgmt.
+
+    Replies from the LOM address use policy table lom.table (LOM subnet + default via the LOM
+    gateway), so every peer that reaches the host over the LOM, the control machine included,
+    keeps working. A default route the LOM file puts in the main table is moved into that table:
+    netplan cannot remove it from another file.
+    """
+    info = nic.get("lom") or {}
+    name = info.get("if") or "?"
+    fname, lom_id, entry = find_lom_id(host_files, info)
+    if not lom_id:
+        raise NetError("the LOM port {} is not configured by netplan; refusing to change routes".format(name))
+    entry = entry or {}
+    if entry.get("dhcp4"):
+        raise NetError("{}: the LOM entry {} uses DHCP; mtest expects a static LOM".format(fname, lom_id))
     try:
-        if lom.get("prefix") and ipaddress.ip_address(ctl) in ipaddress.ip_interface(lom["prefix"]).network:
-            return []
+        iface = ipaddress.ip_interface(info.get("prefix") or "")
     except ValueError:
-        pass
-    return ["{}/32".format(ctl)]
+        raise NetError("the address of the LOM port {} is not known; run mtest nic discover again".format(name))
+    if str(iface) not in [str(a) for a in entry.get("addresses") or []]:
+        raise NetError("{}: the LOM entry {} does not configure the address {} mtest connects to".format(
+            fname, lom_id, iface))
+    cfg = network.get("lom") or {}
+    table, priority = int(cfg.get("table", 100)), int(cfg.get("priority", 100))
+    new_text = move_lom_default(host_files[fname], lom_id, table)
+    edits = {fname: new_text} if new_text is not None else {}
+    lom_routes = yaml.safe_load(new_text)["network"]["ethernets"][lom_id].get("routes") if new_text else \
+        entry.get("routes")
+    routes = [{"to": str(iface.network), "scope": "link", "table": table}]
+    if not any(str(r.get("to")) in ("default", "0.0.0.0/0") and r.get("table") == table for r in lom_routes or []):
+        gw = ports["lom_gateway"]
+        if not gw:
+            raise NetError("no gateway known for the LOM port {} (S3 or lom_gateway)".format(name))
+        if ipaddress.ip_address(gw) not in iface.network:
+            raise NetError("LOM gateway {} is not in the LOM subnet {}".format(gw, iface.network))
+        routes.append({"to": "default", "via": gw, "table": table})
+    e = {"routes": routes,
+         "routing-policy": [{"from": "{}/32".format(iface.ip), "table": table, "priority": priority}]}
+    return e, edits
 
 
-def render(host, nic, network, lom_id, lom_dhcp=True):
-    """Text of 60-mtest.yaml for one host.
+def _doc(eth):
+    head = "# Written by mtest (S4). Changes here are overwritten by 'mtest net apply'.\n"
+    return head + yaml.safe_dump({"network": {"version": 2, "ethernets": eth}}, sort_keys=False,
+                                 default_flow_style=False)
 
-    The LOM entry reuses the id of the existing netplan entry (lom_id) so netplan merges the
-    pin routes into it; a second entry for the same port would be ignored by networkd.
+
+def render(host, nic, network, host_files):
+    """(own, edits) for one host: {file: text} of the mtest netplan files (a network with nothing to
+    set has no file), and {file: new text} of other netplan files to change (the LOM default route).
+
+    host_files = the other netplan files on the host. The LOM settings reuse the id of the existing
+    LOM entry so netplan merges them into it; a second entry for the same port would be ignored.
     """
     ports = resolve_ports(host, nic, network)
     mgmt = network.get("mgmt") or {}
     storage = network.get("storage") or {}
-    eth = {}
     by_name = network.get("match_by", "mac") == "name"
 
     def match(port):
         return {"name": port["netdev"]} if by_name else {"macaddress": port["mac"]}
 
+    own, edits, eth = {}, {}, {}
     mgmt_default = _mgmt_default(host, network, ports)
     if ports["mgmt"]:
         e = {"match": match(ports["mgmt"]), "dhcp4": False, "dhcp6": False, "addresses": [str(host.mgmt)]}
@@ -224,6 +296,12 @@ def render(host, nic, network, lom_id, lom_dhcp=True):
         if ports["storage_routes"]:
             e["routes"] = _routes(ports["storage_routes"], ports["storage_gateway"])
         eth["mtest-storage"] = e
+    if mgmt_default:
+        lom_entry, edits = lom_policy(nic, network, ports, host_files)
+        eth[find_lom_id(host_files, nic.get("lom") or {})[1]] = lom_entry
+    if eth:
+        own[FILES["mgmt_storage"]] = _doc(eth)
+    eth = {}
     for r in ports["rails"]:
         e = {"dhcp4": False, "dhcp6": False}
         if r["addr"] is not None:
@@ -233,28 +311,9 @@ def render(host, nic, network, lom_id, lom_dhcp=True):
         if r["mtu"]:
             e["mtu"] = int(r["mtu"])
         eth[r["netdev"]] = e
-    pins = pin_routes(network, nic, ports, mgmt_default)
-    if pins or (lom_dhcp and mgmt_default):
-        lom = nic.get("lom") or {}
-        if not lom_id:
-            raise NetError("the LOM port {} is not configured by netplan; refusing to change routes".format(
-                lom.get("if") or "?"))
-        e = {}
-        if pins:
-            if not ports["lom_gateway"]:
-                raise NetError("no gateway known for the LOM port {} (S3 or lom_gateway)".format(lom.get("if")))
-            e["routes"] = [{"to": n, "via": ports["lom_gateway"]} for n in pins]
-        if lom_dhcp and mgmt_default:
-            # Keep the LOM's DHCP address but drop its default route (and DNS/NTP when mgmt has DNS).
-            overrides = {"use-routes": False}
-            if mgmt.get("dns"):
-                overrides.update({"use-dns": False, "use-ntp": False})
-            e["dhcp4-overrides"] = overrides
-        if e:
-            eth[lom_id] = e
-    doc = {"network": {"version": 2, "ethernets": eth}}
-    head = "# Written by mtest (S4). Changes here are overwritten by 'mtest net apply'.\n"
-    return head + yaml.safe_dump(doc, sort_keys=False, default_flow_style=False)
+    if eth:
+        own[FILES["compute"]] = _doc(eth)
+    return own, edits
 
 
 def link_type_actions(nic, network):
@@ -281,6 +340,8 @@ def verify_args(host, nic, network, peer=None, critical_only=False):
             "ib": [], "pings": []}
     if _mgmt_default(host, network, ports):
         args["default_if"] = ports["mgmt"]["netdev"]
+        # Replies to the control machine are routed by the source address (LOM policy table).
+        args["control_src"] = lom.get("ip")
     if ports["mgmt"]:
         args["ifaces"].append({"label": "mgmt", "name": ports["mgmt"]["netdev"], "addr": str(host.mgmt),
                                "mtu": mgmt.get("mtu")})
@@ -342,6 +403,11 @@ class HostNet:
         self.current = None
         self.checks = []
         self.reboot_needed = False
+        self.edits = {}             # other netplan files to rewrite: {name: new text}
+        self.originals = {}         # their current text
+
+    def changed(self):
+        return self.content != self.current or bool(self.edits)
 
     def fail(self, status, reason):
         if self.status is None:
@@ -392,12 +458,12 @@ class NetRun:
         found = conflicts(files, [p["mac"] for p in bf3], names)
         if found:
             return hn.fail("error", "; ".join(found))
-        _, lom_id, lom_entry = find_lom_id(files, hn.nic.get("lom") or {})
         try:
-            hn.content = render(hn.host, hn.nic, self.network, lom_id, bool((lom_entry or {}).get("dhcp4")))
+            hn.content, hn.edits = render(hn.host, hn.nic, self.network, files)
         except NetError as e:
             return hn.fail("error", str(e))
-        hn.current = info.get("own")
+        hn.current = info.get("own") or {}
+        hn.originals = {name: files[name] for name in hn.edits}
         to_set, pending = link_type_actions(hn.nic, self.network)
         if to_set:
             hn.actions.append("set LINK_TYPE_P1=IB on " + ", ".join(r["pci"] for r in to_set))
@@ -406,14 +472,25 @@ class NetRun:
             hn.actions.append("reboot to apply the IB link type ({})".format(
                 ", ".join("rail{}".format(r["rail"]) for r in to_set + pending)))
         hn.to_set = to_set
-        if hn.content != hn.current:
-            hn.actions.append("write /etc/netplan/{} and netplan apply (rollback after {}s)".format(
-                OWN_FILE, self.rollback))
+        if hn.changed():
+            changed = sorted(n for n in set(hn.content) | set(hn.current) if hn.content.get(n) != hn.current.get(n))
+            changed += sorted(hn.edits)
+            if hn.edits:
+                hn.actions.append("move the LOM default route in {} into table {}".format(
+                    ", ".join(sorted(hn.edits)), dig(self.network, "lom.table", 100)))
+            hn.actions.append("write /etc/netplan/{{{}}} and netplan apply (rollback after {}s)".format(
+                ",".join(changed), self.rollback))
 
     def diff(self, hn):
-        old = (hn.current or "").splitlines(True)
-        new = (hn.content or "").splitlines(True)
-        return "".join(difflib.unified_diff(old, new, "a/" + OWN_FILE, "b/" + OWN_FILE))
+        out = []
+        old_files = dict(hn.current or {}, **hn.originals)
+        new_files = dict(hn.content or {}, **hn.edits)
+        for name in sorted(set(old_files) | set(new_files)):
+            old, new = old_files.get(name), new_files.get(name)
+            out.append("".join(difflib.unified_diff((old or "").splitlines(True), (new or "").splitlines(True),
+                                                    "a/" + name if old is not None else "/dev/null",
+                                                    "b/" + name if new is not None else "/dev/null")))
+        return "".join(out)
 
     # ---------- apply ----------
     def apply_one(self, hn):
@@ -426,10 +503,12 @@ class NetRun:
                 return hn.fail("error", "mlxconfig: " + str(e))
             if not res.get("ok"):
                 return hn.fail("error", "mlxconfig set failed: {}".format(res.get("devices")))
-        if hn.content == hn.current:
+        if not hn.changed():
             return
+        edits = {n: {"old": hn.originals[n], "new": t} for n, t in hn.edits.items()}
         try:
-            res = self.node(hn, {"action": "apply", "content": hn.content, "rollback_seconds": self.rollback})
+            res = self.node(hn, {"action": "apply", "files": hn.content, "edits": edits,
+                                 "rollback_seconds": self.rollback})
         except NodeError as e:
             return hn.fail("error", "apply: " + str(e))
         if not res.get("ok"):
@@ -471,7 +550,8 @@ class NetRun:
                 info = self.node(hn, {"action": "inspect"}, timeout=30)
             except NodeError:
                 continue
-            if not info.get("rollback_active") and info.get("own") == hn.current:
+            if not info.get("rollback_active") and (info.get("own") or {}) == hn.current and \
+                    all(info["files"].get(n) == t for n, t in hn.originals.items()):
                 hn.reason += " (old configuration restored)"
                 return
         hn.reason += " (rollback not confirmed: check the host console)"
@@ -523,7 +603,7 @@ class NetRun:
                 self.out("ok    {:<20} no change".format(hn.host.name))
             else:
                 self.out("plan  {:<20} {}".format(hn.host.name, "; ".join(hn.actions)))
-                if self.dry_run and hn.content != hn.current:
+                if self.dry_run and hn.changed():
                     self.out(self.diff(hn))
         if self.dry_run:
             return 0 if all(hn.status is None for hn in self.items) else 1
@@ -573,9 +653,9 @@ class NetRun:
                        "started_at": started, "finished_at": now_iso(), "checks": checks,
                        "metrics": {"actions": {"value": "; ".join(hn.actions) or "no change"}}}
             write_json(os.path.join(run_dir, hn.host.name, ITEM, "summary.json"), summary)
-            if hn.content:
-                with open(os.path.join(run_dir, hn.host.name, ITEM, OWN_FILE), "w") as f:
-                    f.write(hn.content)
+            for name, text in sorted(dict(hn.content or {}, **hn.edits).items()):
+                with open(os.path.join(run_dir, hn.host.name, ITEM, name), "w") as f:
+                    f.write(text)
             entries[hn.host.name] = {ITEM: {"status": hn.status, "reason": hn.reason, "run_id": run_id,
                                             "group": hn.host.name, "rank": 0, "group_result": False,
                                             "finished_at": summary["finished_at"]}}

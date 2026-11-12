@@ -100,10 +100,14 @@ class ClusterTest(unittest.TestCase):
         self.ws.edit("cluster.yaml", "  ipoib: {mtu: 4092, pkey: \"0x7fff\"}", "  ipoib: {mtu: 4092, pkey: \"0x8001\"}")
         self.ws.edit("cluster.yaml", "  match_by: mac ", "  match_by: pci ")
         self.ws.edit("cluster.yaml", "  rollback_seconds: 120", "  rollback_seconds: 5")
-        self.ws.edit("cluster.yaml", "pin_routes: [10.252.10.0/24]", "pin_routes: [10.252.10.0/33]")
+        self.ws.edit("cluster.yaml", "routes: [10.30.0.0/16]", "routes: [10.30.0.0/33]")
+        self.ws.edit("cluster.yaml", "    table: 100", "    table: 254")
+        self.ws.edit("cluster.yaml", "  profile: gb300", "  profile: b200")
+        self.ws.edit("cluster.yaml", "mgmt: {device: bf3", "mgmt: {device: dpu")
         _, problems = self.load()
         for frag in ("only the default partition", "match_by must be", "rollback_seconds must be",
-                     "'10.252.10.0/33' is not a valid subnet"):
+                     "'10.30.0.0/33' is not a valid subnet", "network.lom.table must be", "network.profile must be",
+                     "network.mgmt.device must be bf3 or nic or lom"):
             self.assertTrue(any(frag in e for e in problems.errors), frag)
 
     def test_unquoted_pci(self):

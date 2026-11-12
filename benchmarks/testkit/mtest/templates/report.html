@@ -25,7 +25,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
 tr.foot td{background:#f6f8fa;color:var(--mut);font-size:12px}
 .st{display:inline-block;padding:0 7px;border-radius:10px;font-size:12px;font-weight:600}
 .st.pass{background:var(--passbg);color:var(--pass)}.st.fail{background:var(--failbg);color:var(--fail)}
-.st.skip,.st.stopped,.st.cancelled{background:var(--skipbg);color:var(--skip)}.st.blocked,.st.incomplete{background:var(--blkbg);color:var(--blk)}
+.st.skip,.st.stopped,.st.cancelled{background:var(--skipbg);color:var(--skip)}.st.blocked,.st.incomplete,.st.warn{background:var(--blkbg);color:var(--blk)}
 .st.error,.st.timeout{background:var(--failbg);color:var(--fail)}.st.none{color:var(--mut)}
 .d0{}.dlo1{background:#fff8c5}.dlo2{background:#ffd8b5}.dlo3{background:#ffcecb;font-weight:600}.dhi1{background:#ddf4ff}
 .matrix{display:grid;gap:3px}.mcell{border-radius:4px;padding:6px 2px;text-align:center;font-size:11px;cursor:pointer;border:1px solid transparent;min-width:44px}
@@ -59,8 +59,8 @@ svg text{font-size:11px;fill:#57606a}
 const D = __DATA__;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const ST = {pass:"通过", fail:"失败", error:"错误", timeout:"超时", stopped:"被停止", blocked:"被占用", cancelled:"已取消",
-            skip:"跳过", incomplete:"未完成", none:"—", running:"运行中", aborted:"中断", empty:"未执行"};
+const ST = {pass:"通过", fail:"失败", error:"错误", timeout:"超时", stopped:"被停止", blocked:"阻断", cancelled:"已取消",
+            skip:"跳过", warn:"告警", incomplete:"未完成", none:"—", running:"运行中", aborted:"中断", empty:"未执行"};
 const BAD = ["fail", "error", "timeout"];
 const st = s => `<span class="st ${esc(s || 'none')}">${ST[s || 'none'] || esc(s)}</span>`;
 const fmt = (v, u) => v == null || v === "" ? "—" : (typeof v === "number" ? v.toLocaleString("en-US", {maximumFractionDigits: Math.abs(v) < 100 ? 2 : 0}) : esc(v)) + (u ? ` <span class="mut small">${esc(u)}</span>` : "");

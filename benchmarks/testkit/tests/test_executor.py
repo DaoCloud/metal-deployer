@@ -135,7 +135,21 @@ class FakeOps:
         for key, (rc, out) in (self.b(host, "host_out") or {}).items():
             if key in command:
                 return Result(rc, out, "")
+        if command == "hostname":
+            return Result(0, self.b(host, "os_name", host.name) + "\n")
         return Result(1, "", "systemctl failed") if self.b(host, "host_run_fails") else Result(0)
+
+    def host_script(self, host, name, args, timeout=300):
+        """behave[host]["snaps"]: list of snapshots returned in turn (the last one repeats)."""
+        from mtest.nodecmd import NodeError
+        self.calls.append(("host_script", host.name, name))
+        if self.b(host, "script_fails"):
+            raise NodeError("{} failed (exit 1): python3 not found".format(name))
+        with self.lock:
+            snaps = self.behave.setdefault(host.name, {}).get("snaps")
+            if snaps:
+                return snaps.pop(0) if len(snaps) > 1 else snaps[0]
+        return {"smi": {}, "rc": {}, "ib": {}}
 
     def remove_by_label(self, host, label):
         self.calls.append(("remove_by_label", host.name, label))

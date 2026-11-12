@@ -83,7 +83,7 @@ class ParserTest(unittest.TestCase):
         self.assertEqual(r["tests"]["lat_cpu-to-cpu"]["unit"], "us")
         self.assertTrue(r["tests"]["lat_cpu-to-cpu"]["lower_better"])
         self.assertEqual(r["tests"]["bw_gpu-to-gpu"]["values"]["gb300-r1-t01|gb300-r1-t03"][2], -1)
-        self.assertEqual(extra["tables"][0]["rows"][0], ["nccl-bw:bw:allreduce:ib", 8589934592, 64.0])
+        self.assertEqual(extra["tables"][0]["rows"][0], ["nccl-bw:bw:allreduce:ib", 8589934592, 64.0, "—", "—"])
         self.assertEqual(extra["charts"][0]["x"], [1048576, 2097152, 8589934592])
         self.assertNotIn("own", per_host[HOSTS[0]])
 

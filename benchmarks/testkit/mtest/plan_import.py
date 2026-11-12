@@ -2,8 +2,9 @@
 
 Only the hosts section is rewritten; ssh, network and comments stay. tags, env, skip and
 gpus of hosts already in cluster.yaml are kept. Column names follow the GB300 IP plan
-(hostname, rack, tray, sn, lom_ip, bf3_mgt_ip, bf3_mgt_pci, ib_rail1_pci, ...); the
-cluster.yaml field names (name, ssh, mgmt, mgmt_pci, ...) work as well.
+(hostname, rack, tray, sn, lom_ip, bf3_mgt_ip, bf3_mgt_pci, ib_rail1_pci, ...); hardware-neutral
+names (mgmt_ip, storage_ip, rail1_pci, ...) and the cluster.yaml field names (name, ssh, mgmt,
+mgmt_pci, ...) work as well.
 """
 
 import csv
@@ -20,31 +21,26 @@ from mtest.util import ConfigError, Problems, load_yaml
 COLUMNS = {
     "hostname": "name", "name": "name", "rack": "rack", "tray": "tray", "sn": "serial", "serial": "serial",
     "lom_ip": "ssh", "ssh": "ssh", "lom_gateway": "lom_gateway",
-    "bf3_mgt_ip": "mgmt", "mgmt": "mgmt", "bf3_mgt_gateway": "mgmt_gateway", "mgmt_gateway": "mgmt_gateway",
+    "bf3_mgt_ip": "mgmt", "mgmt_ip": "mgmt", "mgmt": "mgmt", "bf3_mgt_gateway": "mgmt_gateway",
+    "mgmt_gateway": "mgmt_gateway",
     "bf3_mgt_pci": "mgmt_pci", "mgmt_pci": "mgmt_pci", "bf3_mgt_mac": "mgmt_mac", "mgmt_mac": "mgmt_mac",
-    "bf3_storage_ip": "storage", "storage": "storage", "bf3_storage_gateway": "storage_gateway",
+    "bf3_storage_ip": "storage", "storage_ip": "storage", "storage": "storage", "bf3_storage_gateway": "storage_gateway",
     "storage_gateway": "storage_gateway", "bf3_storage_routes": "storage_routes", "storage_routes": "storage_routes",
     "bf3_storage_pci": "storage_pci", "storage_pci": "storage_pci", "bf3_storage_mac": "storage_mac",
     "storage_mac": "storage_mac", "ib_mtu": "ib_mtu",
 }
-RAIL_RE = re.compile(r"^ib_rail(\d+)_(pci|guid|ip)$")
+RAIL_RE = re.compile(r"^(?:ib_)?rail(\d+)_(pci|guid|ip)$")
 KEEP = ("tags", "env", "skip", "gpus")
 ORDER = ("name", "rack", "tray", "serial", "ssh", "mgmt", "mgmt_gateway", "mgmt_pci", "mgmt_mac", "storage",
          "storage_gateway", "storage_routes", "storage_pci", "storage_mac", "lom_gateway", "ib", "ib_pci", "ib_guid",
          "ib_mtu") + KEEP
 
 NEW_NETWORK = """network:
-  expect:
-    gpus: 4
-    cx8: {count: 4, pci_id: "15b3:1023", link_layer: InfiniBand, rate_gbps: 800}
-    bf3: {pf_count: 2, pci_id: "15b3:a2dc", mode: nic}
-    compare_golden: true
+  profile: gb300                  # gb300: BF3 port 0/1 = mgmt/storage, 4x CX8 on IB; custom: see mtest init
   ib_mode: {enforce: true, reboot: ask}      # reboot: ask / auto / never
-  lom:
-    pin_routes: []                # control-node subnets kept on the LOM; empty: a /32 route to the control node
+  lom: {table: 100, priority: 100}           # policy routing table for replies from the LOM address
   # Gateways and storage routes come from the IP plan (per host). BF3 MTU is left unchanged.
-  mgmt: {port: 0, default_route: true}
-  storage: {port: 1}
+  mgmt: {default_route: true}
   ipoib: {pkey: "0x7fff"}         # IPoIB MTU per host: ib_mtu column
   require_pci: true               # every port is found by the PCI address in the plan
   match_by: mac

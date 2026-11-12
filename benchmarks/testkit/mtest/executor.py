@@ -198,13 +198,101 @@ class GroupRunner:
                         self.set(h, "cancelled", "run cancelled before start")
                 elif not self.prepare_group():
                     pass
-                elif self.start():
-                    self.monitor()
-                    self.collect()
+                else:
+                    self.snapshot_counters()
+                    if self.job.mode == "host":
+                        self.run_host()
+                    elif self.start():
+                        self.monitor()
+                        self.collect()
+                    self.check_counters()
         finally:
             self.cleanup()
             self.ctx.locks.release(names)
         return self.finish(started, t0)
+
+    # ---------- link error counters ----------
+    def _counters(self, host, since=None):
+        from mtest.nodecmd import NodeError
+        try:
+            return self.ops.host_script(host, "link_counters.py", {"since": since} if since else {},
+                                        timeout=180), None
+        except NodeError as e:
+            return None, str(e)
+
+    def snapshot_counters(self):
+        """Read every host's NVLink/IB error counters before the item starts (job.counters set)."""
+        self.counters_before = {}
+        if not self.job.counters:
+            return
+        hosts = [n.host for n in self.nodes]
+        for host, (snap, err) in zip(hosts, pmap(self._counters, hosts, self.ctx.parallel)):
+            if snap is not None:
+                self.counters_before[host.name] = snap
+            else:
+                self.ctx.log("  {}: link counters not read before {}: {}".format(host.name, self.item.id, err))
+
+    def check_counters(self):
+        """Read the counters again and fail hosts whose error counters went up or whose links went down."""
+        if not self.job.counters or not getattr(self, "counters_before", None) or self.ctx.cancelled():
+            return
+        from mtest.parsers import links
+        from mtest.state import load_nic
+        cfg = self.job.counters
+        hosts = [self.hosts[h].host for h in self.counters_before]
+
+        def after(host):
+            return self._counters(host, since=self.counters_before[host.name].get("time"))
+        for host, (snap, err) in zip(hosts, pmap(after, hosts, self.ctx.parallel)):
+            h = host.name
+            before = self.counters_before[h]
+            path = os.path.join(self.ctx.local_dir(h, self.item.id), "summary.json")
+            summary = read_json(path) or {}
+            if snap is None:
+                summary.setdefault("checks", {})["link_errors"] = {"result": "skip", "reason": "not read: " + err[:200]}
+                write_json(path, summary)
+                continue
+            d = links.delta(before, snap, cfg)
+            write_json(os.path.join(self.ctx.local_dir(h, self.item.id), "raw", "link-counters.json"),
+                       {"before": before, "after": snap, "delta": d})
+            checks, metrics, problems = links.delta_checks(d, links.rail_names(load_nic(self.ctx.tests.results_dir, h)))
+            warn = cfg.get("action") == "warn"
+            if warn:
+                for c in checks.values():
+                    if c["result"] == "fail":
+                        c["result"] = "warn"
+            summary.setdefault("checks", {}).update(checks)
+            summary.setdefault("metrics", {}).update(metrics)
+            write_json(path, summary)
+            if problems and warn:
+                self.ctx.log("  {}: {} (warning only): {}".format(h, self.item.id, "; ".join(problems)[:300]))
+            elif problems:
+                reason = "; ".join(problems)
+                cur = self.result.get(h)
+                if cur is None or cur["status"] in ("pass", "stopped"):
+                    self.result[h] = {"status": "fail", "reason": reason, "rc": (cur or {}).get("rc")}
+                else:
+                    self.result[h] = dict(cur, reason=(cur["reason"] + "; " if cur["reason"] else "") + reason)
+                self.host_fault.add(h)
+                self.first_failed = self.first_failed or h
+
+    # ---------- host mode ----------
+    def run_host(self):
+        """Host-mode items: job.host_task runs on the hosts over ssh (no containers), then the parser."""
+        master = self.nodes[0].host
+        try:
+            status, reason = self.job.host_task(self)
+        except Exception as e:      # a bug in a host task must not lose the run
+            status, reason = "error", "host task failed: {}: {}".format(type(e).__name__, e)
+        if self.ctx.cancelled():
+            for h in self.hosts:
+                self.set(h, "cancelled", "run cancelled")
+            return
+        self.set(master.name, status, reason)
+        if status != "pass":
+            self.group_reason = self.group_reason or reason
+        if self.job.parse_group:
+            self.parse_group(master.name)
 
     def preflight(self):
         specs = self.by_host(self.job.containers)
@@ -286,6 +374,14 @@ class GroupRunner:
                     res = self.ops.host_run(node.host, command, timeout=300)
                     self.save_raw(node.host.name, name, (res.out or "") + (res.err or ""))
             pmap(one, self.nodes, self.ctx.parallel)
+        if ok and self.job.group_prepare:
+            try:
+                err = self.job.group_prepare(self)
+            except Exception as e:      # a bug in a prepare hook must not lose the run
+                err = "{}: {}".format(type(e).__name__, e)
+            if err:
+                ok = False
+                self.group_reason = "group preparation failed: " + err
         if not ok:
             for h in self.hosts:
                 self.set(h, "error", self.group_reason)
@@ -615,8 +711,83 @@ class GroupRunner:
         return group
 
 
-def run_items(cluster, tests, selectors, only, exclude, ops, force=False, out=print, run_id=None):
-    """Run enabled items in order. Returns (run_id, exit_code)."""
+def counters_cfg(tests, item):
+    """Link counter settings for an item, or None. tests.yaml "counters": snapshot before and after
+    every item in counters.items (default: the L1-L5 items); links (L0) reads them itself.
+    "action" is fail for items in counters.items or layers L1-L3, warn for L4-L5 (counters.warn_layers)."""
+    from mtest.parsers.links import COUNTER_DEFAULTS
+    cfg = tests.data.get("counters") or {}
+    if cfg.get("enabled", True) is False or item.mode == "cli" or item.id == "links":
+        return None
+    selectors = cfg.get("items")
+    warn_layers = cfg.get("warn_layers", ["L4", "L5"])
+    if selectors is None:
+        if item.layer not in ("L1", "L2", "L3", "L4", "L5"):
+            return None
+        action = "warn" if item.layer in warn_layers else "fail"
+    elif any(matches(item.id, s) for s in selectors):
+        action = "fail"
+    else:
+        return None
+    out = {k: cfg.get(k, v) for k, v in COUNTER_DEFAULTS.items()}
+    out["action"] = action
+    return out
+
+
+def record_blocked(ctx, item, group, reason):
+    """Record a group that mtest did not start (incomplete rack after earlier failures)."""
+    now = now_iso()
+    entries = {}
+    for rank, h in enumerate(group.hosts):
+        entries[h.name] = {item.id: {"status": "blocked", "reason": reason, "run_id": ctx.run_id, "group": group.id,
+                                     "rank": rank, "group_result": True, "finished_at": now}}
+        write_json(os.path.join(ctx.local_dir(h.name, item.id), "summary.json"),
+                   {"item": item.id, "hostname": h.name, "run_id": ctx.run_id, "group": group.id, "rank": rank,
+                    "status": "blocked", "reason": reason, "group_result": True, "metrics": {}, "checks": {},
+                    "started_at": now, "finished_at": now})
+    g = {"item": item.id, "group": group.id, "mode": item.mode, "status": "blocked", "reason": reason,
+         "first_failed": None, "hosts": [h.name for h in group.hosts], "master_port": None, "started_at": now,
+         "finished_at": now, "seconds": 0, "run_id": ctx.run_id}
+    write_json(os.path.join(ctx.run_dir, "_groups", item.id, group.id, "summary.json"), g)
+    ctx.state.update(entries, (item.id, group.id, g))
+    return {k: g[k] for k in ("status", "reason", "first_failed", "hosts", "seconds", "master_port")}
+
+
+def incomplete_racks(cluster, plan, bad):
+    """{rack group id: reason} for rack-scope groups that lost hosts after earlier failures."""
+    out = {}
+    if plan.cfg.get("scope", "node") != "rack":
+        return out
+    for g in plan.groups:
+        lost = [h.name for h in cluster.rack_hosts(g.id) if h.name in bad]
+        if lost:
+            out[g.id] = "rack {} incomplete: {} left out after earlier failures ({}); fix them or use --force".format(
+                g.id, len(lost), "; ".join("{}: {}".format(h, bad[h]) for h in lost[:3]))
+    return out
+
+
+def gate_report(ctx, item, status):
+    """Log why a gated item stopped the run and how to continue."""
+    entry = ctx.record["items"].get(item.id) or {}
+    ctx.log("gate: {} {} -- later items are not run. Find the cause first:".format(item.id, status))
+    for gid, g in sorted((entry.get("groups") or {}).items()):
+        if g.get("status") == "pass":
+            continue
+        bad = sorted(h for h, s in (g.get("host_status") or {}).items() if s != "pass")
+        ctx.log("  [{}] {} {}{}".format(gid, g.get("status"), (g.get("reason") or "")[:300],
+                                        "  hosts: " + ", ".join(bad[:8]) if bad else ""))
+    ctx.log("  details: mtest status; mtest logs {} --item {}; mtest report".format(ctx.run_id, item.id))
+    ctx.log("  after fixing: mtest run --from {}   (or --no-gate to continue anyway)".format(item.id))
+
+
+def run_items(cluster, tests, selectors, only, exclude, ops, force=False, out=print, run_id=None,
+              start_from=None, gate=True):
+    """Run enabled items in order. Returns (run_id, exit_code).
+
+    start_from skips the enabled items before that item; gate stops after a gated item that did
+    not pass (tests.yaml "gate"); --force also runs hosts excluded by earlier failures.
+    """
+    from mtest.items import full_rack_of, gate_of
     from mtest.state import new_run_id
     run_id = run_id or new_run_id(tests.results_dir)
     ctx = RunContext(cluster, tests, run_id, ops, out)
@@ -625,13 +796,19 @@ def run_items(cluster, tests, selectors, only, exclude, ops, force=False, out=pr
     ctx.log("run {}  results: {}".format(run_id, ctx.run_dir))
     rt = tests.runtime
     overall = []
+    started = start_from is None
     try:
         for item, cfg in enabled_items(tests):
+            if not started:
+                if not matches(item.id, start_from):
+                    continue
+                started = True
             if selectors and not any(matches(item.id, s) for s in selectors):
                 continue
             if ctx.cancelled():
                 break
             drop = {}
+            bad = {}
             if rt.get("stop_on_failure") and not force:
                 bad = excluded_hosts(ctx.state.load(), item.id)
                 for host, reason in sorted(bad.items()):
@@ -640,12 +817,20 @@ def run_items(cluster, tests, selectors, only, exclude, ops, force=False, out=pr
                 drop = {item.id: set(bad)}
             plans = build_plan(cluster, tests, [item.id], only=only, exclude=exclude, run_id=run_id, drop=drop)
             plan = next((p for p in plans if p.item.id == item.id), None)
-            if plan is None or not plan.groups:
+            blocked = {}
+            if plan is not None and full_rack_of(item, cfg) and not force:
+                blocked = incomplete_racks(cluster, plan, bad)
+            if plan is None or (not plan.groups and not blocked):
                 ctx.log("{}: no hosts to run".format(item.id))
                 continue
-            status = run_item(ctx, plan)
+            status = run_item(ctx, plan, blocked)
             if status:
                 overall.append(status)
+            if status and status not in ("pass", "not_implemented") and gate and gate_of(item, cfg):
+                ctx.record["gated_at"] = {"item": item.id, "status": status}
+                ctx.save_record()
+                gate_report(ctx, item, status)
+                break
     except KeyboardInterrupt:
         ctx.cancel.set()
         ctx.log("interrupted; stopping containers ...")
@@ -664,8 +849,13 @@ def run_items(cluster, tests, selectors, only, exclude, ops, force=False, out=pr
     return run_id, 130 if final == "cancelled" else 1
 
 
-def run_item(ctx, plan):
+def run_item(ctx, plan, blocked=None):
     item = plan.item
+    blocked = blocked or {}
+    blocked_groups = [g for g in plan.groups if g.id in blocked]
+    if blocked:
+        plan.groups = [g for g in plan.groups if g.id not in blocked]
+        plan.nodes = [n for n in plan.nodes if n.group.id not in blocked]
     by_group = {}
     for n in plan.nodes:
         by_group.setdefault(n.group.id, []).append(n)
@@ -687,12 +877,21 @@ def run_item(ctx, plan):
         ctx.record["items"][item.id] = {"status": "not_implemented", "reason": str(e)}
         ctx.save_record()
         return None
+    counters = counters_cfg(ctx.tests, item)
+    for _, _, j in jobs:
+        j.counters = counters
     scope = plan.cfg.get("scope", "node")
     workers = ctx.parallel if scope == "node" or ctx.tests.runtime["group_order"] == "parallel" else 1
-    ctx.log("{}: {} host(s) in {} group(s), scope {}, mode {}".format(
-        item.id, len(plan.nodes), len(plan.groups), scope, jobs[0][2].mode))
+    ctx.log("{}: {} host(s) in {} group(s), scope {}, mode {}{}".format(
+        item.id, len(plan.nodes), len(plan.groups), scope, jobs[0][2].mode if jobs else item.mode,
+        ", link counters checked" if counters and jobs else ""))
     entry = {"status": "running", "groups": {}, "hosts": [n.host.name for n in plan.nodes]}
     ctx.record["items"][item.id] = entry
+    for g in blocked_groups:
+        ctx.log("  {} [{}] blocked  {}".format(item.id, g.id, blocked[g.id]))
+        entry["groups"][g.id] = dict(record_blocked(ctx, item, g, blocked[g.id]), host_status={
+            h.name: "blocked" for h in g.hosts})
+        entry["hosts"] += [h.name for h in g.hosts]
     ctx.save_record()
 
     def one(job):

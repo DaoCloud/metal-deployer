@@ -3,6 +3,10 @@
 mtest sends this file over ssh stdin; MTEST_ARGS (base64 JSON) holds {"action": ..., ...}.
 Prints one JSON object.
 
+mtest owns 90-static-mgmt-storage.yaml and 90-static-compute.yaml; apply writes the given set,
+removes the other mtest file, and may rewrite other netplan files ("edits", the LOM default
+route) only when they still have the content mtest planned against.
+
 apply never leaves a host without a way back: before "netplan apply" it copies
 /etc/netplan to a backup directory and starts a systemd timer that restores the backup
 and re-applies it after rollback_seconds. "confirm" stops that timer once mtest has
@@ -13,11 +17,12 @@ import base64
 import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 
 NETPLAN = "/etc/netplan"
-OWN = os.path.join(NETPLAN, "60-mtest.yaml")
+OWN_RE = re.compile(r"^90-static-(mgmt-storage|compute)\.yaml$")
 STATE = "/var/lib/mtest"
 BACKUP = os.path.join(STATE, "netplan-backup")
 # Whoever creates this directory first (rollback or confirm) wins; the other backs off.
@@ -47,11 +52,11 @@ def rollback_active():
 
 
 def inspect(args):
-    files = {}
+    files, own = {}, {}
     for path in sorted(glob.glob(os.path.join(NETPLAN, "*.yaml"))):
-        if path != OWN:
-            files[os.path.basename(path)] = read(path, "")
-    return {"files": files, "own": read(OWN), "rollback_active": rollback_active(),
+        name = os.path.basename(path)
+        (own if OWN_RE.match(name) else files)[name] = read(path, "")
+    return {"files": files, "own": own, "rollback_active": rollback_active(),
             "netplan": shutil.which("netplan") is not None, "systemd_run": shutil.which("systemd-run") is not None}
 
 
@@ -68,16 +73,30 @@ def apply(args):
         return {"ok": False, "error": "netplan and systemd-run are required"}
     if rollback_active():
         return {"ok": False, "error": "a previous mtest network change is still waiting for confirmation"}
+    new = args["files"]
+    edits = args.get("edits") or {}
+    bad = [n for n in new if not OWN_RE.match(n)] + \
+        [n for n in edits if OWN_RE.match(n) or os.path.basename(n) != n or not n.endswith(".yaml")]
+    if bad:
+        return {"ok": False, "error": "unexpected file name: " + ", ".join(bad)}
+    stale = [n for n, e in edits.items() if read(os.path.join(NETPLAN, n)) != e["old"]]
+    if stale:
+        return {"ok": False, "error": "changed since mtest read it: " + ", ".join(stale)}
     shutil.rmtree(BACKUP, ignore_errors=True)
     shutil.rmtree(CLAIM, ignore_errors=True)
     os.makedirs(BACKUP, mode=0o700)
     for path in glob.glob(os.path.join(NETPLAN, "*.yaml")):
         shutil.copy2(path, BACKUP)
-    tmp = OWN + ".new"
-    with open(tmp, "w") as f:
-        f.write(args["content"])
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, OWN)
+    for path in glob.glob(os.path.join(NETPLAN, "*.yaml")):
+        name = os.path.basename(path)
+        if OWN_RE.match(name) and name not in new:
+            os.unlink(path)
+    for name, text in sorted(list(new.items()) + [(n, e["new"]) for n, e in edits.items()]):
+        path = os.path.join(NETPLAN, name)
+        with open(path + ".new", "w") as f:
+            f.write(text)
+        os.chmod(path + ".new", 0o600)
+        os.replace(path + ".new", path)
     rc, out = run(["netplan", "generate"])
     if rc != 0:
         run(restore_cmd(apply=False), shell=True)
@@ -140,10 +159,11 @@ def verify(args):
     sysfs = args.get("sysfs") or "/sys"
     ctl = args.get("control_ip")
     if ctl:
-        r = ip_json("route", "get", ctl)
+        src = args.get("control_src")
+        r = ip_json("route", "get", ctl, "from", src) if src else ip_json("route", "get", ctl)
         dev = r[0].get("dev") if r else ""
         check(res, "route_control", dev == args["lom_if"],
-              "{} via {} (expected {})".format(ctl, dev or "?", args["lom_if"]))
+              "{}{} via {} (expected {})".format(ctl, " from " + src if src else "", dev or "?", args["lom_if"]))
     if args.get("default_if"):
         r = [x for x in ip_json("route", "show", "default") if x.get("dst") == "default"]
         devs = [x.get("dev") for x in r]

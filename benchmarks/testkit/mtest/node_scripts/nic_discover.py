@@ -2,6 +2,7 @@
 
 mtest sends this file over ssh stdin. Arguments come in MTEST_ARGS (base64 JSON):
   cx8_ids, bf3_ids   PCI device IDs (hex, without vendor) of compute NICs and BlueField-3
+  nic_pcis           PCI addresses of other NICs to report (mgmt / storage on a plain NIC)
   mlxconfig          query firmware settings with mlxconfig when it is installed
   sysfs, fake_gpus   test hooks: another /sys root, and GPU PCI addresses instead of nvidia-smi
 """
@@ -124,8 +125,23 @@ def devices(ids):
     return out
 
 
+def nics(addrs):
+    """Network devices at the given PCI addresses, any vendor."""
+    out = []
+    for addr in addrs:
+        base = os.path.join(PCI, addr)
+        if not os.path.isdir(base):
+            continue
+        netdevs = listdir(os.path.join(base, "net"))
+        out.append({"pci": addr, "vendor": read(os.path.join(base, "vendor")).lower().replace("0x", ""),
+                    "device": read(os.path.join(base, "device")).lower().replace("0x", ""),
+                    "netdev": netdevs[0] if netdevs else "",
+                    "mac": read(os.path.join(ROOT, "class/net", netdevs[0], "address")) if netdevs else ""})
+    return out
+
+
 def lom():
-    """The interface that carries this ssh session, and its default gateway."""
+    """The interface that carries this ssh session, and its gateway."""
     conn = os.environ.get("SSH_CONNECTION", "").split()
     client, server = (conn[0], conn[2]) if len(conn) >= 4 else ("", "")
     info = {"control_ip": client, "ip": server, "if": "", "mac": "", "gateway": ""}
@@ -137,8 +153,9 @@ def lom():
                     info["if"] = link["ifname"]
                     info["mac"] = link.get("address", "")
                     info["prefix"] = "{}/{}".format(server, a.get("prefixlen"))
-    # The default route via the LOM, or (after S4 dropped it) the gateway of another LOM route.
-    for cmd in (["ip", "-j", "route", "show", "default"], ["ip", "-j", "route", "show", "dev", info["if"] or "lo"]):
+    # The default route via the LOM, or (after S4 moved it to the LOM policy table) any LOM route with a gateway.
+    for cmd in (["ip", "-j", "route", "show", "default"],
+                ["ip", "-j", "route", "show", "table", "all", "dev", info["if"] or "lo"]):
         rc, out = run(cmd)
         if rc != 0:
             continue
@@ -185,8 +202,8 @@ def discover(args):
     if bf3 and use_mlx:
         bf3_info["mode"], bf3_info["mode_next"] = mlx_query(bf3[0]["pci"], "INTERNAL_CPU_OFFLOAD_ENGINE")
 
-    return {"gpus": gpu_list, "rails": rails, "bf3": bf3_info, "lom": lom(),
-            "mlxconfig": use_mlx, "hostname": os.uname()[1]}
+    return {"gpus": gpu_list, "rails": rails, "bf3": bf3_info, "nics": nics(args.get("nic_pcis") or []),
+            "lom": lom(), "mlxconfig": use_mlx, "hostname": os.uname()[1]}
 
 
 if __name__ == "__main__":

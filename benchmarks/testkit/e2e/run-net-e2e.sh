@@ -2,11 +2,12 @@
 # End-to-end test of S3 (mtest nic) and S4 (mtest net) without GPU hosts.
 #
 # Starts three hosts as systemd containers (netplan, systemd-networkd, sshd) on seven
-# docker networks: LOM (ssh, addresses from a dnsmasq DHCP server like on real hosts),
-# mgmt, storage and four "rails". A fake /sys inside each
+# docker networks: LOM (ssh; a static netplan file with a default route, as delivered
+# before mtest takes over), mgmt, storage and four "rails". A fake /sys inside each
 # host maps the veth interfaces to BlueField-3 and ConnectX-8 PCI devices. mtest then
-# discovers NICs, previews, applies and verifies netplan over real ssh, and a bad
-# gateway checks that the automatic rollback restores the previous configuration.
+# discovers NICs, previews, applies and verifies netplan over real ssh (the LOM default
+# route moves into a policy table), and a bad gateway checks that the automatic rollback
+# restores the previous configuration.
 #
 # Usage: benchmarks/testkit/e2e/run-net-e2e.sh [--keep]
 # Env:   UBUNTU_IMAGE (default ubuntu:24.04; e.g. docker.m.daocloud.io/library/ubuntu:24.04)
@@ -35,7 +36,7 @@ check() {
 }
 cleanup() {
     if [ "$KEEP" = 1 ]; then log "kept hosts and $ROOT"; return; fi
-    docker rm -f "${HOSTS[@]}" mtest-net-dhcp >/dev/null 2>&1 || true
+    docker rm -f "${HOSTS[@]}" >/dev/null 2>&1 || true
     for n in "${NETS[@]}"; do docker network rm "mtest-net-${n%%:*}" >/dev/null 2>&1 || true; done
     rm -rf "$ROOT"
 }
@@ -52,9 +53,9 @@ cluster() {   # cluster FILE [BAD_GW_HOST] [BAD_PCI_HOST]: base file + "mtest im
     cat > "$ROOT/$1" <<EOF
 ssh: {user: root, key: $ROOT/id_ed25519, connect_timeout: 5, parallel: 8}
 network:
-  expect: {cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}
+  expect: {gpus: 0, cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}
   ib_mode: {enforce: true, reboot: never}
-  lom: {pin_routes: [10.99.0.0/16]}
+  lom: {table: 100, priority: 100}
   mgmt: {port: 0, default_route: true}
   storage: {port: 1}
   ipoib: {pkey: "0x7fff"}
@@ -77,15 +78,10 @@ EOF
 setup() {
     log "building image"
     docker build -q --build-arg "BASE=${UBUNTU_IMAGE:-ubuntu:24.04}" -t "$IMAGE" -f "$HERE/sdnode.Dockerfile" "$HERE" >/dev/null
-    docker build -q -t mtest-e2e-dhcp -f "$HERE/dhcp.Dockerfile" "$HERE" >/dev/null
     cleanup
     mkdir -p "$ROOT"
     ssh-keygen -q -t ed25519 -N "" -f "$ROOT/id_ed25519"
     for n in "${NETS[@]}"; do docker network create --subnet "$P.${n#*:}.0/24" "mtest-net-${n%%:*}" >/dev/null; done
-    local leases=()
-    for i in 0 1 2; do leases+=("--dhcp-host=02:42:00:00:0a:1$((1 + i)),$P.10.$((11 + i))"); done
-    docker run -d --name mtest-net-dhcp --network mtest-net-lom --ip "$P.10.2" --cap-add NET_ADMIN mtest-e2e-dhcp \
-        "--dhcp-range=$P.10.100,$P.10.200,255.255.255.0,1h" "--dhcp-option=3,$P.10.1" "${leases[@]}" >/dev/null
     for i in 0 1 2; do
         local h=${HOSTS[$i]} n=$((11 + i))
         docker run -d --name "$h" --hostname "$h" --privileged --cgroupns=host -e container=docker \
@@ -97,14 +93,13 @@ setup() {
         docker cp "$ROOT/id_ed25519.pub" "$h:/root/.ssh/authorized_keys"
         docker cp "$HERE/fake_sysfs.py" "$h:/root/fake_sysfs.py"
         on "$h" "chown root:root /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
-        # The installed system: LOM on DHCP, managed by networkd since boot.
-        on "$h" "printf 'network:\n  version: 2\n  ethernets:\n    lom:\n      match: {name: eth0}\n      dhcp4: true\n' > /etc/netplan/50-lom.yaml && chmod 600 /etc/netplan/50-lom.yaml"
+        # The delivered system: a static LOM with its default route, managed by networkd.
+        on "$h" "printf 'network:\n  version: 2\n  ethernets:\n    lom:\n      match: {name: eth0}\n      addresses: [$P.10.$n/24]\n      routes:\n        - {to: default, via: $P.10.1}\n' > /etc/netplan/50-lom.yaml && chmod 600 /etc/netplan/50-lom.yaml"
     done
     sleep 3
     for h in "${HOSTS[@]}"; do
-        on "$h" "netplan apply 2>/dev/null; for _ in \$(seq 30); do ip route show default proto dhcp | grep -q . && break; sleep 1; done"
         # Docker's own default route was added before networkd ran; a booted host would not have it.
-        on "$h" "ip route del default via $P.10.1 dev eth0 proto boot 2>/dev/null; ip route show default | grep -v 'proto dhcp' | while read -r r; do ip route del \$r; done; true"
+        on "$h" "ip route show default | while read -r r; do ip route del \$r; done; netplan apply 2>/dev/null; for _ in \$(seq 30); do ip route show default proto static | grep -q . && break; sleep 1; done"
     done
     for h in "${HOSTS[@]}"; do on "$h" "sed -i 's/172\.28\./$P./g' /root/fake_sysfs.py && python3 /root/fake_sysfs.py /fake-sys" >/dev/null; done
     printf 'images: {sb_worker: "x"}\nruntime: {results_dir: ./runs}\n' > "$ROOT/tests.yaml"
@@ -127,7 +122,7 @@ out=$(mtest cluster.yaml nic discover 2>&1) && rc=0 || rc=$?
 check "discover exits 0" [ "$rc" = 0 ]
 check "mgmt port found" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "d['mgmt_if']")" = eth1 ]
 check "4 rails in PCI order" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "','.join(d['ib_devs'])")" = mlx5_0,mlx5_1,mlx5_2,mlx5_3 ]
-check "LOM gateway found (DHCP)" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
+check "LOM gateway found" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
 check "golden match" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['golden_match']['result']")" = pass ]
 check "plan PCI found on host" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['plan_pci']['result']")" = pass ]
 out=$(mtest cluster.yaml nic show)
@@ -137,7 +132,8 @@ log "2. net apply --dry-run"
 out=$(mtest cluster.yaml net apply --dry-run 2>&1) && rc=0 || rc=$?
 check "dry-run exits 0" [ "$rc" = 0 ]
 check "dry-run shows the netplan diff" grep -q "+    mtest-mgmt:" <<<"$out"
-check "dry-run changes nothing" on gb300-r1-t01 "[ ! -e /etc/netplan/60-mtest.yaml ]"
+check "dry-run changes nothing" on gb300-r1-t01 "! ls /etc/netplan/90-static-* 2>/dev/null && ! grep -q table /etc/netplan/50-lom.yaml"
+check "dry-run shows the LOM file change" grep -q "^+++ b/50-lom.yaml" <<<"$out"
 
 log "3. net apply"
 mtest cluster.yaml net apply >"$ROOT/apply.log" 2>&1 && rc=0 || rc=$?
@@ -145,8 +141,16 @@ cat "$ROOT/apply.log" | sed 's/^/     /' | tail -4
 check "apply exits 0" [ "$rc" = 0 ]
 check "every host passed" [ "$(state gb300-r1-t01 network)$(state gb300-r1-t02 network)$(state gb300-r2-t01 network)" = passpasspass ]
 check "default route via mgmt only" [ "$(on gb300-r1-t02 "ip route show default")" = "default via $P.20.1 dev eth1 proto static " ]
-check "LOM pin route merged into the LOM entry" on gb300-r1-t02 "ip route show 10.99.0.0/16 | grep -q 'via $P.10.1 dev eth0'"
-check "LOM keeps its DHCP address" on gb300-r1-t02 "ip -4 addr show eth0 | grep -q 'inet $P.10.12/24.*dynamic'"
+check "mgmt+storage and compute files" [ "$(on gb300-r1-t01 "cd /etc/netplan && echo 90-*")" = \
+    "90-static-compute.yaml 90-static-mgmt-storage.yaml" ]
+check "LOM default route moved into table 100 in its own file" on gb300-r1-t02 "grep -q 'table: 100' /etc/netplan/50-lom.yaml"
+check "LOM address kept" on gb300-r1-t02 "ip -4 addr show eth0 | grep -q 'inet $P.10.12/24'"
+check "policy rule for the LOM address" on gb300-r1-t02 "ip rule show | grep -q 'from $P.10.12 lookup 100'"
+check "LOM table has its default route" on gb300-r1-t02 "ip route show table 100 | grep -q 'default via $P.10.1 dev eth0'"
+check "any network answered from the LOM address leaves via the LOM" \
+    [ "$(on gb300-r1-t02 "ip -j route get 10.99.1.1 from $P.10.12" | json /dev/stdin "d[0]['dev']")" = eth0 ]
+check "other traffic follows the mgmt default route" \
+    [ "$(on gb300-r1-t02 "ip -j route get 10.99.1.1" | json /dev/stdin "d[0]['dev']")" = eth1 ]
 check "BF3 MTU unchanged, IB MTU from plan" [ "$(on gb300-r2-t01 "cat /sys/class/net/eth1/mtu /sys/class/net/eth2/mtu /sys/class/net/eth6/mtu" | tr '\n' ' ')" = "1500 1500 1300 " ]
 check "storage route from plan" on gb300-r2-t01 "ip route show 10.98.0.0/16 | grep -q 'via $P.30.1 dev eth2'"
 check "rollback timer stopped" on gb300-r1-t01 "! systemctl is-active --quiet mtest-net-rollback.timer"
@@ -154,21 +158,21 @@ check "peer pings recorded" grep -q '"ping:ib3-peer"' "$ROOT/runs/$(ls "$ROOT/ru
 
 log "4. nic discover + net apply again (idempotent)"
 mtest cluster.yaml nic discover >/dev/null 2>&1 || true
-check "LOM gateway still known after S4 removed the LOM default route" \
+check "LOM gateway still known after S4 moved it to the LOM policy table" \
     [ "$(json "$ROOT/runs/nic/gb300-r1-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
 out=$(mtest cluster.yaml net apply 2>&1) && rc=0 || rc=$?
 check "second apply exits 0" [ "$rc" = 0 ]
 check "reports no change" [ "$(grep -c 'no change' <<<"$out")" = 3 ]
 
 log "5. bad gateway -> automatic rollback"
-before=$(on gb300-r2-t01 "md5sum /etc/netplan/60-mtest.yaml")
+before=$(on gb300-r2-t01 "cat /etc/netplan/*.yaml | md5sum")
 start=$(date +%s)
 mtest bad-gw.yaml net apply --hosts gb300-r2-t01 >"$ROOT/rollback.log" 2>&1 && rc=0 || rc=$?
 took=$(( $(date +%s) - start ))
 check "apply exits 1" [ "$rc" = 1 ]
 check "status is fail with rollback reason" grep -q "rolled back" "$ROOT/rollback.log"
 check "old configuration restored" grep -q "old configuration restored" "$ROOT/rollback.log"
-check "file content restored" [ "$(on gb300-r2-t01 "md5sum /etc/netplan/60-mtest.yaml")" = "$before" ]
+check "file content restored" [ "$(on gb300-r2-t01 "cat /etc/netplan/*.yaml | md5sum")" = "$before" ]
 check "default route back to the good gateway" [ "$(on gb300-r2-t01 "ip route show default")" = "default via $P.20.1 dev eth1 proto static " ]
 check "finished within rollback window (${took}s < 120s)" [ "$took" -lt 120 ]
 

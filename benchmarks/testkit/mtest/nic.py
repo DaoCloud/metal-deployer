@@ -2,6 +2,7 @@
 
 import os
 
+from mtest import profiles
 from mtest.executor import pmap
 from mtest.nodecmd import NodeError, run_script
 from mtest.ssh import Remote
@@ -18,11 +19,23 @@ def _ids(value, default):
 
 
 def summarize(raw, network):
-    """Turn the node report into the stored record: rails, BF3 ports, LOM, mgmt/storage netdevs."""
-    mgmt_port = int(dig(network, "mgmt.port", 0) or 0)
-    storage_port = int(dig(network, "storage.port", 1) or 1)
+    """Turn the node report into the stored record: rails, BF3 ports, LOM, mgmt/storage netdevs.
+
+    mgmt/storage on a BF3 come from network.<role>.port here; on a plain NIC they are filled in by
+    apply_plan from the plan PCI; mgmt on the LOM is the LOM interface.
+    """
     pfs = (raw.get("bf3") or {}).get("pfs") or []
     pf = lambda i: pfs[i] if i < len(pfs) else {}
+
+    def role_port(role, default):
+        kind = profiles.device(network, role)
+        if kind == "bf3":
+            return pf(int(dig(network, role + ".port", default) or default))
+        if kind == "lom":
+            lom = raw.get("lom") or {}
+            return {"netdev": lom.get("if", ""), "mac": lom.get("mac", "")}
+        return {}
+    mgmt, storage = role_port("mgmt", 0), role_port("storage", 1)
     rails = []
     for r in raw.get("rails", []):
         rails.append({"rail": r["rail"], "gpu": r.get("gpu"), "ibdev": r.get("ibdev", ""), "netdev": r.get("netdev", ""),
@@ -32,8 +45,8 @@ def summarize(raw, network):
                       "mac": r.get("mac", "")})
     bf3 = raw.get("bf3") or {}
     return {
-        "mgmt_if": pf(mgmt_port).get("netdev", ""), "mgmt_mac": pf(mgmt_port).get("mac", ""),
-        "storage_if": pf(storage_port).get("netdev", ""), "storage_mac": pf(storage_port).get("mac", ""),
+        "mgmt_if": mgmt.get("netdev", ""), "mgmt_mac": mgmt.get("mac", ""),
+        "storage_if": storage.get("netdev", ""), "storage_mac": storage.get("mac", ""),
         "ib_devs": [r["ibdev"] for r in rails if r["ibdev"]],
         "ipoib_ifs": [r["netdev"] for r in rails],
         "rails": rails,
@@ -113,24 +126,35 @@ def check(rec, network, golden=None):
     return out
 
 
-def apply_plan(rec, host):
+def apply_plan(rec, host, network=None):
     """Use the PCI addresses of the IP plan: pick the mgmt/storage ports by PCI and check that every
     planned PCI address exists. Returns the plan_pci check, or None when the plan has no PCI."""
     plan = host.plan
-    pfs = {p["pci"]: p for p in ((rec.get("raw") or {}).get("bf3") or {}).get("pfs") or []}
+    raw = rec.get("raw") or {}
+    pools = {"bf3": {p["pci"]: p for p in (raw.get("bf3") or {}).get("pfs") or []},
+             "nic": {p["pci"]: p for p in raw.get("nics") or []}}
     rails = {r["pci"]: r for r in rec["rails"]}
     problems = []
     used = False
     for role in ("mgmt", "storage"):
+        kind = profiles.device(network, role)
+        if kind == "lom":
+            continue
         pci = plan.get(role + "_pci")
         if not pci:
+            if kind == "nic" and getattr(host, role, None) is not None:
+                used = True
+                problems.append("{}_pci is empty (network.{}.device is nic)".format(role, role))
             continue
         used = True
-        if pci in pfs:
-            rec[role + "_if"] = pfs[pci].get("netdev", "")
-            rec[role + "_mac"] = pfs[pci].get("mac", "")
+        pool = pools[kind]
+        if pci in pool:
+            rec[role + "_if"] = pool[pci].get("netdev", "")
+            rec[role + "_mac"] = pool[pci].get("mac", "")
+        elif kind == "bf3":
+            problems.append("{}_pci {} not found (BF3: {})".format(role, pci, ", ".join(sorted(pool)) or "none"))
         else:
-            problems.append("{}_pci {} not found (BF3: {})".format(role, pci, ", ".join(sorted(pfs)) or "none"))
+            problems.append("{}_pci {} not found".format(role, pci))
     for i, pci in enumerate(plan.get("ib_pci") or []):
         if not pci:
             continue
@@ -166,10 +190,12 @@ def discover(cluster, tests, hosts, out=print):
               "items": {ITEM: {"status": "running", "hosts": names, "groups": {}}}}
     write_json(os.path.join(run_dir, "run.json"), record)
     args = {"cx8_ids": _ids(dig(exp, "cx8.pci_id"), "1023"), "bf3_ids": _ids(dig(exp, "bf3.pci_id"), "a2dc")}
+    nic_roles = [r for r in ("mgmt", "storage") if profiles.device(network, r) == "nic"]
 
     def one(host):
+        host_args = dict(args, nic_pcis=[host.plan[r + "_pci"] for r in nic_roles if host.plan.get(r + "_pci")])
         try:
-            return host, summarize(run_script(remote, host, "nic_discover.py", args), network), None
+            return host, summarize(run_script(remote, host, "nic_discover.py", host_args), network), None
         except NodeError as e:
             return host, None, str(e)
 
@@ -192,7 +218,7 @@ def discover(cluster, tests, hosts, out=print):
             if not rec["lom"].get("gateway") and (old.get("lom") or {}).get("gateway"):
                 rec["lom"]["gateway"] = old["lom"]["gateway"]
             ref = golden if golden is not None and host.name != golden_host.name else None
-            plan_check = apply_plan(rec, host)
+            plan_check = apply_plan(rec, host, network)
             checks = check(rec, network, ref)
             if plan_check:
                 checks["plan_pci"] = plan_check

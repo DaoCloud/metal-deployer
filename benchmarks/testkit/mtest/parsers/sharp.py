@@ -1,6 +1,6 @@
-"""S7a SHARP: SuperBench nccl-bw:sharp:<op>:<case> results -> per-case busbw, comparisons, NCCL log evidence.
+"""S7a IB SHARP: SuperBench nccl-bw:sharp:<op>:<case> results -> per-case busbw, comparisons, NCCL log evidence.
 
-Comparisons are shown, not judged (no baselines): U-B/U-A, O-B/O-A, O-D/O-B, O-D/O-C at the largest
+Comparisons are shown, not judged (no baselines): O-B/O-A, O-D/O-B, O-D/O-C, O-C/O-A at the largest
 message size. A case fails only when its benchmark fails (return code), e.g. when a forced NCCL_ALGO
 cannot be used.
 """
@@ -12,7 +12,7 @@ import re
 from mtest.parsers import superbench
 
 BENCH_RE = re.compile(r"^nccl-bw:sharp:(?P<op>[a-z]+):(?P<case>[A-Z]-[A-Z])$")
-RATIOS = [("U-B", "U-A"), ("O-B", "O-A"), ("O-D", "O-B"), ("O-D", "O-C"), ("O-C", "O-A")]
+RATIOS = [("O-B", "O-A"), ("O-D", "O-B"), ("O-D", "O-C"), ("O-C", "O-A")]
 EVIDENCE = re.compile(r"NCCL (INFO|WARN).*(NVLS|CollNet|SHARP|Sharp|NET/|plugin|Algo|algorithm)", re.I)
 
 
@@ -55,8 +55,8 @@ def evidence(run_dir, bench, limit=12):
     return lines[:limit]
 
 
-def parse_group(local_dir, mapping, cfg=None):
-    per_host, extra = superbench.parse_group(local_dir, mapping, own=False, cfg=cfg)
+def parse_group(local_dir, mapping, cfg=None, rails=None):
+    per_host, extra = superbench.parse_group(local_dir, mapping, own=False, cfg=cfg, rails=rails)
     if extra.get("status") == "error" and not per_host:
         return per_host, extra
     data = superbench.read_summary(os.path.join(local_dir, "sb", "run", "results-summary.jsonl"))

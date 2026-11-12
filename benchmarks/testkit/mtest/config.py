@@ -4,7 +4,7 @@ import ipaddress
 import os
 import re
 
-from mtest import scaffold
+from mtest import profiles, scaffold
 from mtest.util import ConfigError, Problems, deep_merge, dig, env_str, load_yaml, natural_key, unknown_keys
 
 SSH_DEFAULTS = {"user": "root", "key": None, "port": 22, "parallel": 24, "connect_timeout": 10, "options": []}
@@ -30,8 +30,16 @@ MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 PLAN_FIELDS = ("mgmt_gateway", "storage_gateway", "storage_routes", "lom_gateway", "mgmt_pci", "storage_pci",
                "mgmt_mac", "storage_mac", "ib_pci", "ib_guid", "ib_mtu")
 CLUSTER_FREE = {"network.expect", "network.verify", "defaults.env"}
-TESTS_FREE = {"images", "common_env", "sharp.common.env", "sharp.scale_up.cases", "sharp.scale_out.cases",
-              "sharp.scale_out.sharp_env", "moe.common.env", "moe.common.per_rank"}
+NIXL_FREE = {"nixl.{}.{}".format(sub, key) for sub in ("common", "node", "pair", "storage")
+             for key in ("min_bw_gbps", "max_lat_us", "case_args")}
+TESTS_FREE = {"images", "common_env", "sharp.common.env", "sharp.scale_out.cases",
+              "sharp.scale_out.sharp_env", "moe.common.env", "moe.common.per_rank",
+              "nvlink.fabric.time_to_run", "nvshmem.common.nvshmem_env", "nvshmem.pair.nvshmem_env",
+              "nvshmem.rack.nvshmem_env"} | NIXL_FREE | {"{}.{}.baseline".format(s, sub) for s, subs in (
+                  ("superbench", ("common", "single_node", "disk", "pair", "rack", "cross_rack", "nccl_node", "nvl_domain",
+                                  "all", "soak")),
+                  ("nvlink", ("common", "pairs", "fabric")), ("sharp", ("common", "scale_out")))
+                  for sub in subs}
 
 
 class Host:
@@ -127,7 +135,7 @@ def _parse_host(raw, defaults, index, problems, ib_count):
         ok = False
     mgmt = _iface(merged.get("mgmt"), "mgmt", where, problems)
     if merged.get("mgmt") in (None, ""):
-        problems.error("{}: mgmt is required (BF3 port 0 address, also used as MASTER_ADDR)".format(where))
+        problems.error("{}: mgmt is required (management address, also used as MASTER_ADDR)".format(where))
         ok = False
     storage = _iface(merged.get("storage"), "storage", where, problems)
     ib_raw = merged.get("ib") or []
@@ -240,10 +248,14 @@ def load_cluster(path, problems):
         if isinstance(raw, dict):
             unknown_keys(raw, host_schema, "hosts[{}]".format(raw.get("name", "?")), set(), extra)
     for key in extra:
+        if key == "network.lom.pin_routes":
+            problems.warn("network.lom.pin_routes is no longer used: replies from the LOM address are routed by "
+                          "policy routing (network.lom.table)")
+            continue
         problems.warn("{}: unknown key {}".format(os.path.basename(path), key))
 
     ssh = deep_merge(SSH_DEFAULTS, data.get("ssh") or {})
-    network = data.get("network") or {}
+    network = profiles.resolve(data.get("network"))
     defaults = data.get("defaults") or {}
     ib_count = dig(network, "expect.cx8.count", 4)
     raw_hosts = data.get("hosts")
@@ -328,6 +340,11 @@ def check_cluster(cluster, problems):
                 problems.error("{}: {} {} is not in the same subnet as gateway {}".format(h.name, role, addr, gw))
 
     net = cluster.network or {}
+    if (net.get("profile") or profiles.DEFAULT) not in profiles.PROFILES:
+        problems.error("network.profile must be one of {}".format(", ".join(sorted(profiles.PROFILES))))
+    for role, kinds in sorted(profiles.DEVICES.items()):
+        if profiles.device(net, role) not in kinds:
+            problems.error("network.{}.device must be {}".format(role, " or ".join(kinds)))
     if net.get("match_by", "mac") not in ("mac", "name"):
         problems.error("network.match_by must be mac or name")
     if str(dig(net, "ipoib.pkey", "0x7fff")).lower() != "0x7fff":
@@ -336,21 +353,39 @@ def check_cluster(cluster, problems):
         problems.error("network.ib_mode.reboot must be ask, auto or never")
     if not isinstance(net.get("require_pci", True), bool):
         problems.error("network.require_pci must be true or false")
-    elif net.get("require_pci", True):
-        need = [h.name for h in cluster.hosts if (h.mgmt is not None and not h.plan.get("mgmt_pci"))
-                or (h.storage is not None and not h.plan.get("storage_pci"))
-                or ((h.ib or h.plan.get("ib_mtu") or dig(net, "ipoib.mtu")) and not all(h.plan.get("ib_pci") or [""]))]
+    else:
+        require = net.get("require_pci", True)
+
+        def lacks(h, role):
+            # A plain NIC can only be found by its PCI address, whatever require_pci says.
+            kind = profiles.device(net, role)
+            return getattr(h, role) is not None and kind != "lom" and not h.plan.get(role + "_pci") and \
+                (require or kind == "nic")
+        need = [h.name for h in cluster.hosts if lacks(h, "mgmt") or lacks(h, "storage")
+                or (require and (h.ib or h.plan.get("ib_mtu") or dig(net, "ipoib.mtu"))
+                    and not all(h.plan.get("ib_pci") or [""]))]
         if need:
-            problems.warn("{} host(s) lack mgmt_pci / storage_pci / ib_pci (e.g. {}); 'mtest net apply' refuses them "
-                          "while network.require_pci is true".format(len(need), need[0]))
+            problems.warn("{} host(s) lack mgmt_pci / storage_pci / ib_pci (e.g. {}); 'mtest net apply' refuses "
+                          "them".format(len(need), need[0]))
     rb = net.get("rollback_seconds", 120)
     if not isinstance(rb, int) or isinstance(rb, bool) or rb < 30:
         problems.error("network.rollback_seconds must be an integer >= 30")
     for key in ("mgmt", "storage"):
         port = dig(net, key + ".port")
-        if port is not None and port not in (0, 1):
+        if profiles.device(net, key) == "bf3" and port is not None and port not in (0, 1):
             problems.error("network.{}.port must be 0 or 1 (BF3 port)".format(key))
-    for net_cidr in (dig(net, "lom.pin_routes") or []) + (dig(net, "storage.routes") or []):
+    for key, low, high in (("table", 1, 4294967295), ("priority", 1, 32765)):
+        value = dig(net, "lom." + key)
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high
+                                  or (key == "table" and value in (253, 254, 255))):
+            problems.error("network.lom.{} must be an integer between {} and {}{}".format(
+                key, low, high, " other than 253-255 (default, main, local)" if key == "table" else ""))
+    for addr in dig(net, "mgmt.dns") or []:
+        try:
+            ipaddress.ip_address(str(addr))
+        except ValueError:
+            problems.error("network: DNS server '{}' is not a valid address".format(addr))
+    for net_cidr in dig(net, "storage.routes") or []:
         try:
             ipaddress.ip_network(str(net_cidr))
         except ValueError:

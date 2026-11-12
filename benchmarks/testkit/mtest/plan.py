@@ -1,12 +1,13 @@
 """Build and print what "mtest run" would do, without touching any host."""
 
 from mtest.checks import enabled_items
-from mtest.items import matches
+from mtest.items import full_rack_of, gate_of, matches
 from mtest.render import node_cmd, node_env, node_vars
 from mtest.selection import build_groups
 from mtest.state import load_nic
 
-STAGE = {"dcgm": "S5", "superbench": "S6", "imex": "S7", "sharp": "S7a", "moe": "S8"}
+STAGE = {"dcgm": "S5", "superbench": "S6", "imex": "S7", "nvlink": "S7b", "sharp": "S7a",
+         "nvshmem": "S7b", "nixl": "S7b", "moe": "S8"}
 
 
 class NodePlan:
@@ -70,10 +71,13 @@ def format_plan(plans, base_port, verbose=False):
     pending_nic = False
     for p in plans:
         item = p.item
-        lines.append("== {} [{}]  scope={}  mode={}{}".format(
-            item.id, STAGE.get(item.section, "?"), p.cfg.get("scope", "node"), item.mode,
-            "  (one invocation for all groups)" if item.batch else ""))
-        lines.append("   image: {}".format(p.image or "(not set)"))
+        flags = [f for f, on in (("gate", gate_of(item, p.cfg)), ("full rack", full_rack_of(item, p.cfg))) if on]
+        tag = " ".join(t for t in (item.layer, STAGE.get(item.section, "" if item.layer else "?")) if t)
+        lines.append("== {} [{}]  scope={}  mode={}{}{}".format(
+            item.id, tag, p.cfg.get("scope", "node"),
+            item.mode, "  (one invocation for all groups)" if item.batch else "",
+            "  " + ", ".join(flags) if flags else ""))
+        lines.append("   image: {}".format(p.image or ("(none, runs on the hosts)" if item.mode == "host" else "(not set)")))
         if not any(n.cmd for n in p.nodes):
             lines.append("   command: built by mtest ({})".format(item.phase))
         for note in p.notes:

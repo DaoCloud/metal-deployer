@@ -141,14 +141,35 @@ def rdma(metrics, mapping):
     return {"pairs": pairs, "tests": tests} if tests else None
 
 
-def nccl(metrics):
-    """Group tables/charts from NCCL size sweeps: busbw of every operation vs message size."""
+def small_times(metrics, small):
+    """{bench: (size_lo, time_lo, size_hi, time_hi)}: NCCL time (us) at the ends of the small-message range."""
+    lo, hi = small
+    times = {}
+    for name, v in metrics.items():
+        base, _ = split_rank(name)
+        m = NCCL_RE.match(base)
+        if m and m.group("kind") == "time":
+            size = int(m.group("size"))
+            if lo <= size <= hi:
+                pts = times.setdefault(m.group("bench"), {})
+                pts[size] = max(pts.get(size, v), v)      # worst rank
+    out = {}
+    for bench, pts in times.items():
+        a, b = min(pts), max(pts)
+        out[bench] = (a, pts[a], b, pts[b])
+    return out
+
+
+def nccl(metrics, small=(8, 65536)):
+    """Group tables/charts from NCCL size sweeps: busbw of every operation vs message size, and the
+    time of small messages (latency) at the ends of the small range."""
     series = {}
     for name, v in metrics.items():
         base, _ = split_rank(name)
         m = NCCL_RE.match(base)
         if m and m.group("kind") == "busbw":
             series.setdefault(m.group("bench"), {})[int(m.group("size"))] = v
+    lat = small_times(metrics, small)
     if not series:
         return [], []
     sizes = sorted({s for pts in series.values() for s in pts if s >= 1 << 20})
@@ -164,16 +185,24 @@ def nccl(metrics):
                                        "y": [pts.get(s, 0) for s in sizes]} for b, pts in items]})
         for b, pts in items:
             top = max(pts)
-            rows.append([b, top, round(pts[top], 2)])
-    table = {"title": "NCCL busbw（最大消息）", "head": ["测试", "消息大小 (B)", "busbw GB/s"], "rows": rows}
+            t = lat.get(b)
+            rows.append([b, top, round(pts[top], 2), round(t[1], 2) if t else "—", round(t[3], 2) if t else "—"])
+    lo, hi = small
+    table = {"title": "NCCL busbw（最大消息）与小消息时延", "head": [
+        "测试", "消息大小 (B)", "busbw GB/s", "{} B 时延 us".format(lo), "{} B 时延 us".format(hi)], "rows": rows}
     return [table], charts
 
 
-def parse_group(local_dir, mapping, own, cfg=None):
+def parse_group(local_dir, mapping, own, cfg=None, rails=None):
     """(per_host, group_extra) for one SuperBench run.
 
-    mapping: inventory name / address -> host name. own: results are per host (single-node configs).
+    mapping: inventory name / address / OS hostname -> host name. own: results are per host (single-node
+    configs). cfg: the item config; "outlier" compares hosts (single-node metrics, ib-traffic per rail) with
+    the median of the group, "baseline" sets minimum NCCL busbw (GB/s, largest message) per benchmark,
+    "hca_check" judges the network devices in the NCCL log. rails: {host: {gpu: ibdev}} from S3.
     """
+    cfg = cfg or {}
+    small = tuple(cfg.get("small_message_bytes") or (8, 65536))
     data = read_summary(os.path.join(local_dir, "sb", "run", "results-summary.jsonl"))
     by_host = {}
     for node, metrics in data.items():
@@ -197,6 +226,10 @@ def parse_group(local_dir, mapping, own, cfg=None):
         bad = ["{} rc {}".format(b, rc) for b, rc in sorted(rcs.items()) if rc != 0]
         entry = {"metrics": aggregate(metrics), "checks": checks}
         if own:
+            for bench, (a, ta, b, tb) in small_times(metrics, small).items():
+                entry["metrics"]["{}/time_{}B".format(bench, a)] = {"value": round(ta, 2), "unit": "us",
+                                                                   "lower_better": True, "category": category(bench),
+                                                                   "name": "{} {} B 时延".format(bench, a)}
             entry.update({"status": "fail" if bad else "pass", "reason": "; ".join(bad), "own": True})
             if bad:
                 failed.append(h)
@@ -204,17 +237,126 @@ def parse_group(local_dir, mapping, own, cfg=None):
             failed.append("{}: {}".format(h, "; ".join(bad)))
         per_host[h] = entry
     extra = {}
+    hca_rows = nccl_hca(local_dir, data, mapping, rails or {}, cfg.get("hca_check", "fail"), per_host, failed, own)
+    out_cfg = dict(OUTLIER_DEFAULTS, **(cfg.get("outlier") or {}))
+    if own:
+        flagged = host_outliers(per_host, out_cfg)
+        for h, reasons in flagged.items():
+            _flag(per_host[h], "outlier", reasons, out_cfg["action"])
+            if out_cfg["action"] == "fail" and h not in failed:
+                failed.append(h)
     if not own:
         merged = {}
         for metrics in by_host.values():
             merged.update(metrics)
-        tables, charts = nccl(merged)
+        tables, charts = nccl(merged, small)
+        if hca_rows:
+            tables.append({"title": "NCCL 网卡使用（GPU → 网卡，期望为本 rail）",
+                           "head": ["主机", "GPU", "使用的网卡", "本 rail 网卡", "结果"], "rows": hca_rows[:300]})
         extra.update({"tables": tables, "charts": charts})
         r = rdma(merged, mapping)
         if r:
             extra["rdma"] = r
             n = len(r["pairs"])
             extra["summary"] = "{} 节点；ib-traffic {} 个节点对".format(len(hosts), n)
+            flagged, rail_rows = rail_outliers(r, out_cfg)
+            if rail_rows:
+                tables.append({"title": "IB rail 离群（与组内中位数相差超过 {}%）".format(out_cfg["pct"]),
+                               "head": ["测试", "主机", "rail", "该 rail 中位数", "组内中位数", "偏差 %"],
+                               "rows": rail_rows})
+            for h, reasons in flagged.items():
+                entry = per_host.setdefault(h, {"metrics": {}, "checks": {}})
+                _flag(entry, "ib_rail_outlier", reasons, out_cfg["action"])
+                if out_cfg["action"] == "fail":
+                    failed.append("{}: {}".format(h, "; ".join(reasons)[:200]))
+        low = nccl_below_baseline(tables, cfg.get("baseline") or {})
+        if low:
+            failed.append("NCCL below baseline: " + "; ".join(low))
         if failed:
             extra.update({"status": "fail", "reason": "benchmark failed: " + "; ".join(failed)[:400]})
     return per_host, extra
+
+
+OUTLIER_DEFAULTS = {"pct": 10, "action": "fail", "metrics": [r"^nvbandwidth/", r"^gpu-copy-bw", r"^ib-loopback"],
+                    "rdma_tests": ["bw_gpu-to-gpu", "bidir_gpu-to-gpu"]}
+
+
+def nccl_hca(local_dir, data, mapping, rails, action, per_host, failed, own):
+    """Check the NCCL log of the run (see mtest.parsers.nccl_log); adds the "nccl_hca" check to hosts.
+    Returns the table rows [host, GPU, NIC used, rail NIC, result]."""
+    from mtest.parsers import nccl_log
+    if action == "off" or not any(k.startswith("nccl-bw") for m in data.values() for k in m):
+        return []
+    lines = nccl_log.log_lines(os.path.join(local_dir, "sb", "run"))
+    problems, rows, seen = nccl_log.check(lines, mapping, rails)
+    if not seen:
+        for entry in per_host.values():
+            entry.setdefault("checks", {})["nccl_hca"] = {"result": "skip", "reason": "no NCCL NET log (NCCL_DEBUG=INFO)"}
+        return []
+    for h, entry in per_host.items():
+        if h not in problems:
+            entry.setdefault("checks", {})["nccl_hca"] = {"result": "pass", "reason": "every GPU on its own IB rail"}
+    for h, msgs in sorted(problems.items()):
+        entry = per_host.setdefault(h, {"metrics": {}, "checks": {}})
+        _flag(entry, "nccl_hca", msgs, action)
+        if action == "fail":
+            failed.append(h if own else "{}: {}".format(h, "; ".join(msgs)[:200]))
+    return [[h, d, nic, want, res] for h, d, nic, want, res in rows]
+
+
+def _flag(entry, check, reasons, action):
+    """Add a check to a host entry; with action fail the host fails on its own, warn only shows it."""
+    entry.setdefault("checks", {})[check] = {"result": "fail" if action == "fail" else "warn",
+                                             "reason": "; ".join(reasons)[:400]}
+    if action == "fail":
+        entry.update({"status": "fail", "own": True,
+                      "reason": "; ".join(filter(None, [entry.get("reason", ""), "; ".join(reasons)]))[:400]})
+
+
+def host_outliers(per_host, cfg):
+    """{host: [reason]} for single-node metrics more than pct % worse than the median of all hosts."""
+    from mtest.outlier import deviation, outliers
+    pats = [re.compile(p) for p in cfg.get("metrics") or []]
+    names = sorted({m for e in per_host.values() for m, v in (e.get("metrics") or {}).items()
+                    if any(p.search(m) for p in pats) and not (isinstance(v, dict) and v.get("hidden"))})
+    out = {}
+    for name in names:
+        values = {h: (e.get("metrics") or {}).get(name, {}).get("value") for h, e in per_host.items()}
+        values = {h: v for h, v in values.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+        lb = lower_better(name)
+        for h, (v, med) in outliers(values, float(cfg["pct"]), lb).items():
+            out.setdefault(h, []).append("{} {} vs median {} ({}%)".format(name, v, round(med, 2), deviation(v, med)))
+    return out
+
+
+def rail_outliers(r, cfg):
+    """({host: [reason]}, table rows) for (host, rail) whose median over all pairs is an outlier."""
+    from mtest.outlier import deviation, median, outliers
+    flagged, rows = {}, []
+    for tid in cfg.get("rdma_tests") or []:
+        test = r["tests"].get(tid)
+        if not test:
+            continue
+        per = {}
+        for key, rails in test["values"].items():
+            for host in key.split("|"):
+                for rail, v in rails.items():
+                    if isinstance(v, (int, float)) and v > 0:
+                        per.setdefault((host, rail), []).append(v)
+        values = {k: median(v) for k, v in per.items()}
+        for (host, rail), (v, med) in sorted(outliers(values, float(cfg["pct"]), test["lower_better"]).items()):
+            rows.append([test["name"], host, rail, round(v, 2), round(med, 2), deviation(v, med)])
+            flagged.setdefault(host, []).append("rail {} {} {} vs median {}".format(rail, test["name"], round(v, 2),
+                                                                                  round(med, 2)))
+    return flagged, rows
+
+
+def nccl_below_baseline(tables, baseline):
+    """["<bench> busbw X < Y GB/s"] from the NCCL table rows [bench, size, busbw]."""
+    out = []
+    rows = next((t["rows"] for t in tables if t["title"].startswith("NCCL busbw")), [])
+    for bench, minimum in sorted(baseline.items()):
+        for row in rows:
+            if row[0] == bench and row[2] < float(minimum):
+                out.append("{} busbw {} < {} GB/s".format(bench, row[2], minimum))
+    return out

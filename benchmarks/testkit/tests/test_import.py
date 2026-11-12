@@ -51,6 +51,18 @@ class ImportTest(unittest.TestCase):
         self.assertNotIn("ib", h)
         self.assertEqual(unknown, ["colour"])
 
+    def test_hardware_neutral_columns(self):
+        with open(self.plan, "w", newline="") as f:
+            f.write("hostname,rack,tray,lom_ip,mgmt_ip,mgmt_pci,storage_ip,rail1_pci,rail2_pci,rail1_ip,rail2_ip\n"
+                    "b300-01,1,1,10.0.0.11,10.1.0.11/24,0005:02:00.0,10.2.0.11/24,0000:03:00.0,0001:03:00.0,"
+                    "10.100.0.11/24,10.101.0.11/24\n")
+        hosts, unknown = to_hosts(read_rows(self.plan))
+        self.assertEqual(unknown, [])
+        h = hosts[0]
+        self.assertEqual((h["mgmt"], h["mgmt_pci"], h["storage"]), ("10.1.0.11/24", "0005:02:00.0", "10.2.0.11/24"))
+        self.assertEqual(h["ib_pci"], ["0000:03:00.0", "0001:03:00.0"])
+        self.assertEqual(h["ib"], ["10.100.0.11/24", "10.101.0.11/24"])
+
     def test_into_existing_cluster_keeps_the_rest(self):
         self.ws.edit("cluster.yaml", "tags: [golden]", "tags: [golden, batch1]\n    env: {A: '1'}")
         self.ws.edit("cluster.yaml", "  - name: gb300-r1-t01", "  - name: gb300-r1-t01\n    gpus: 4")
@@ -77,7 +89,8 @@ class ImportTest(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertEqual(run_import(self.plan, path, out=self.out.append), 0)
         data = load_yaml(path)
-        self.assertEqual(data["network"]["mgmt"], {"port": 0, "default_route": True})
+        self.assertEqual(data["network"]["mgmt"], {"default_route": True})
+        self.assertEqual(data["network"]["profile"], "gb300")
         self.assertNotIn("dns", data["network"]["mgmt"])
         self.assertEqual(data["hosts"][0]["tags"], ["golden"])
 

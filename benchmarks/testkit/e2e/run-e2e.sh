@@ -274,14 +274,16 @@ check "single-node ran once for all hosts" [ "$(json "$E2E_ROOT/s11/runs/$run/ru
 check "exclude reached sb" grep -q 'superbench.enable=\["cublaslt-gemm:compute","nccl-bw:bw:allreduce:nvlink"\]' \
     "$E2E_ROOT/s11/runs/$run/gb300-r1-t01/superbench.single_node/sb/run/override.txt"
 check "per-host metrics split out" [ "$(json "$E2E_ROOT/s11/runs/$run/gb300-r1-t03/superbench.single_node/summary.json" "d['metrics']['cublaslt-gemm:compute/fp8e4m3_0_8192_8192_8192_flops']['value']")" = 4477.0 ]
-check "rack: ib-traffic pairs parsed" [ "$(json "$E2E_ROOT/s11/runs/$run/_groups/superbench.rack/R1/summary.json" "len(d['rdma']['pairs'])")" = 3 ]
+check "rack: fixed pairs t01-t02, then t03-t01 (odd host)" [ "$(json "$E2E_ROOT/s11/runs/$run/_groups/superbench.rack/R1/summary.json" "sorted(d['rdma']['pairs'])")" = "['gb300-r1-t01|gb300-r1-t02', 'gb300-r1-t01|gb300-r1-t03']" ]
+check "rack: pairing file by SuperBench hostfile index" [ "$(cat "$E2E_ROOT/s11/runs/$run/gb300-r1-t01/superbench.rack/raw/ib-pairs.txt" | tr '\n' ' ')" = "0,1 2,0 " ]
+check "rack: pairing files removed from the hosts" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h sh -c "ls /mnt/mtest/$run 2>/dev/null | wc -l"; done | tr -d '\n')" = 000 ]
 check "run key removed from every host" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h grep -c mtest- /root/.ssh/authorized_keys; done | tr -d '\n')" = 000 ]
 check "private run key removed from the rank 0 host" [ -z "$(find "$E2E_ROOT/noderes/$run" -name id_ed25519)" ]
 mtest s11 report >/dev/null
 check "report has the RDMA matrix" python3 -c "
 import json,re,sys; s=open('$E2E_ROOT/s11/runs/report/report.html').read()
 d=json.loads(re.search(r'const D = (.*);\n', s).group(1).replace('<\\\\/', '</'))
-sys.exit(0 if d['rdma'] and len(d['rdma']['pairs']) == 3 else 1)"
+sys.exit(0 if d['rdma'] and len(d['rdma']['pairs']) == 2 and d['rdma']['rounds'] == 2 else 1)"
 
 log "12. imex (stub IMEX tools on the hosts) + nvl-domain + SHARP (stub sb)"
 for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do
@@ -306,26 +308,36 @@ done
 scenario s12 rack mpi 0 300 "" "imex: {enabled: true, scope: rack, hosts: all, wait_ready_seconds: 30}
 superbench:
   nvl_domain: {enabled: true, scope: rack, hosts: all, config: config_gb300_nvl_domain.yaml}
+  all: {enabled: true, scope: group, hosts: all, config: config_gb300_all_nodes.yaml}
 sharp:
   common: {ops: [allreduce, allgather]}
-  scale_up: {enabled: true, scope: rack, hosts: all, cases: [U-A, U-B]}"
+  scale_out: {enabled: true, scope: rack, hosts: all, cases: [O-A, O-B]}"
 sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s12/tests.yaml"
-mtest s12 run imex superbench sharp >"$E2E_ROOT/s12.log" 2>&1 && rc=0 || rc=$?
+mtest s12 run imex superbench sharp >"$E2E_ROOT/s12-gate.log" 2>&1 || true
+check "imex is a gate: the run stops before nvl-domain" grep -q "gate: imex fail" "$E2E_ROOT/s12-gate.log"
+check "gate stop prints how to resume" grep -q "mtest run --from imex" "$E2E_ROOT/s12-gate.log"
+mtest s12 run imex superbench sharp --no-gate >"$E2E_ROOT/s12.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s12)
 g="$E2E_ROOT/s12/runs/$run/_groups"
 check "IMEX configured on every host with the same list" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h md5sum /tmp/imex-nodes.list; done | awk '{print $1}' | sort -u | wc -l)" = 1 ]
 check "domain matrix parsed" [ "$(json "$g/imex/R1/summary.json" "len(d['matrix']['cells'])")" = 3 ]
 check "T1 ran over mpirun and its build failure is reported" grep -q "T1 编译 imex_fabric_ipc_test" "$g/imex/R1/summary.json"
-check "T2 skipped without multinode nvbandwidth" python3 -c "
+check "T2 off by default (nvlink.pairs covers the rack)" python3 -c "
 import json,sys; rows=json.load(open('$g/imex/R1/summary.json'))['tables'][0]['rows']
-sys.exit(0 if any(r[0]=='T2 nvbandwidth multinode' and r[1]=='skip' for r in rows) else 1)"
+sys.exit(0 if not any(r[0]=='T2 nvbandwidth multinode' and r[1]=='pass' for r in rows) else 1)"
 check "imex group failed only on T1, hosts not blamed" [ "$(state s12 gb300-r1-t02 imex)" = fail ] && \
     [ "$(json "$E2E_ROOT/s12/runs/state.json" "d['hosts']['gb300-r1-t02']['imex']['group_result']")" = True ]
 check "nvl-domain ran after imex (group result, not excluded)" [ "$(state s12 gb300-r1-t01 superbench.nvl_domain)" = pass ]
-check "SHARP U-B/U-A compared" python3 -c "
-import json,sys; t=json.load(open('$g/sharp.scale_up/R1/summary.json'))['tables']
-sys.exit(0 if ['allreduce', 'U-B / U-A', 1.5] in t[1]['rows'] and ['allgather', 'U-B / U-A', 1.5] in t[1]['rows'] else 1)"
-check "SHARP NCCL log evidence collected" grep -q "uses Algo NVLS" "$g/sharp.scale_up/R1/summary.json"
+check "IB SHARP O-B/O-A compared" python3 -c "
+import json,sys; t=json.load(open('$g/sharp.scale_out/R1/summary.json'))['tables']
+sys.exit(0 if ['allreduce', 'O-B / O-A', 1.5] in t[1]['rows'] and ['allgather', 'O-B / O-A', 1.5] in t[1]['rows'] else 1)"
+check "SHARP NCCL log evidence collected" grep -q "uses Algo NVLS" "$g/sharp.scale_out/R1/summary.json"
+check "NCCL all racks: small-message time in the table" python3 -c "
+import json,sys,glob; t=json.load(open(glob.glob('$g/superbench.all/*/summary.json')[0]))['tables'][0]
+sys.exit(0 if t['rows'][0][3] == 25.0 and t['head'][3] == '8 B 时延 us' else 1)"
+check "NCCL log: IB rails only (hca check)" python3 -c "
+import json,sys,glob; t=json.load(open(glob.glob('$g/superbench.all/*/summary.json')[0]))['tables']
+sys.exit(0 if any(x['title'].startswith('NCCL 网卡使用') for x in t) else 1)"
 
 log "13. report"
 out=$(mtest s3 report --archive) && rc=0 || rc=$?

@@ -65,12 +65,16 @@ def tests_schema():
     data = yaml.safe_load(tests_text())
     # Keys every item section may carry even if the template does not show them.
     extra = {"enabled": True, "scope": "", "hosts": "", "groups": [], "env": {}, "args": [],
-             "image": "", "cmd": [], "per_rank": {}, "benchmarks": {"include": [], "exclude": []}, "config": "", "timeout": 0}
-    for section in ("superbench", "sharp", "moe"):
+             "image": "", "cmd": [], "per_rank": {}, "benchmarks": {"include": [], "exclude": []}, "config": "", "timeout": 0,
+             "gate": True, "full_rack": True, "baseline": {}, "outlier_pct": 0, "outlier_action": "",
+             "outlier": {"pct": 0, "action": "", "metrics": [], "rdma_tests": []},
+             "ib_pairs": "", "cross_rack_rounds": "", "ib_benchmarks": [], "pairs_dir": "",
+             "hca_check": "", "small_message_bytes": []}
+    for section in ("superbench", "sharp", "moe", "nvlink", "nvshmem", "nixl"):
         for sub in data[section].values():
             for key, value in extra.items():
                 sub.setdefault(key, value)
-    for section in ("smoke", "dcgm", "imex"):
+    for section in ("smoke", "dcgm", "imex", "links"):
         for key, value in extra.items():
             data[section].setdefault(key, value)
     return data

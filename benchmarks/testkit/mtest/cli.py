@@ -44,7 +44,7 @@ def build_parser():
     nic.add_argument("--hosts", help="hosts for 'discover' (default: all)")
     nic.add_argument("--exclude", help="hosts to leave out")
 
-    net = sub.add_parser("net", help="S4: configure BF3, IPoIB and LOM routes with netplan, then verify")
+    net = sub.add_parser("net", help="S4: configure mgmt, storage, IPoIB and LOM policy routing with netplan, then verify")
     net.add_argument("action", choices=["apply", "verify"])
     net.add_argument("--hosts", help="hosts to configure (default: all)")
     net.add_argument("--exclude", help="hosts to leave out")
@@ -53,8 +53,12 @@ def build_parser():
 
     run = sub.add_parser("run", help="S5-S8: run enabled test items in the built-in order")
     _add_selection(run)
+    run.add_argument("--from", dest="start_from", metavar="ITEM",
+                     help="start at this item (or prefix) and run the enabled items after it, e.g. after a gate stop")
     run.add_argument("--force", action="store_true",
-                     help="also run hosts that failed an earlier item (ignore stop_on_failure)")
+                     help="also run hosts that failed an earlier item (ignore stop_on_failure and full_rack)")
+    run.add_argument("--no-gate", action="store_true",
+                     help="do not stop the run when a gated item fails (tests.yaml gate)")
 
     st = sub.add_parser("status", help="show per-item and per-host results")
     st.add_argument("--host", help="show every item of one host")
@@ -175,6 +179,8 @@ def cmd_run(args):
     for s in args.items:
         if not known_selector(s):
             problems.error("'{}' is not a test item or prefix".format(s))
+    if args.start_from and not known_selector(args.start_from):
+        problems.error("--from '{}' is not a test item or prefix".format(args.start_from))
     if not problems.ok:
         _print_problems(problems)
         return 1
@@ -182,7 +188,8 @@ def cmd_run(args):
         print("warning: " + msg)
     try:
         _, code = run_items(cluster, tests, args.items, args.hosts, args.exclude, DockerOps(cluster.ssh),
-                            force=args.force, out=lambda m: print(m, flush=True))
+                            force=args.force, out=lambda m: print(m, flush=True), start_from=args.start_from,
+                            gate=not args.no_gate)
     except SelectionError as e:
         print("error: " + str(e))
         return 1

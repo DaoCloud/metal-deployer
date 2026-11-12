@@ -133,22 +133,22 @@ class SharpParseTest(unittest.TestCase):
         with open(os.path.join(d, "sb", "run", "results-summary.jsonl"), "w") as f:
             f.write(text)
         if log:
-            p = os.path.join(d, "sb", "run", "nodes", IPS[0], "benchmarks", "nccl-bw:sharp:allreduce:U-B", "rank0")
+            p = os.path.join(d, "sb", "run", "nodes", IPS[0], "benchmarks", "nccl-bw:sharp:allreduce:O-B", "rank0")
             os.makedirs(p)
             with open(os.path.join(p, "results.json"), "w") as f:
                 json.dump({"raw_data": {"raw_output_0": [log]}}, f)
         return d
 
-    def test_scale_up(self):
+    def test_scale_out(self):
         log = ("gb300-r1-t01:123:456 [0] NCCL INFO NVLS multicast support is available on dev 0\n"
                "gb300-r1-t01:123:456 [0] NCCL INFO Channel 00/0 : 0[0] -> 1[1] via P2P\n"
                "gb300-r1-t01:123:456 [0] NCCL INFO AllReduce: 8589934592 Bytes -> Algo NVLS proto SIMPLE\n")
-        d = self.run_dir(sharp_jsonl(["U-A", "U-B"]), log)
+        d = self.run_dir(sharp_jsonl(["O-A", "O-B"]), log)
         mapping = dict(zip(IPS, HOSTS))
         _, extra = sharp.parse_group(d, mapping)
         self.assertNotIn("status", extra)
-        self.assertEqual(extra["tables"][1]["rows"], [["allreduce", "U-B / U-A", 1.5]])
-        self.assertEqual([s["name"] for s in extra["charts"][0]["series"]], ["U-A", "U-B"])
+        self.assertEqual(extra["tables"][1]["rows"], [["allreduce", "O-B / O-A", 1.5]])
+        self.assertEqual([s["name"] for s in extra["charts"][0]["series"]], ["O-A", "O-B"])
         self.assertIn("NVLS multicast support is available", extra["log_tail"])
         self.assertIn("Algo NVLS", extra["log_tail"])
         self.assertNotIn("via P2P", extra["log_tail"])
@@ -170,7 +170,7 @@ runtime: {results_dir: ./runs, poll_interval: 0.01}
 imex: {enabled: true, scope: rack, hosts: all, wait_ready_seconds: 30}
 sharp:
   common: {config: config_gb300_sharp.yaml, ops: [allreduce]}
-  scale_up: {enabled: true, scope: rack, hosts: all, cases: [U-A, U-B]}
+  scale_out: {enabled: true, scope: rack, hosts: all, cases: [O-A, O-B]}
 """
 
 
@@ -239,13 +239,13 @@ class FlowTest(unittest.TestCase):
                                                     "imex-check.txt")))
 
     def test_sharp_flow(self):
-        behave = {HOSTS[0]: {"files": {"sb/run/results-summary.jsonl": sharp_jsonl(["U-A", "U-B"])}}}
+        behave = {HOSTS[0]: {"files": {"sb/run/results-summary.jsonl": sharp_jsonl(["O-A", "O-B"])}}}
         ops, run_id, code = self.run_(["sharp"], behave)
         self.assertEqual(code, 0, self.lines)
         run = [c for c in ops.calls if c[0] == "run"]
         self.assertEqual([c[1] for c in run], [HOSTS[0]])
-        g = read_json(os.path.join(self.tests.results_dir, run_id, "_groups", "sharp.scale_up", "R1", "summary.json"))
-        self.assertEqual(g["tables"][1]["rows"], [["allreduce", "U-B / U-A", 1.5]])
+        g = read_json(os.path.join(self.tests.results_dir, run_id, "_groups", "sharp.scale_out", "R1", "summary.json"))
+        self.assertEqual(g["tables"][1]["rows"], [["allreduce", "O-B / O-A", 1.5]])
 
 
 if __name__ == "__main__":
