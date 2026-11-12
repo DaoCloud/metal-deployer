@@ -2,9 +2,9 @@ import csv
 import os
 import unittest
 
-from mtest.config import load_cluster
-from mtest.plan_import import read_rows, replace_hosts, run_import, to_hosts
-from mtest.util import Problems, load_yaml
+from testkit.config import load_cluster
+from testkit.plan_import import read_rows, replace_hosts, run_import, to_hosts
+from testkit.util import Problems, load_yaml
 from tests.helpers import Workspace
 
 HEAD = ["rack", "tray", "node_no", "sn", "hostname", "lom_ip", "lom_gateway", "bf3_mgt_ip", "bf3_mgt_gateway",

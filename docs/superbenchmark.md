@@ -22,7 +22,7 @@ SuperBench (sb) 是一个用于 AI 基础设施性能测试的工具，支持单
 | 测试配置 | `config_single_node.yaml` |
 | 测试配置 | `config_multi_node.yaml` |
 | 测试配置 | `config_all.yaml` |
-| 测试配置（GB300） | `config_gb300_single_node.yaml`、`config_gb300_multi_node.yaml`、`config_gb300_nvl_domain.yaml`、`config_gb300_sharp.yaml`（mtest SHARP 测试项使用）、`config_gb300_disk.yaml` |
+| 测试配置（GB300） | `config_gb300_single_node.yaml`、`config_gb300_multi_node.yaml`、`config_gb300_nvl_domain.yaml`、`config_gb300_sharp.yaml`（testkit SHARP 测试项使用）、`config_gb300_disk.yaml` |
 | 汇总规则 | `rule_single_node.yaml` |
 | 汇总规则 | `rule_multi_node.yaml` |
 | 汇总规则 | `rule_all.yaml` |
@@ -204,7 +204,7 @@ GB300 每个 tray 为 4 × B300、2 × Grace、4 × ConnectX-8，与 x86 8 卡�
 | `config_gb300_single_node.yaml` | 单机 | `proc_num: 4`；`cublaslt-gemm` 替代 `gemm-flops`；`cpu-stream`（`cpu_arch: neo2`，按 Grace 核和 LPDDR NUMA 节点绑定）替代 MLC/HPL；`nvbandwidth`；`gpu-burn` 不测 FP64；`ib-loopback` 2 组 |
 | `config_gb300_multi_node.yaml` | 跨节点 IB | `ib-traffic` 测 gpu-to-gpu（GPU Direct RDMA，单向/双向），另测 cpu-to-cpu 时延（2 字节）；`set_ib_devices` 只选 IB link-layer 设备；NCCL 4 种集合通信，`NCCL_MNNVL_ENABLE=0` |
 | `config_gb300_nvl_domain.yaml` | 柜内 MNNVL | hosts 必须在同一 NVLink 域；`NCCL_MNNVL_ENABLE=1`，不满足时直接失败而不是回退到 IB |
-| `config_gb300_sharp.yaml` | NVLink SHARP / IB SHARP | 每组 NCCL 设置一个 nccl-bw 条目（U-A/U-B 柜内，O-A~O-D 柜间），均显式设置 `NCCL_NVLS_ENABLE`；O-C/O-D 加载 HPC-X SHARP 插件。由 mtest `sharp.*` 测试项按组选择 |
+| `config_gb300_sharp.yaml` | NVLink SHARP / IB SHARP | 每组 NCCL 设置一个 nccl-bw 条目（U-A/U-B 柜内，O-A~O-D 柜间），均显式设置 `NCCL_NVLS_ENABLE`；O-C/O-D 加载 HPC-X SHARP 插件。由 testkit `sharp.*` 测试项按组选择 |
 | `config_gb300_disk.yaml` | 磁盘 | 只在 `run-tests.sh --disk <设备>` 时执行，设备通过 `--config-override` 注入 |
 
 手动执行时，磁盘配置必须显式指定测试盘：

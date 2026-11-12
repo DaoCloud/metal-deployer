@@ -5,7 +5,7 @@ import os
 import re
 import unittest
 
-from mtest.report import build_data, hosts_csv, metrics_csv, overall, render_html, write_report
+from testkit.report import build_data, hosts_csv, metrics_csv, overall, render_html, write_report
 from tests.report_fixture import make_results
 
 
@@ -90,7 +90,7 @@ class ReportTest(unittest.TestCase):
 
     def test_empty_results(self):
         from tests.helpers import Workspace
-        from mtest.config import load_both
+        from testkit.config import load_both
         ws = Workspace(1, 2)
         try:
             cluster, tests, _ = load_both(ws.cluster, ws.tests)

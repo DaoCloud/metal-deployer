@@ -117,7 +117,7 @@ test-sbcli-interactive: ## Open a shell in the local sbcli image
 	docker run -it --rm $(if $(SBCLI_PLATFORM),--platform $(SBCLI_PLATFORM)) --entrypoint /bin/bash $(SBCLI_IMAGE_NAME):$(SBCLI_IMAGE_TAG)
 
 .PHONY: test-testkit
-test-testkit: ## Run mtest unit tests (benchmarks/testkit)
+test-testkit: ## Run testkit unit tests (benchmarks/testkit)
 	cd benchmarks/testkit && python3 -m unittest discover -s tests -v
 
 .PHONY: clean

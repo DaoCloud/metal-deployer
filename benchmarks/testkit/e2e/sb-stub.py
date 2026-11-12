@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stub of the SuperBench CLI for the mtest end-to-end test (see sbcli-stub.Dockerfile)."""
+"""Stub of the SuperBench CLI for the testkit end-to-end test (see sbcli-stub.Dockerfile)."""
 import json
 import os
 import subprocess

@@ -1,11 +1,11 @@
 # SuperBench config for GB300 NVL72 across racks in the production layout: NVLink (MNNVL) inside each
-# rack, InfiniBand between racks. Used by mtest items superbench.all (collectives) and superbench.soak
+# rack, InfiniBand between racks. Used by testkit items superbench.all (collectives) and superbench.soak
 # (long allreduce run, selected by name).
 #
 # NCCL_MNNVL_ENABLE=1: every rack is one NVLink clique; NCCL fails instead of falling back to IB inside a
 # rack. NCCL_NVLS_ENABLE=1: NVLink SHARP inside the racks (allreduce becomes NVLSTree across racks).
 # Both are set explicitly, see config_gb300_sharp.yaml for why the default (2) is avoided.
-# The host IMEX domains must be up in every rack (mtest imex). 4 GPUs and 4 IB rails per tray.
+# The host IMEX domains must be up in every rack (testkit imex). 4 GPUs and 4 IB rails per tray.
 version: v0.13
 superbench:
   enable:
@@ -89,7 +89,7 @@ superbench:
       parameters:
         <<: *nccl_param
         operation: broadcast
-    # Stability: one large allreduce repeated for a long time (not in "enable"; mtest superbench.soak selects
+    # Stability: one large allreduce repeated for a long time (not in "enable"; testkit superbench.soak selects
     # it). iters sets the duration: about iters x the time of one 8 GiB allreduce (check the first run and
     # adjust; e.g. ~30 min). check: 1 verifies every result, so silent data corruption also fails the run.
     nccl-bw:soak:allreduce:mnnvl-ib:

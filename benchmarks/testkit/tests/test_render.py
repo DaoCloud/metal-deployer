@@ -1,9 +1,9 @@
 import ipaddress
 import unittest
 
-from mtest.config import Host
-from mtest.render import nic_vars, node_cmd, node_env, node_vars, render, unknown_vars
-from mtest.selection import Group
+from testkit.config import Host
+from testkit.render import nic_vars, node_cmd, node_env, node_vars, render, unknown_vars
+from testkit.selection import Group
 
 
 def host(name, rack, tray, last, env=None):

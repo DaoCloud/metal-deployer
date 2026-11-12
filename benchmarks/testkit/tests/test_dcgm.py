@@ -3,7 +3,7 @@ import os
 import tempfile
 import unittest
 
-from mtest.parsers import dcgm
+from testkit.parsers import dcgm
 
 
 def _diag(memory="Pass", warn=None):

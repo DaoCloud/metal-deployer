@@ -1,7 +1,7 @@
 import unittest
 
-from mtest.config import load_cluster, load_tests_file
-from mtest.util import ConfigError, Problems
+from testkit.config import load_cluster, load_tests_file
+from testkit.util import ConfigError, Problems
 from tests.helpers import Workspace
 
 

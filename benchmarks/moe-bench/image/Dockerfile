@@ -77,7 +77,7 @@ RUN sys_ver=$(dpkg-query -W -f='${Version}' libnvshmem3-cuda-13 2>/dev/null | cu
        fi \
     && pip install -c /etc/moe-bench-constraints.txt "nvidia-nvshmem-cu13==${NVSHMEM_VERSION}"
 
-# NVSHMEM perftests (shmem_put_bw, alltoall_latency, ...) for the optional mtest nvshmem items.
+# NVSHMEM perftests (shmem_put_bw, alltoall_latency, ...) for the optional testkit nvshmem items.
 # They ship in libnvshmem3-dev-cuda-13 (/usr/bin/nvshmem_13/perftest), same version as the base
 # image's libnvshmem3-cuda-13.
 RUN arch=$(dpkg --print-architecture) \

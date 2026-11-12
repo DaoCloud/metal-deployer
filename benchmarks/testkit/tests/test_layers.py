@@ -2,11 +2,11 @@ import json
 import os
 import unittest
 
-from mtest.config import load_both
-from mtest.executor import run_items
-from mtest.outlier import outliers
-from mtest.parsers import links, nvlink, nvshmem, superbench
-from mtest.state import StateStore, read_json
+from testkit.config import load_both
+from testkit.executor import run_items
+from testkit.outlier import outliers
+from testkit.parsers import links, nvlink, nvshmem, superbench
+from testkit.state import StateStore, read_json
 from tests.helpers import Workspace
 from tests.test_executor import FakeOps
 
@@ -358,7 +358,7 @@ class FlowTest(unittest.TestCase):
         rec = self.record(tests, run_id)
         self.assertEqual(rec["gated_at"], {"item": "smoke", "status": "fail"})
         self.assertNotIn("dcgm", rec["items"])
-        self.assertTrue(any("mtest run --from smoke" in l for l in self.lines))
+        self.assertTrue(any("testkit run --from smoke" in l for l in self.lines))
         self.assertTrue(any(H2 in l and "[" in l for l in self.lines if l.startswith("  [")))
         run_id, _ = self.run_(cluster, tests, FakeOps(), start_from="dcgm")
         rec = self.record(tests, run_id)
@@ -451,8 +451,8 @@ class NvlinkFlowTest(unittest.TestCase):
         self.assertEqual(rec["gated_at"]["item"], "nvlink.pairs")
         cmds = [c[2] for c in ops.calls if c[0] == "host_run"]
         self.assertTrue(any("systemd-run --unit" in c and "nvlink_run.py" in c for c in cmds))
-        self.assertTrue(any("90-mtest.conf" in c and "systemctl restart nvidia-dcgm" in c for c in cmds))
-        self.assertTrue(any("rm -f /run/systemd/system/nvidia-dcgm.service.d/90-mtest.conf" in c for c in cmds))
+        self.assertTrue(any("90-testkit.conf" in c and "systemctl restart nvidia-dcgm" in c for c in cmds))
+        self.assertTrue(any("rm -f /run/systemd/system/nvidia-dcgm.service.d/90-testkit.conf" in c for c in cmds))
         puts = {c[2].rsplit("/", 1)[-1] for c in ops.calls if c[0] == "put" and c[1] == hosts[0]}
         self.assertTrue({"args.json", "hosts.txt", "dropin.conf", "ssh.conf", "id_ed25519", "nvlink_run.py"} <= puts)
         other = {c[2].rsplit("/", 1)[-1] for c in ops.calls if c[0] == "put" and c[1] == hosts[1]}
@@ -462,8 +462,8 @@ class NvlinkFlowTest(unittest.TestCase):
         self.assertIn("GPU 对 66/66/0", group["summary"])
 
     def test_steps_and_args(self):
-        from mtest.items import BY_ID
-        from mtest.runners import nvlink_steps
+        from testkit.items import BY_ID
+        from testkit.runners import nvlink_steps
         steps = nvlink_steps(BY_ID["nvlink.pairs"], {"bandwidth": {"target_num_pairs": -1, "testcases": ["a", "b"]}},
                              "/s/hosts.txt", "10.0.0.1")
         self.assertEqual(steps[0]["argv"][-1], "mnnvbandwidth.gpuPairs=all;mnnvbandwidth.time_to_run=3600")
@@ -484,7 +484,7 @@ class NvlinkFlowTest(unittest.TestCase):
         run_id, code = run_items(cluster, tests, ["nvlink"], None, None, ops, out=self.lines.append)
         rec = read_json(os.path.join(tests.results_dir, run_id, "run.json"))
         self.assertEqual(rec["items"]["nvlink.pairs"]["groups"]["R1"]["status"], "timeout")
-        self.assertTrue(any(c[0] == "host_run" and c[2].startswith("systemctl stop mtest-") for c in ops.calls))
+        self.assertTrue(any(c[0] == "host_run" and c[2].startswith("systemctl stop testkit-") for c in ops.calls))
 
 
 if __name__ == "__main__":
@@ -512,7 +512,7 @@ class IbPairsTest(unittest.TestCase):
         return [[(a.host.name, b.host.name) for a, b in r] for r in rounds]
 
     def test_rack_adjacent(self):
-        from mtest import ibpairs
+        from testkit import ibpairs
         rounds, notes = ibpairs.plan(_nodes(2, 18), "rack_adjacent")
         self.assertEqual(len(rounds), 1)
         self.assertEqual(len(rounds[0]), 18)
@@ -525,7 +525,7 @@ class IbPairsTest(unittest.TestCase):
         self.assertEqual(self.names(rounds)[0][0], ("gb300-r1-t01", "gb300-r1-t10"))
 
     def test_cross_rack(self):
-        from mtest import ibpairs
+        from testkit import ibpairs
         rounds, notes = ibpairs.plan(_nodes(2, 18), "cross_rack")
         self.assertEqual(len(rounds), 1)
         self.assertEqual(len(rounds[0]), 18)
@@ -546,7 +546,7 @@ class IbPairsTest(unittest.TestCase):
         self.assertEqual(ibpairs.plan(_nodes(1, 4), "cross_rack")[0], [])
 
     def test_config_uses_sorted_os_names(self):
-        from mtest import ibpairs
+        from testkit import ibpairs
         nodes = _nodes(1, 4)
         rounds, _ = ibpairs.plan(nodes, "rack_adjacent")
         os_name = {"gb300-r1-t01": "node-d", "gb300-r1-t02": "Node-c", "gb300-r1-t03": "node-b", "gb300-r1-t04": "a"}
@@ -599,7 +599,7 @@ class RdmaStageTest(unittest.TestCase):
         rack = {p: v for p, v in written.items() if "superbench.rack-R1" in p}
         self.assertEqual(len(rack), 1)
         path, per_host = next(iter(rack.items()))
-        self.assertTrue(path.startswith("/mnt/mtest/"))
+        self.assertTrue(path.startswith("/mnt/testkit/"))
         self.assertEqual(sorted(per_host), names[:2])
         # R1 hosts are n9 (t01) and n8 (t02); sorted hostfile of the group: n8, n9
         self.assertEqual(per_host[names[0]], "1,0\n")
@@ -607,9 +607,9 @@ class RdmaStageTest(unittest.TestCase):
         self.assertEqual(sorted(cross), names)
         # group hostfile n6 n7 n8 n9 = r2-t02, r2-t01, r1-t02, r1-t01; pairs t01-t01, t02-t02
         self.assertEqual(cross[names[0]], "3,1;2,0\n")
-        env = [a for args in captured for a in args if a.startswith("MTEST_SB_OVERRIDES=")]
-        self.assertTrue(env and "ib-traffic:perftest:multinode-lat.parameters.config=/mnt/mtest/" in env[0])
-        posts = [c[2] for c in ops.calls if c[0] == "host_run" and "rm -rf /mnt/mtest/" in c[2]]
+        env = [a for args in captured for a in args if a.startswith("TESTKIT_SB_OVERRIDES=")]
+        self.assertTrue(env and "ib-traffic:perftest:multinode-lat.parameters.config=/mnt/testkit/" in env[0])
+        posts = [c[2] for c in ops.calls if c[0] == "host_run" and "rm -rf /mnt/testkit/" in c[2]]
         self.assertTrue(posts)
 
     def test_os_hostnames_map_to_hosts(self):
@@ -638,8 +638,8 @@ class KernelMlxlinkTest(unittest.TestCase):
         self.assertEqual(d["kernel"], [])
 
     def test_counter_actions(self):
-        from mtest.executor import counters_cfg
-        from mtest.items import BY_ID
+        from testkit.executor import counters_cfg
+        from testkit.items import BY_ID
 
         class T:
             data = {}
@@ -685,7 +685,7 @@ node-b:200:200 [0] NCCL INFO Channel 00/0 : 4[0] -> 0[0] [receive] via NET/IB/0/
 class NcclLogTest(unittest.TestCase):
 
     def test_check(self):
-        from mtest.parsers import nccl_log
+        from testkit.parsers import nccl_log
         rails = {H1: {0: "mlx5_0", 1: "mlx5_1", 2: "mlx5_2", 3: "mlx5_3"}}
         mapping = {"node-a": H1, "node-b": H2}
         ok = NCCL_LOG.format(extra="", nic1=1).splitlines()

@@ -187,7 +187,7 @@ ARG GIT_COMMIT_VERSION=""
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# etcd: rank rendezvous; openssh: mtest mpi mode and testNixl multi-host runs.
+# etcd: rank rendezvous; openssh: testkit mpi mode and testNixl multi-host runs.
 # libcufile for the GDS plugins comes from the CUDA apt repository of the base image.
 RUN set -eux; \
     cuda_ver="$(echo "${CUDA_VERSION}" | cut -d. -f1,2 | tr . -)"; \

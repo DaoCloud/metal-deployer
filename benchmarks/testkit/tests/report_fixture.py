@@ -3,8 +3,8 @@ a failing host with a log, group items with tables / charts / matrix, versions, 
 
 import os
 
-from mtest.config import load_both
-from mtest.state import StateStore, nic_path, write_json
+from testkit.config import load_both
+from testkit.state import StateStore, nic_path, write_json
 from tests.helpers import Workspace
 
 RUN = "20261112-093000"

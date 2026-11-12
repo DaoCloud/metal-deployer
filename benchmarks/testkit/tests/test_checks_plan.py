@@ -1,10 +1,10 @@
 import os
 import unittest
 
-from mtest.checks import check_tests, enabled_items
-from mtest.config import load_both
-from mtest.plan import build_plan, format_plan
-from mtest.state import nic_path, write_json
+from testkit.checks import check_tests, enabled_items
+from testkit.config import load_both
+from testkit.plan import build_plan, format_plan
+from testkit.state import nic_path, write_json
 from tests.helpers import Workspace
 
 

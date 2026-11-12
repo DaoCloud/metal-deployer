@@ -3,8 +3,8 @@ import io
 import os
 import unittest
 
-from mtest import __version__
-from mtest.cli import build_parser, main
+from testkit import __version__
+from testkit.cli import build_parser, main
 from tests.helpers import Workspace
 
 
@@ -27,7 +27,7 @@ class CliTest(unittest.TestCase):
     def test_no_command_prints_help(self):
         code, out = run([])
         self.assertEqual(code, 0)
-        self.assertIn("usage: mtest", out)
+        self.assertIn("usage: testkit", out)
 
     def test_every_subcommand_parses(self):
         parser = build_parser()

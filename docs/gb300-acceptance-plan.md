@@ -2,17 +2,17 @@
 
 > 状态：设计稿，按里程碑逐步实现。本文定义整体流程、职责分工、输入格式、各阶段通过标准和里程碑。
 >
-> **当前实现方式**：Web UI、控制面服务（API、数据库、K8s 部署）和它的命令行客户端 `macc` 暂不实施，第 6 节只保留设计。S3–S9 由命令行工具 `mtest`（[benchmarks/testkit](../benchmarks/testkit/README.md)）在一台控制机上经 LOM SSH 执行：配置写在 `cluster.yaml`（主机、网络，规划表用 `mtest import` 导入）和 `tests.yaml`（测试项、主机范围、scope），结果拉回本地并生成 HTML 报告。下文的“控制面”在当前阶段即指 mtest 所在的控制机；涉及 UI、数据库、回调、`nico-sync` 的内容属于暂不实施的部分。
+> **当前实现方式**：Web UI、控制面服务（API、数据库、K8s 部署）和它的命令行客户端 `macc` 暂不实施，第 6 节只保留设计。S3–S9 由命令行工具 `testkit`（[benchmarks/testkit](../benchmarks/testkit/README.md)）在一台控制机上经 LOM SSH 执行：配置写在 `cluster.yaml`（主机、网络，规划表用 `testkit import` 导入）和 `tests.yaml`（测试项、主机范围、scope），结果拉回本地并生成 HTML 报告。下文的“控制面”在当前阶段即指 testkit 所在的控制机；涉及 UI、数据库、回调、`nico-sync` 的内容属于暂不实施的部分。
 
 ## 1. 目标与范围
 
-对一批 GB300 NVL72 计算节点（2–4 个 rack，约 72 台 compute tray）完成从装机到测试验收的全流程，并集中查看结果（最初设计为一个 Web UI，当前阶段用 mtest 的命令行和 HTML 报告代替）：
+对一批 GB300 NVL72 计算节点（2–4 个 rack，约 72 台 compute tray）完成从装机到测试验收的全流程，并集中查看结果（最初设计为一个 Web UI，当前阶段用 testkit 的命令行和 HTML 报告代替）：
 
 1. 装机：NICo 经 LOM 口 PXE 安装本仓库构建的 ISO，首启自动安装驱动和工具。
 2. 装机进度可见：每台主机处于哪个阶段、成功还是失败、失败日志。
 3. 批量网络配置：BlueField-3（BF3）两个口配业务管理网和存储网；4 张 ConnectX-8（CX8）确保为 IB 模式，配 IPoIB 地址和 MTU。
 4. 测试验收：DCGM 硬件诊断 → SuperBench → IMEX 配置与测试 → MoE 测试（HybridEP、DeepEP V1、[MoonEP](https://github.com/MoonshotAI/MoonEP)、DeepGEMM）。
-5. 结果收集：测试全部由控制面以 Docker 容器方式在各节点启动，日志和结果回传控制面，汇总为一份验收报告（当前为 `mtest report` 生成的 HTML 和 CSV）。
+5. 结果收集：测试全部由控制面以 Docker 容器方式在各节点启动，日志和结果回传控制面，汇总为一份验收报告（当前为 `testkit report` 生成的 HTML 和 CSV）。
 
 不在范围内：修改 NICo 本身；交换机、UFM、NMX 的配置（只做校验并提示）。
 
@@ -73,7 +73,7 @@
 
 ## 3. 总体架构
 
-下图是完整设计。当前阶段 `acceptance-controller` 不部署，由控制机上的 `mtest` 承担其中“经 LOM SSH”的部分（网络配置下发、启动测试、收集结果）；NICo API 只读调用、主机回调、UI 暂不实施。
+下图是完整设计。当前阶段 `acceptance-controller` 不部署，由控制机上的 `testkit` 承担其中“经 LOM SSH”的部分（网络配置下发、启动测试、收集结果）；NICo API 只读调用、主机回调、UI 暂不实施。
 
 ```
                  ┌──────────────────── NICo 管理节点（Kubernetes） ────────────────────┐
@@ -113,7 +113,7 @@
 
 | 网口 | 硬件 | 用途 | 装好后的路由 |
 |---|---|---|---|
-| LOM | 主板板载网卡（LAN on Motherboard，非 `15b3`） | NICo 装机（DHCP/PXE）；**控制面 SSH 到主机** | mtest 接入前已由 netplan 静态配置；S4 把它的默认路由移入策略路由表，只供 LOM 源地址的回包使用（见下） |
+| LOM | 主板板载网卡（LAN on Motherboard，非 `15b3`） | NICo 装机（DHCP/PXE）；**控制面 SSH 到主机** | testkit 接入前已由 netplan 静态配置；S4 把它的默认路由移入策略路由表，只供 LOM 源地址的回包使用（见下） |
 | BF3 port-0 | BlueField-3 第 1 个数据口 | 业务网（VRF INBAND） | **默认路由** |
 | BF3 port-1 | BlueField-3 第 2 个数据口 | 存储网（VRF STORAGE） | 只路由存储网段 |
 | CX8 × 4 | ConnectX-8 | IB 计算网（UFM 管理） | IPoIB，各 rail 一个网段 |
@@ -164,7 +164,7 @@ S4 的 BF3（及 IPoIB）IP、MTU 由谁、在什么时候下发，目前有三�
 
 两个文件：`hosts.csv` 放每台主机不同的数据；`site.yaml` 放全局参数。两者以 ConfigMap 挂载，UI 也支持上传和校验。
 
-当前用 mtest 时的对应关系：`hosts.csv` 的内容进入 `cluster.yaml` 的 `hosts` 段（由 `mtest import` 从 IP 规划表导入）；`site.yaml` 的 SSH、网卡期望、网络参数在 `cluster.yaml` 的 `ssh`、`network` 段，镜像、测试参数在 `tests.yaml`。下文出现 `hosts.csv`、`site.yaml` 的地方按此对应。
+当前用 testkit 时的对应关系：`hosts.csv` 的内容进入 `cluster.yaml` 的 `hosts` 段（由 `testkit import` 从 IP 规划表导入）；`site.yaml` 的 SSH、网卡期望、网络参数在 `cluster.yaml` 的 `ssh`、`network` 段，镜像、测试参数在 `tests.yaml`。下文出现 `hosts.csv`、`site.yaml` 的地方按此对应。
 
 ### 4.1 hosts.csv
 
@@ -248,7 +248,7 @@ registry: ""                                     # 内网仓库；为空时由�
 
 ## 5. 流程阶段
 
-每个阶段可以按单台、单个 rack 或全部主机执行。每个动作都可重复执行：先检查当前状态，有差异才修改，最后再验证。前一阶段未通过的主机，默认不进入下一阶段（mtest 中由 `runtime.stop_on_failure` 控制，`mtest run --force` 可手动放行）。
+每个阶段可以按单台、单个 rack 或全部主机执行。每个动作都可重复执行：先检查当前状态，有差异才修改，最后再验证。前一阶段未通过的主机，默认不进入下一阶段（testkit 中由 `runtime.stop_on_failure` 控制，`testkit run --force` 可手动放行）。
 
 | 阶段 | 名称 | 粒度 | 执行方 | 现有资产 | 需新增 |
 |---|---|---|---|---|---|
@@ -302,7 +302,7 @@ registry: ""                                     # 内网仓库；为空时由�
 
 ### S4 网络配置
 
-由 `mtest net` 执行（实现与用法见 [testkit README](../benchmarks/testkit/README.md) 的“网卡识别与网络配置”一节）：检查差异、幂等，`mtest net apply --dry-run` 用于下发前预览 netplan diff，`mtest net verify` 只验证。下面是流程设计，实现中写 `/etc/netplan/90-static-mgmt-storage.yaml`（含 LOM 策略路由）与 `90-static-compute.yaml`，网卡按规划表的 PCI 地址定位后用永久 MAC 匹配。
+由 `testkit net` 执行（实现与用法见 [testkit README](../benchmarks/testkit/README.md) 的“网卡识别与网络配置”一节）：检查差异、幂等，`testkit net apply --dry-run` 用于下发前预览 netplan diff，`testkit net verify` 只验证。下面是流程设计，实现中写 `/etc/netplan/90-static-mgmt-storage.yaml`（含 LOM 策略路由）与 `90-static-compute.yaml`，网卡按规划表的 PCI 地址定位后用永久 MAC 匹配。
 
 1. CX8 模式：`mlxconfig -d <CX8> q LINK_TYPE_P1`；不是 `IB(1)` 则设置为 1，标记需重启。
 2. 需要时重启：经 SSH 重启，等待主机从 LOM 回来；必要时经 Redfish 断电重启。
@@ -317,7 +317,7 @@ registry: ""                                     # 内网仓库；为空时由�
 
 ### 测试执行方式：统一用容器（S5–S8）
 
-所有测试由控制面（mtest）发起，在 GPU 节点上以 Docker 容器运行，结果全部回传控制机，汇总到报告。主机上只保留驱动、DCGM hostengine、IMEX daemon 等必须常驻的服务和配置；S7b 的 `dcgmi mndiag` 例外，使用主机上的 DCGM（见 S7b）。
+所有测试由控制面（testkit）发起，在 GPU 节点上以 Docker 容器运行，结果全部回传控制机，汇总到报告。主机上只保留驱动、DCGM hostengine、IMEX daemon 等必须常驻的服务和配置；S7b 的 `dcgmi mndiag` 例外，使用主机上的 DCGM（见 S7b）。
 
 **执行方式**
 
@@ -329,18 +329,18 @@ registry: ""                                     # 内网仓库；为空时由�
 
 **多节点批量启动**
 
-在控制机上用一条命令，就能在选定的所有测试节点上同时启动容器，完成单机、rack 内、跨 rack 的测试。mtest 中每个测试项的 `scope`、主机范围（`hosts` / `groups`）和参数写在 `tests.yaml`；命令行只选择测试项，并可临时缩小或排除主机。
+在控制机上用一条命令，就能在选定的所有测试节点上同时启动容器，完成单机、rack 内、跨 rack 的测试。testkit 中每个测试项的 `scope`、主机范围（`hosts` / `groups`）和参数写在 `tests.yaml`；命令行只选择测试项，并可临时缩小或排除主机。
 
 ```bash
-mtest run moe.single                       # 第 1 档：每台单机测试，各自出结果（scope: node）
-mtest run moe.rack --hosts R1,R2,R3,R4     # 第 2 档：每个 rack 一组（18 节点、72 GPU，走 NVLink/MNNVL），各组依次执行
-mtest run moe.cross_rack                   # 第 3 档：groups: [[R1, R2]]，rack 内走 NVLink，跨 rack 走 IB
-mtest run moe.all                          # 第 4 档：全部节点一组（72 节点、288 GPU）
-mtest run moe --exclude gb300-r1-t07       # 全部 enabled 的 moe 项，排除故障节点
-mtest run                                  # 按内置顺序执行全部 enabled 项
+testkit run moe.single                       # 第 1 档：每台单机测试，各自出结果（scope: node）
+testkit run moe.rack --hosts R1,R2,R3,R4     # 第 2 档：每个 rack 一组（18 节点、72 GPU，走 NVLink/MNNVL），各组依次执行
+testkit run moe.cross_rack                   # 第 3 档：groups: [[R1, R2]]，rack 内走 NVLink，跨 rack 走 IB
+testkit run moe.all                          # 第 4 档：全部节点一组（72 节点、288 GPU）
+testkit run moe --exclude gb300-r1-t07       # 全部 enabled 的 moe 项，排除故障节点
+testkit run                                  # 按内置顺序执行全部 enabled 项
 ```
 
-`moe.rack` 跑哪个 suite（`hybrid-ep`、`deepep`、`moonep`）由 `tests.yaml` 中该项的 `args` 决定；要依次跑多个 suite 时修改 `args` 后分别执行。`mtest plan` 打印每组的节点、rank 和渲染后的命令，`mtest status`、`mtest logs`、`mtest cancel` 查看和停止执行。
+`moe.rack` 跑哪个 suite（`hybrid-ep`、`deepep`、`moonep`）由 `tests.yaml` 中该项的 `args` 决定；要依次跑多个 suite 时修改 `args` 后分别执行。`testkit plan` 打印每组的节点、rank 和渲染后的命令，`testkit status`、`testkit logs`、`testkit cancel` 查看和停止执行。
 
 分组规则（`tests.yaml` 中每项的 `scope`）：
 
@@ -350,7 +350,7 @@ mtest run                                  # 按内置顺序执行全部 enabled
 | `rack` | 每个 rack 一组 | 组间串行（`runtime.group_order: serial`），避免多组共享 IB 计算网互相影响性能结果；可改为 `parallel` |
 | `group` | 选中的全部节点组成一组（或在 `groups` 中列出多组） | 按 `groups` 依次执行 |
 
-每一组的启动流程（设计；mtest 已实现其中预检、rank、注入、同时启动、监控、收集、清理，跨 run 的节点执行锁随控制面暂不实施）：
+每一组的启动流程（设计；testkit 已实现其中预检、rank、注入、同时启动、监控、收集、清理，跨 run 的节点执行锁随控制面暂不实施）：
 
 1. **加锁**：控制面在数据库中为本组全部节点加执行锁（一个节点同一时刻只属于一个 run），加锁失败则整组不启动并提示占用它的 run；run 结束、失败或取消时释放。
 2. **预检**（并行）：SSH 可达；所需镜像存在且 digest 一致；没有其他测试容器在运行（防止锁之外的残留）；IB 4 个口 `Active`；测试需要 MNNVL 时，IMEX 状态正常。任一节点不通过，整组不启动，并列出原因。
@@ -384,7 +384,7 @@ mtest run                                  # 按内置顺序执行全部 enabled
 
 **结果回传**
 
-1. 实时日志：`mtest logs <run-id> --follow` 经 SSH 跟随容器日志（完整设计中由控制面经 SSE 推送到 UI）。
+1. 实时日志：`testkit logs <run-id> --follow` 经 SSH 跟随容器日志（完整设计中由控制面经 SSE 推送到 UI）。
 2. 结果文件：容器写入节点 `runtime.node_results_dir`（默认 `/var/lib/testkit/runs`，挂载为 `/results`）；容器退出后拉回控制机的 `runtime.results_dir`，再解析。
 3. 进度（可选，暂不实施）：容器内向 `report_url` POST 阶段事件，格式同 6.2 节。
 
@@ -401,10 +401,10 @@ mtest run                                  # 按内置顺序执行全部 enabled
 
 | 阶段 | 镜像 | 现状 | 需做的事 |
 |---|---|---|---|
-| S5 DCGM | 官方镜像 `nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04`（含 arm64 与 CUDA 13 诊断插件，版本与主机一致） | 已有 | 不另做镜像：mtest 下发包装脚本采集原始输出，在控制端解析；`hostengine: container`（默认，测试期间停主机 `nvidia-dcgm`，结束后恢复）或 `host` 两种模式均已实现，实机对比后选定 |
+| S5 DCGM | 官方镜像 `nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04`（含 arm64 与 CUDA 13 诊断插件，版本与主机一致） | 已有 | 不另做镜像：testkit 下发包装脚本采集原始输出，在控制端解析；`hostengine: container`（默认，测试期间停主机 `nvidia-dcgm`，结束后恢复）或 `host` 两种模式均已实现，实机对比后选定 |
 | S6 SuperBench | sbcli 控制镜像（含 GB300 配置和规则）+ `superbench/main:cuda13.0` worker | 已有 | sbcli 由控制面以容器启动，固定 `-p gb300`；把输出目录和 `rule_gb300.yaml` 判定结果转为每台主机的 `summary.json` |
 | S6 磁盘 | 复用 `superbench/main:cuda13.0` worker 镜像（含 fio 3.28） | 已有 | 新增包装脚本：执行前复核、建立 `dataN` 逻辑名、`sb exec` 执行 `disk-benchmark`、输出 `summary.json` |
-| S7 IMEX 测试 | 复用 SuperBench worker 镜像（MPI）：T1 `imex_fabric_ipc_test` 由 mtest 下发源码、在各节点容器内用 mpicc 编译后运行；T2 需要 MULTINODE 版 nvbandwidth，worker 镜像自带的版本没有 multinode 用例时跳过并注明 | 已实现 | IMEX 配置与 imex-check 在主机上执行；实机确认容器内 IMEX channel 可见、mpicc 与 CUDA 头文件可用 |
+| S7 IMEX 测试 | 复用 SuperBench worker 镜像（MPI）：T1 `imex_fabric_ipc_test` 由 testkit 下发源码、在各节点容器内用 mpicc 编译后运行；T2 需要 MULTINODE 版 nvbandwidth，worker 镜像自带的版本没有 multinode 用例时跳过并注明 | 已实现 | IMEX 配置与 imex-check 在主机上执行；实机确认容器内 IMEX channel 可见、mpicc 与 CUDA 头文件可用 |
 | S7a SHARP | 用 SuperBench 执行：`config_gb300_sharp.yaml`（nccl-bw，每组 NCCL 设置一个条目），worker 镜像 NCCL 2.27.7 + HPC-X 2.24.1 SHARP 插件 | 已实现 | 需要更新 NCCL 时可在 `sharp.common.worker_image` 指定加层镜像；实机确认插件路径 |
 | S8 MoE | `moe-bench` | 已有（HybridEP、DeepEP V1、MoonEP、DeepGEMM 同一镜像） | 包装 `summary.json` |
 
@@ -416,23 +416,23 @@ mtest run                                  # 按内置顺序执行全部 enabled
 
 ### 验收分层与关卡（S3–S8 的执行顺序）
 
-验收有两个目标：（1）确认每一根线、每个链路正常，即基础硬件测试；（2）测通信库的 benchmark 和整机吞吐。两者按层执行：**先查链路，后测吞吐；每层通过才进入下一层**。任何一层失败就停在这一层排障，避免一口气跑完所有测试，最后分不清是哪根线的问题。每层除了测试本身，还要看硬件数据（链路状态、错误计数、光模块、内核日志），用来佐证问题出在哪根线、哪个端口。mtest 中的实现见 [testkit README](../benchmarks/testkit/README.md) 的“分层与关卡”。
+验收有两个目标：（1）确认每一根线、每个链路正常，即基础硬件测试；（2）测通信库的 benchmark 和整机吞吐。两者按层执行：**先查链路，后测吞吐；每层通过才进入下一层**。任何一层失败就停在这一层排障，避免一口气跑完所有测试，最后分不清是哪根线的问题。每层除了测试本身，还要看硬件数据（链路状态、错误计数、光模块、内核日志），用来佐证问题出在哪根线、哪个端口。testkit 中的实现见 [testkit README](../benchmarks/testkit/README.md) 的“分层与关卡”。
 
 | 层 | 测试项 | 范围 | 命令 | 佐证用的指标与硬件数据（除测试结果外） | 参考数据 |
 |---|---|---|---|---|---|
-| **L0 链路静态状态** | `links`（S3 `mtest nic discover` 先行） | 每台主机并行，只读，约 1 分钟 | `mtest nic discover`<br>`mtest run links` | `nvidia-smi nvlink -s`：每张 GPU 18 条链路是否 up、速率是否一致<br>`nvidia-smi nvlink -e`：错误计数现值<br>`nvidia-smi topo -p2p n`：节点内 GPU 两两 P2P<br>IB sysfs：端口 ACTIVE、速率、`symbol_error` 等计数现值<br>`mlxlink -m -c -e`：光模块型号与温度、raw/effective BER、effective physical errors<br>内核日志（本次开机以来）：`NVRM: Xid`、`fallen off the bus`、mlx5 错误、PCIe AER | NVLink5：18 条 × 50 GB/s，单向 900 GB/s<br>CX8：每口 800 Gb/s<br>effective physical errors = 0<br>BER、温度的门限按光模块规格或金样本设定 |
-| **L1 单机** | `dcgm` → `superbench.single_node`（GEMM、显存、节点内 nvbandwidth、gpu-burn、CPU、ib-loopback；不含 NCCL） | 每台主机 | `mtest run dcgm superbench.single_node` | 测试前后对比：NVLink 和 IB 错误计数增量、链路掉线、新增的 GPU/网卡内核错误<br>`dcgmi diag`、`dcgmi health`、ECC、remapped rows、GPU Fabric 状态 | diag 全部 Pass；单机指标与全部主机中位数相差不超过 10% |
-| **L2 RDMA**<br>阶段 A：柜内 | `superbench.rack` | 每个 rack：18 台相邻 tray 两两一对（1-2、3-4 ……），共 9 对，每对 4 个 rail（rail k ↔ rail k）同时打，一轮；每个 rack 36 组，2 个 rack 共 72 组 | `mtest run superbench.rack` | 前后错误计数增量（写明端口和 rail）、内核日志增量<br>每个（主机, rail）的带宽与组内中位数比较 | GPU Direct RDMA 单向、双向带宽应接近 800 Gb/s 线速；`ib_write_lat` 记录；具体门限按金样本定 |
-| **L2 RDMA**<br>阶段 B：跨柜 | `superbench.cross_rack` | R1 第 i 台 ↔ R2 第 i 台，18 对，每对 4 个 rail，一轮；4 个 rack 时每种 rack 组合一轮，共 3 轮 | `mtest run superbench.cross_rack` | 同阶段 A；阶段 A、B 的对端不同：一台主机在两个阶段都离群，问题在这台主机或它的线；只在一个阶段离群，问题在对端或这条路径 | 与阶段 A 同 rail 的值应接近；明显偏低说明问题在 spine 或跨柜的线 |
-| **L3 NVLink** | `imex` → `nvlink.pairs`（N1 每对 GPU 能否互访，N2 每对 GPU 的读写带宽）→ `nvlink.fabric`（NVLoom 并发、热点、多播、时延、20 分钟压力） | 每个 rack：72 GPU；N1 共 2556 对（一对一对依次测），N2 共 5112 个有向对 | `mtest run imex nvlink.pairs nvlink.fabric` | IMEX 连接矩阵、各节点 READY<br>前后 NVLink 错误计数增量（写明 GPU 和链路编号）、内核日志增量<br>N2 带宽矩阵和 NVLoom 结果中每张 GPU 的中位数<br>交换机端口计数（NMX-T，待做） | N1：2556/2556/0<br>N2：没有低于 rack 中位数 10% 的 GPU；有基线后不低于基线<br>NVLoom 6 个 suite 全部 Pass |
-| **L4 NCCL** | `superbench.nccl_node`（单机 4 GPU，节点内 NVLink）→ `superbench.nvl_domain`（柜内 18 节点 72 GPU，只走 MNNVL，含 NVLS）→ `superbench.all`（全部 rack：柜内 NVLink + 柜间 IB，生产形态）→ `sharp.scale_out`（跨柜 IB SHARP：O-A~O-D）→ `nvshmem.*`（可选）→ `nixl.*`（可选）→ `superbench.soak`（跨柜 allreduce 长稳，默认关闭） | 每台主机 → 每个 rack → 全部节点 | `mtest run --from superbench.nccl_node` | NCCL 日志（`NCCL_DEBUG=INFO`）：每张 GPU 用自己 rail 的 CX8，没有用 BF3（RoCE），没有退回 NET/Socket；确认 MNNVL、NVLS、CollNet 生效<br>前后错误计数和内核日志：只告警 | 操作：allreduce、allgather、reducescatter、alltoall、broadcast；消息 1 B~16 GiB<br>`wrong=0`<br>记录最大消息 busbw 和 8 B、64 KiB 小消息时延<br>72 GPU allreduce（NVLS）：某第三方资料给出 GB200 为 750–830 GB/s，未核实，按金样本定 `baseline` |
-| **L5 MoE** | `moe.single` → `moe.rack` → `moe.cross_rack` → `moe.all` | 第 1–4 档：单机、柜内、跨两柜、全部 | `mtest run moe` | 前后错误计数和内核日志：只告警 | 按金样本定基线，见 S8 |
+| **L0 链路静态状态** | `links`（S3 `testkit nic discover` 先行） | 每台主机并行，只读，约 1 分钟 | `testkit nic discover`<br>`testkit run links` | `nvidia-smi nvlink -s`：每张 GPU 18 条链路是否 up、速率是否一致<br>`nvidia-smi nvlink -e`：错误计数现值<br>`nvidia-smi topo -p2p n`：节点内 GPU 两两 P2P<br>IB sysfs：端口 ACTIVE、速率、`symbol_error` 等计数现值<br>`mlxlink -m -c -e`：光模块型号与温度、raw/effective BER、effective physical errors<br>内核日志（本次开机以来）：`NVRM: Xid`、`fallen off the bus`、mlx5 错误、PCIe AER | NVLink5：18 条 × 50 GB/s，单向 900 GB/s<br>CX8：每口 800 Gb/s<br>effective physical errors = 0<br>BER、温度的门限按光模块规格或金样本设定 |
+| **L1 单机** | `dcgm` → `superbench.single_node`（GEMM、显存、节点内 nvbandwidth、gpu-burn、CPU、ib-loopback；不含 NCCL） | 每台主机 | `testkit run dcgm superbench.single_node` | 测试前后对比：NVLink 和 IB 错误计数增量、链路掉线、新增的 GPU/网卡内核错误<br>`dcgmi diag`、`dcgmi health`、ECC、remapped rows、GPU Fabric 状态 | diag 全部 Pass；单机指标与全部主机中位数相差不超过 10% |
+| **L2 RDMA**<br>阶段 A：柜内 | `superbench.rack` | 每个 rack：18 台相邻 tray 两两一对（1-2、3-4 ……），共 9 对，每对 4 个 rail（rail k ↔ rail k）同时打，一轮；每个 rack 36 组，2 个 rack 共 72 组 | `testkit run superbench.rack` | 前后错误计数增量（写明端口和 rail）、内核日志增量<br>每个（主机, rail）的带宽与组内中位数比较 | GPU Direct RDMA 单向、双向带宽应接近 800 Gb/s 线速；`ib_write_lat` 记录；具体门限按金样本定 |
+| **L2 RDMA**<br>阶段 B：跨柜 | `superbench.cross_rack` | R1 第 i 台 ↔ R2 第 i 台，18 对，每对 4 个 rail，一轮；4 个 rack 时每种 rack 组合一轮，共 3 轮 | `testkit run superbench.cross_rack` | 同阶段 A；阶段 A、B 的对端不同：一台主机在两个阶段都离群，问题在这台主机或它的线；只在一个阶段离群，问题在对端或这条路径 | 与阶段 A 同 rail 的值应接近；明显偏低说明问题在 spine 或跨柜的线 |
+| **L3 NVLink** | `imex` → `nvlink.pairs`（N1 每对 GPU 能否互访，N2 每对 GPU 的读写带宽）→ `nvlink.fabric`（NVLoom 并发、热点、多播、时延、20 分钟压力） | 每个 rack：72 GPU；N1 共 2556 对（一对一对依次测），N2 共 5112 个有向对 | `testkit run imex nvlink.pairs nvlink.fabric` | IMEX 连接矩阵、各节点 READY<br>前后 NVLink 错误计数增量（写明 GPU 和链路编号）、内核日志增量<br>N2 带宽矩阵和 NVLoom 结果中每张 GPU 的中位数<br>交换机端口计数（NMX-T，待做） | N1：2556/2556/0<br>N2：没有低于 rack 中位数 10% 的 GPU；有基线后不低于基线<br>NVLoom 6 个 suite 全部 Pass |
+| **L4 NCCL** | `superbench.nccl_node`（单机 4 GPU，节点内 NVLink）→ `superbench.nvl_domain`（柜内 18 节点 72 GPU，只走 MNNVL，含 NVLS）→ `superbench.all`（全部 rack：柜内 NVLink + 柜间 IB，生产形态）→ `sharp.scale_out`（跨柜 IB SHARP：O-A~O-D）→ `nvshmem.*`（可选）→ `nixl.*`（可选）→ `superbench.soak`（跨柜 allreduce 长稳，默认关闭） | 每台主机 → 每个 rack → 全部节点 | `testkit run --from superbench.nccl_node` | NCCL 日志（`NCCL_DEBUG=INFO`）：每张 GPU 用自己 rail 的 CX8，没有用 BF3（RoCE），没有退回 NET/Socket；确认 MNNVL、NVLS、CollNet 生效<br>前后错误计数和内核日志：只告警 | 操作：allreduce、allgather、reducescatter、alltoall、broadcast；消息 1 B~16 GiB<br>`wrong=0`<br>记录最大消息 busbw 和 8 B、64 KiB 小消息时延<br>72 GPU allreduce（NVLS）：某第三方资料给出 GB200 为 750–830 GB/s，未核实，按金样本定 `baseline` |
+| **L5 MoE** | `moe.single` → `moe.rack` → `moe.cross_rack` → `moe.all` | 第 1–4 档：单机、柜内、跨两柜、全部 | `testkit run moe` | 前后错误计数和内核日志：只告警 | 按金样本定基线，见 S8 |
 
-**关卡**：L0–L3 的测试项默认是关卡（`gate: true`）。任何一项不是 pass，mtest 停止本次运行，打印失败的组、主机和原因，排障后用 `mtest run --from <项>` 接着跑。L4、L5 不设关卡；L4 不达标而 L0–L3 都通过时，按 NCCL 文档的思路优先排查通信库配置，而不是硬件。
+**关卡**：L0–L3 的测试项默认是关卡（`gate: true`）。任何一项不是 pass，testkit 停止本次运行，打印失败的组、主机和原因，排障后用 `testkit run --from <项>` 接着跑。L4、L5 不设关卡；L4 不达标而 L0–L3 都通过时，按 NCCL 文档的思路优先排查通信库配置，而不是硬件。
 
 **rack 完整性**：rack 级 NVLink 测试项要求整个 rack 都在。某台主机在前面失败被排除后，该 rack 记为 `blocked`，不会用 17 台照跑。
 
-**RDMA 配对的实现**：SuperBench `ib-traffic` 支持自定义配对文件（`--config`，每行一轮，格式 `i,j;k,l`）。下标是 SuperBench hostfile 中的行号；这个 hostfile 由各主机的 OS 短主机名排序（不区分大小写）生成，与 `cluster.yaml` 的顺序无关。mtest 先读各主机的 `hostname` 再换算下标，把文件写到每台主机的 `/mnt/mtest/<run>/`（worker 容器挂载了 `/mnt`），通过配置覆盖传给 `ib-traffic`，测试结束后删除。原来的 `one-to-one`（每台与所有其他主机打流，n−1 轮）保留为 `ib_pairs: round_robin`。
+**RDMA 配对的实现**：SuperBench `ib-traffic` 支持自定义配对文件（`--config`，每行一轮，格式 `i,j;k,l`）。下标是 SuperBench hostfile 中的行号；这个 hostfile 由各主机的 OS 短主机名排序（不区分大小写）生成，与 `cluster.yaml` 的顺序无关。testkit 先读各主机的 `hostname` 再换算下标，把文件写到每台主机的 `/mnt/testkit/<run>/`（worker 容器挂载了 `/mnt`），通过配置覆盖传给 `ib-traffic`，测试结束后删除。原来的 `one-to-one`（每台与所有其他主机打流，n−1 轮）保留为 `ib_pairs: round_robin`。
 
 ### S5 DCGM 硬件诊断
 
@@ -449,9 +449,9 @@ SuperBench 由两部分组成：sbcli 控制镜像（`sb` 命令、测试配置�
 | 配置 | `run-tests.sh -t` | 内容 | 节点范围 | 在本流程中的位置 |
 |---|---|---|---|---|
 | `config_gb300_single_node.yaml` | `single-node` | cublaslt-gemm（bf16/fp16/fp8，fp4 单列）、nvbandwidth（单节点用例）、gpu-copy-bw、gpu-burn（关闭 FP64）、cpu-stream × 4（Grace `neo2`）、ib-loopback（每颗 Grace 一组）、nccl-bw allreduce/allgather/reducescatter/alltoall/broadcast（节点内 NVLink） | 每节点独立运行，hosts 文件可含全部节点 | L1（`superbench.single_node`，不含 NCCL）；L4（`superbench.nccl_node`，只跑 NCCL） |
-| `config_gb300_multi_node.yaml` | `multi-node` | ib-traffic GPU Direct RDMA 单向/双向 + cpu-to-cpu 基线、cpu-to-cpu 时延（2 字节，one-to-one 轮转覆盖所有节点对）、nccl-bw allreduce/allgather/reducescatter/alltoall（`NCCL_MNNVL_ENABLE=0`，同 rack 也走 IB） | 由 hosts 文件决定：2 节点 → rack → 跨 rack | L2（`superbench.rack` / `cross_rack`，只跑 ib-traffic，mtest 生成配对文件）；NCCL over IB 部分不在验收流程中 |
+| `config_gb300_multi_node.yaml` | `multi-node` | ib-traffic GPU Direct RDMA 单向/双向 + cpu-to-cpu 基线、cpu-to-cpu 时延（2 字节，one-to-one 轮转覆盖所有节点对）、nccl-bw allreduce/allgather/reducescatter/alltoall（`NCCL_MNNVL_ENABLE=0`，同 rack 也走 IB） | 由 hosts 文件决定：2 节点 → rack → 跨 rack | L2（`superbench.rack` / `cross_rack`，只跑 ib-traffic，testkit 生成配对文件）；NCCL over IB 部分不在验收流程中 |
 | `config_gb300_nvl_domain.yaml` | `nvl-domain` | nccl-bw allreduce/allgather/reducescatter/alltoall/broadcast 走 MNNVL（`NCCL_MNNVL_ENABLE=1`），allreduce 另有 NVLS 对照 | 必须是同一 rack（同一 NVLink 域）的节点 | L4（`superbench.nvl_domain`，依赖 IMEX） |
-| `config_gb300_all_nodes.yaml` | （mtest 使用） | nccl-bw 5 种操作，柜内 NVLink + 柜间 IB（`NCCL_MNNVL_ENABLE=1`、`NCCL_NVLS_ENABLE=1`），另有 8 GiB allreduce 长稳用例 `nccl-bw:soak:allreduce:mnnvl-ib` | 全部 rack | L4（`superbench.all`、`superbench.soak`） |
+| `config_gb300_all_nodes.yaml` | （testkit 使用） | nccl-bw 5 种操作，柜内 NVLink + 柜间 IB（`NCCL_MNNVL_ENABLE=1`、`NCCL_NVLS_ENABLE=1`），另有 8 GiB allreduce 长稳用例 `nccl-bw:soak:allreduce:mnnvl-ib` | 全部 rack | L4（`superbench.all`、`superbench.soak`） |
 | `config_gb300_disk.yaml` | （参数来源） | fio 磁盘测试，会覆盖写入设备 | 每节点独立 | S6 SB-1；由控制面在每台主机用 `sb exec` 执行，设备列表按主机分别注入，不经 `run-tests.sh --disk`；未声明测试盘时不跑 |
 | `rule_gb300.yaml` | — | 汇总分类：GPU-COMPUTE、GPU-MEM、GPU-STABILITY、CPU-MEM、RDMA-LOCAL、RDMA-MULTINODE、NCCL-NVLINK、NCCL-MNNVL、NCCL-MNNVL-IB、NCCL-IB、DISK | — | 判定 |
 
@@ -459,21 +459,21 @@ SuperBench 由两部分组成：sbcli 控制镜像（`sb` 命令、测试配置�
 
 **执行方式**（委托模式）
 
-- mtest 在每组 rank 0 主机上以容器启动 sbcli，执行包装脚本 `sb_run.sh`：用 `tests.yaml` 中指定的 GB300 配置文件直接调用 `sb deploy` / `sb run`，由它们经 SSH 在各节点启动 worker 容器并用 `mpirun` 组织多节点测试。本次运行的临时 SSH 公钥先加入各节点 `authorized_keys`，结束后删除。
+- testkit 在每组 rank 0 主机上以容器启动 sbcli，执行包装脚本 `sb_run.sh`：用 `tests.yaml` 中指定的 GB300 配置文件直接调用 `sb deploy` / `sb run`，由它们经 SSH 在各节点启动 worker 容器并用 `mpirun` 组织多节点测试。本次运行的临时 SSH 公钥先加入各节点 `authorized_keys`，结束后删除。
 - 配置文件由 `tests.yaml` 显式指定，不经过 `run-tests.sh` 的 profile 选择。手工使用 `run-tests.sh` 时**必须显式传 `-p gb300`**：未指定 profile 时按 sbcli 所在机器架构选择，arm64 才默认 gb300，在 x86 控制机上会误用 x86 配置。
-- inventory 由 mtest 按 rank 规则（`rack`、`tray` 排序）生成，只含通过前置条件的节点。
+- inventory 由 testkit 按 rank 规则（`rack`、`tray` 排序）生成，只含通过前置条件的节点。
 - 执行顺序与 scope 对应关系（scope 和主机范围在 `tests.yaml` 的 `superbench.*` 中设置）：
 
 | 档 | 命令 | hosts 范围 | 说明 |
 |---|---|---|---|
-| SB-1 单机 | `mtest run superbench.single_node` | 全部就绪节点（一次 sbcli 调用，各节点独立跑） | 先跑，定位单机问题；声明了测试盘时，磁盘测试一并执行（见下） |
-| SB-2 双节点 RDMA（可选） | `mtest run superbench.pair`（`hosts` 写 2 台） | 2 节点 | 冒烟，确认 GPU Direct RDMA 且未选到 BF3；默认关闭，阶段 A 已覆盖 |
-| SB-3 RDMA 柜内（L2 阶段 A） | `mtest run superbench.rack` | 每个 rack：相邻 tray 两两一对，9 对 × 4 rail，一轮 | 只跑 ib-traffic（单向、双向带宽和时延） |
-| SB-3b RDMA 跨柜（L2 阶段 B） | `mtest run superbench.cross_rack` | R1 第 i 台 ↔ R2 第 i 台，18 对 × 4 rail；4 个 rack 时 3 轮 | 只跑 ib-traffic |
-| NCCL 单机（L4） | `mtest run superbench.nccl_node` | 每台主机 | 节点内 4 GPU，5 种操作 |
-| NCCL 柜内（L4） | `mtest run superbench.nvl_domain` | 每个 rack | 只走 MNNVL，含 NVLS |
-| NCCL 全部 rack（L4） | `mtest run superbench.all` | 全部节点 | 柜内 NVLink + 柜间 IB（生产形态） |
-| NCCL 长稳（L4，默认关闭） | `mtest run superbench.soak` | 全部节点 | 8 GiB allreduce 重复，时长由配置中的 `iters` 决定 |
+| SB-1 单机 | `testkit run superbench.single_node` | 全部就绪节点（一次 sbcli 调用，各节点独立跑） | 先跑，定位单机问题；声明了测试盘时，磁盘测试一并执行（见下） |
+| SB-2 双节点 RDMA（可选） | `testkit run superbench.pair`（`hosts` 写 2 台） | 2 节点 | 冒烟，确认 GPU Direct RDMA 且未选到 BF3；默认关闭，阶段 A 已覆盖 |
+| SB-3 RDMA 柜内（L2 阶段 A） | `testkit run superbench.rack` | 每个 rack：相邻 tray 两两一对，9 对 × 4 rail，一轮 | 只跑 ib-traffic（单向、双向带宽和时延） |
+| SB-3b RDMA 跨柜（L2 阶段 B） | `testkit run superbench.cross_rack` | R1 第 i 台 ↔ R2 第 i 台，18 对 × 4 rail；4 个 rack 时 3 轮 | 只跑 ib-traffic |
+| NCCL 单机（L4） | `testkit run superbench.nccl_node` | 每台主机 | 节点内 4 GPU，5 种操作 |
+| NCCL 柜内（L4） | `testkit run superbench.nvl_domain` | 每个 rack | 只走 MNNVL，含 NVLS |
+| NCCL 全部 rack（L4） | `testkit run superbench.all` | 全部节点 | 柜内 NVLink + 柜间 IB（生产形态） |
+| NCCL 长稳（L4，默认关闭） | `testkit run superbench.soak` | 全部节点 | 8 GiB allreduce 重复，时长由配置中的 `iters` 决定 |
 
 **磁盘测试并入 SB-1**
 
@@ -541,14 +541,14 @@ SuperBench 由两部分组成：sbcli 控制镜像（`sb` 命令、测试配置�
 ### S7 IMEX 配置与测试（按 rack）
 
 - 配置（主机上执行）：控制面按 `rack` + `tray` 顺序生成该 rack 的节点列表（mgmt 地址），以相同路径、相同内容写到每台主机，调用 `imex-configure.sh`，再在 rank 0 主机上等待 `nvidia-imex-ctl -N` 显示 `Domain State: UP`，每台主机执行 `imex-check.sh`。详见 [imex.md](./imex.md)。
-- 测试（容器内执行，mtest 测试项 `imex`）：MPI 模式，rack 内全部节点启动 worker 容器，由 rank 0 执行 T1（`imex_fabric_ipc_test`，2 节点与全部节点）。原 T2（2 节点多节点 nvbandwidth，worker 镜像没有 MULTINODE 版本时实际被跳过）取消，改由 S7b 的 DCGM `mnnvbandwidth` 覆盖整个 rack。
+- 测试（容器内执行，testkit 测试项 `imex`）：MPI 模式，rack 内全部节点启动 worker 容器，由 rank 0 执行 T1（`imex_fabric_ipc_test`，2 节点与全部节点）。原 T2（2 节点多节点 nvbandwidth，worker 镜像没有 MULTINODE 版本时实际被跳过）取消，改由 S7b 的 DCGM `mnnvbandwidth` 覆盖整个 rack。
 - 柜内 MNNVL 集合通信（原 T3）改用 SuperBench：测试项 `superbench.nvl_domain`（`config_gb300_nvl_domain.yaml`），在 S7b 之后执行。执行顺序：L3 `imex` → `nvlink.pairs` → `nvlink.fabric`，L4 `superbench.nvl_domain` → `superbench.all` → S7a `sharp.scale_out`，即先确认控制面，再测 GPU 点对点和 Fabric 并发，最后测集合通信。
 - 通过：`nvidia-imex-ctl -N` 全部 READY，矩阵全 `C`，`Domain State: UP`；T1 通过；`superbench.nvl_domain` 各项返回码为 0，且 NCCL 日志确认 MNNVL 生效（同一 rack 的 rank 之间用 P2P/NVLS，没有 `NET/IB` 连接），`mnnvl-nvls` 一项确认 NVLS 资源分配成功（判定方法同 S7a）。imex-check 的 L0/L1 失败算到对应主机，L2/L3 是整个 domain 的状态，记在组上。
 - 说明：Probe 未 Complete 属交换机侧（NMX/线缆）问题，报告中单独归类。
 
 ### S7b NVLink Fabric 数据面测试（按 rack）
 
-S7 只证明 IMEX 控制面正常、两节点能互访；S7b 在整个 rack（18 节点、72 GPU）上测 GPU 之间的数据面：每对 GPU 能否互访、点对点带宽、多 GPU 并发下 Fabric 的表现，同时从交换机侧采集端口状态和错误计数。mtest 测试项 `nvlink.pairs`（N1、N2，L2 层，在 RDMA 点对点和 `imex` 之后）和 `nvlink.fabric`（N3，L3 层），N4 为 `nvshmem.pair` / `nvshmem.rack`（L4，可选）。分层和关卡见下文“验收分层与关卡”。
+S7 只证明 IMEX 控制面正常、两节点能互访；S7b 在整个 rack（18 节点、72 GPU）上测 GPU 之间的数据面：每对 GPU 能否互访、点对点带宽、多 GPU 并发下 Fabric 的表现，同时从交换机侧采集端口状态和错误计数。testkit 测试项 `nvlink.pairs`（N1、N2，L2 层，在 RDMA 点对点和 `imex` 之后）和 `nvlink.fabric`（N3，L3 层），N4 为 `nvshmem.pair` / `nvshmem.rack`（L4，可选）。分层和关卡见下文“验收分层与关卡”。
 
 依据：[MNNVL User Guide – Verifying](https://docs.nvidia.com/multi-node-nvlink-systems/mnnvl-user-guide/verifying.html)、[MNNVL Multinode Testing](https://docs.nvidia.com/multi-node-nvlink-systems/mnnvl-user-guide/testing.html)、[DCGM mnnvbandwidth](https://docs.nvidia.com/datacenter/dcgm/latest/reference/multi-node-diagnostics/mnnvbandwidth.html)、[DCGM nvloom](https://docs.nvidia.com/datacenter/dcgm/latest/reference/multi-node-diagnostics/nvloom.html)、[dcgmi mndiag](https://docs.nvidia.com/datacenter/dcgm/latest/reference/command-line-reference/dcgmi/dcgmi-mndiag.html)、[NCCL Performance and Tuning](https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/troubleshooting/performance_and_tuning.html)、[NMX-T Prometheus Endpoint](https://networking-docs.nvidia.com/nmxtswum/123/prometheus-metrics-endpoint)。
 
@@ -560,7 +560,7 @@ S7 只证明 IMEX 控制面正常、两节点能互访；S7b 在整个 rack（18
 | N2 | `dcgmi mndiag --run mnnvbandwidth`（正常模式） | GPU 之间 Copy Engine 读、写方向的带宽矩阵 | 开 |
 | N3 | `dcgmi mndiag --run nvloom` | 多 GPU 并发、热点接收、Multicast、延迟、持续压力下 Fabric 的表现 | 开 |
 | N4 | NVSHMEM perftest | GPU 发起的 Put/Get 带宽和延迟、alltoall 延迟 | 关（可选） |
-| N5 | NMX-T 采集 | N1–N4 期间交换机端口状态、错误计数和吞吐 | 待做（mtest 尚未实现） |
+| N5 | NMX-T 采集 | N1–N4 期间交换机端口状态、错误计数和吞吐 | 待做（testkit 尚未实现） |
 
 NVBandwidth 和 NVLoom 不是二选一：前者测 GPU 对之间的传输能力，后者测复杂流量下整个 Fabric 的表现。NCCL 集合通信由 L4 的 `superbench.nvl_domain`、`superbench.all` 和 S7a 负责；NCCL 文档的排查顺序是先确认 NVBandwidth/NVLoom 正常，再查 NCCL 配置，所以 S7b 放在它们前面。NVSHMEM 不是 Scale-Up 基础验收的必选项，默认关闭；要上线依赖 NVSHMEM 的业务（如 DeepEP V1）时再打开，S8 的 `deepep` 也间接覆盖。DCGM 的 `mnubergemm`（计算与通信混合负载）暂不纳入。
 
@@ -617,7 +617,7 @@ dcgmi mndiag --hostfile hosts.txt --run nvloom \
 **NIXL NIXLBench（可选，L4）**
 
 - 不属于 Scale-Up 基础验收；要上线 P/D 分离推理（KV cache 经 NIXL 传输，如 Dynamo、SGLang/vLLM 的 NIXL connector）时打开。镜像 `nixl-benchmark:<version>-cuda13-gb300`（[benchmarks/nixl-benchmark](../benchmarks/nixl-benchmark/README.md)，NIXL v1.5.2，UCX / LIBFABRIC / GDS / POSIX 插件）。
-- mtest 测试项：`nixl.node`（单机 GPU↔GPU，S1/S2）、`nixl.pair`（跨节点 DRAM/VRAM RDMA 与 GPUDirect，S3–S6，可按 `rack_adjacent` / `cross_rack` 配对）、`nixl.storage`（POSIX / GDS）。用例与判定见 [nixlbench-acceptance-smoke-suite.md](../benchmarks/nixl-benchmark/nixlbench-acceptance-smoke-suite.md)。
+- testkit 测试项：`nixl.node`（单机 GPU↔GPU，S1/S2）、`nixl.pair`（跨节点 DRAM/VRAM RDMA 与 GPUDirect，S3–S6，可按 `rack_adjacent` / `cross_rack` 配对）、`nixl.storage`（POSIX / GDS）。用例与判定见 [nixlbench-acceptance-smoke-suite.md](../benchmarks/nixl-benchmark/nixlbench-acceptance-smoke-suite.md)。
 - 一致性校验失败、进程异常即失败；带宽、延迟先只记录，金样本实测后填 `min_bw_gbps` / `max_lat_us`。
 
 **N5 NMX-T 交换机侧采集**
@@ -668,7 +668,7 @@ NCCL 算法选择（NCCL 源码 `src/tuning/nvls.cc`）：单柜（nNodes=1）�
 
 **Scale-up：柜内 NVLink SHARP**
 
-柜内 NVLS 与关闭 NVLS 的对比由 L4 的 `superbench.nvl_domain`（`mnnvl` 与 `mnnvl-nvls` 两项）完成，SHARP 测试只做 IB 场景。配置文件中保留的 U-A、U-B 两组不再由 mtest 执行。
+柜内 NVLS 与关闭 NVLS 的对比由 L4 的 `superbench.nvl_domain`（`mnnvl` 与 `mnnvl-nvls` 两项）完成，SHARP 测试只做 IB 场景。配置文件中保留的 U-A、U-B 两组不再由 testkit 执行。
 
 **Scale-out：柜间 IB SHARP**（`--scope group`，至少 2 个 rack，例如 R1+R2；开启 MNNVL 后 nNodes = rack 数）
 
@@ -681,10 +681,10 @@ NCCL 算法选择（NCCL 源码 `src/tuning/nvls.cc`）：单柜（nNodes=1）�
 
 O-C、O-D 另需：SHARP 插件和库加入 `LD_LIBRARY_PATH`（HPC-X 的 `$HPCX_NCCL_RDMA_SHARP_PLUGIN_DIR/lib`、`$HPCX_SHARP_DIR/lib`，以镜像内实际路径为准）、`SHARP_COLL_ENABLE_SAT=1`、调试时 `SHARP_COLL_LOG_LEVEL=3`。
 
-**执行方式**：用 SuperBench 执行（mtest 测试项 `sharp.scale_out`，L4）。`config_gb300_sharp.yaml` 为每个操作、每组设置写一个 nccl-bw 条目（`nccl-bw:sharp:<op>:<组>`），组内的 NCCL 环境变量写在该条目的 mode env 中；所有组都设 `NCCL_DEBUG=INFO`、`NCCL_DEBUG_SUBSYS=INIT,NET,COLL,NVLS,TUNING`，原始输出保存在 SuperBench 的 results.json 中，mtest 从中提取 NVLS、CollNet/SHARP、插件、算法相关的日志行放进报告。对比结果只展示，不判定；某组返回码非 0（例如强制的 `NCCL_ALGO` 不可用）记为失败。
+**执行方式**：用 SuperBench 执行（testkit 测试项 `sharp.scale_out`，L4）。`config_gb300_sharp.yaml` 为每个操作、每组设置写一个 nccl-bw 条目（`nccl-bw:sharp:<op>:<组>`），组内的 NCCL 环境变量写在该条目的 mode env 中；所有组都设 `NCCL_DEBUG=INFO`、`NCCL_DEBUG_SUBSYS=INIT,NET,COLL,NVLS,TUNING`，原始输出保存在 SuperBench 的 results.json 中，testkit 从中提取 NVLS、CollNet/SHARP、插件、算法相关的日志行放进报告。对比结果只展示，不判定；某组返回码非 0（例如强制的 `NCCL_ALGO` 不可用）记为失败。
 
 ```bash
-mtest run sharp.scale_out                         # scope: group，tests.yaml 中 groups: [[R1, R2]]；全部节点时改为 hosts: all
+testkit run sharp.scale_out                         # scope: group，tests.yaml 中 groups: [[R1, R2]]；全部节点时改为 hosts: all
 ```
 
 **判定**
@@ -785,7 +785,7 @@ M4 先直接用现有 worker 镜像（显式设置 `NCCL_NVLS_ENABLE`）跑通�
 
 ## 6. 控制面设计
 
-> **暂不实施。** 本节（状态模型、回调、API、UI、结果存储、部署、`macc`）保留为后续设计参考，当前阶段由 `mtest` 代替，见文首说明。
+> **暂不实施。** 本节（状态模型、回调、API、UI、结果存储、部署、`macc`）保留为后续设计参考，当前阶段由 `testkit` 代替，见文首说明。
 
 ### 6.1 状态模型
 
@@ -917,13 +917,13 @@ NICo 还有自带的 phone-home：OS 定义设 `phoneHomeEnabled: true` 后，NI
 
 | 里程碑 | 内容 | 交付物 | 依赖 | 完成标准 | 状态 |
 |---|---|---|---|---|---|
-| M0 | 计划与格式确定 | 本文；`cluster.yaml`、`tests.yaml` 模板（`mtest init`）；IP 规划表导入（`mtest import`） | — | 评审通过 | 完成 |
+| M0 | 计划与格式确定 | 本文；`cluster.yaml`、`tests.yaml` 模板（`testkit init`）；IP 规划表导入（`testkit import`） | — | 评审通过 | 完成 |
 | M1 | 装机进度 | ISO 内 `state.json`（S2）；控制面服务、UI、K8s 部署、`nico-sync`、回调 | M0；控制面 SSH 公钥打进 ISO | 当前阶段：可经 LOM SSH 查看 `state.json` 和阶段日志 | `state.json` 已实现；其余暂不实施 |
-| M2 | 网卡识别与网络配置 | S3、S4（`mtest nic`、`mtest net`，含 `--dry-run` 差异预览、自动回滚） | M0；第一台实机 | 金样本确认；一个 rack 批量配置通过，重复执行无变更 | 已实现，实机待确认 |
-| M3 | 容器测试框架 + DCGM 诊断 | mtest 执行器（远程 Docker、多节点批量启动三种模式、实时日志、结果拉回、取消）；S5 | M2 | 一个 rack 并发执行 DCGM 并拿到全部节点结果；用最小多节点示例验证一条命令批量启动和失败联动停止 | 已实现，实机待确认 |
+| M2 | 网卡识别与网络配置 | S3、S4（`testkit nic`、`testkit net`，含 `--dry-run` 差异预览、自动回滚） | M0；第一台实机 | 金样本确认；一个 rack 批量配置通过，重复执行无变更 | 已实现，实机待确认 |
+| M3 | 容器测试框架 + DCGM 诊断 | testkit 执行器（远程 Docker、多节点批量启动三种模式、实时日志、结果拉回、取消）；S5 | M2 | 一个 rack 并发执行 DCGM 并拿到全部节点结果；用最小多节点示例验证一条命令批量启动和失败联动停止 | 已实现，实机待确认 |
 | M4 | SuperBench + IMEX + NVLink Fabric + SHARP | S6、S7、S7a 编排与结果解析；S7b（`nvlink.pairs`、`nvlink.fabric`，主机模式；`nvshmem.*` 可选）；分层关卡与链路计数器；SHARP 测试镜像 | M3；UFM（含 SHARP AM）、NMX 就绪；NMX-T 地址 | 一个 rack 全部通过或给出明确的失败归类；在金样本 rack 上确定 S7b 各步耗时和性能基线；有 2 个 rack 时完成 O-A~O-D 对比 | S6、S7、S7a、S7b（N1–N4）、分层关卡已实现（单元测试与 e2e 通过），实机待确认；N5 NMX-T 待做 |
 | M5 | MoE 测试 | S8 第 1–4 档编排；HybridEP、DeepEP V1、MoonEP 实机验证 | M4 | 四档都能一条命令启动并出结果；建立基线 | 待做 |
-| M6 | 验收报告 | S9：`mtest report` 生成 HTML、CSV，可打包原始日志 | M5 | 全部主机一份报告 | 报告框架已实现，随各测试项补充 |
+| M6 | 验收报告 | S9：`testkit report` 生成 HTML、CSV，可打包原始日志 | M5 | 全部主机一份报告 | 报告框架已实现，随各测试项补充 |
 
 各阶段的实现进度以 [testkit README](../benchmarks/testkit/README.md) 的进度表为准。
 
@@ -932,7 +932,7 @@ NICo 还有自带的 phone-home：OS 定义设 `phoneHomeEnabled: true` 后，NI
 | 项 | 影响 | 处理 |
 |---|---|---|
 | 回调地址尚未确定；LOM 网段到控制面回调端口是否放通未确认 | S1、S2 实时性 | 回调为可选；进度主路径为 LOM SSH 轮询，不依赖回调 |
-| 控制面经 LOM SSH | 全部 SSH | 网络侧已确认 OOB ACL 放开 NICo 节点到 LOM 网段的 SSH，无限制；mtest 控制机不在 NICo 节点上时，需确认它到 LOM 网段的 SSH 同样放通 |
+| 控制面经 LOM SSH | 全部 SSH | 网络侧已确认 OOB ACL 放开 NICo 节点到 LOM 网段的 SSH，无限制；testkit 控制机不在 NICo 节点上时，需确认它到 LOM 网段的 SSH 同样放通 |
 | S4 切换默认路由到 BF3 port 0 后，LOM 上 SSH 回包改走 port 0，控制面失联 | S4 及之后全部 SSH | LOM 加策略路由（复用 LOM 的 netplan id，已在 QEMU 验证）；应用前设 120 秒定时回滚；BF3 配错时可用 BMC 串口控制台排障 |
 | GB300 实机 LOM 网卡型号、BF3 PCI ID（`15b3:a2dc`）未在实机确认 | S3、S4 | 金样本主机上 `lspci -nn`、`ip route get <NICo 地址>` 确认 |
 | S4 网络配置下发方案未最终确定（SSH 推送 / NICo userData 拉取 / NICo DHCP） | S4、ISO | 见 3.3 节；默认按方案 A 实现，选 B 需在 ISO 加通用拉取步骤，选 C 需网络侧配 DHCP relay |

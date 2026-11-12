@@ -3,11 +3,11 @@ import os
 import tempfile
 import unittest
 
-from mtest.config import load_both
-from mtest.executor import run_items
-from mtest.parsers import superbench as sb
-from mtest.report import build_data
-from mtest.state import StateStore, read_json
+from testkit.config import load_both
+from testkit.executor import run_items
+from testkit.parsers import superbench as sb
+from testkit.report import build_data
+from testkit.state import StateStore, read_json
 from tests.helpers import Workspace
 from tests.test_executor import FakeOps
 
@@ -136,7 +136,7 @@ class DelegateTest(unittest.TestCase):
         post = [c for c in ops.calls if c[0] == "host_run" and c[2].startswith("sed -i")]
         self.assertEqual(sorted(c[1] for c in pre), HOSTS)
         self.assertEqual(sorted(c[1] for c in post), HOSTS)
-        self.assertIn("mtest-" + run_id, post[0][2])
+        self.assertIn("testkit-" + run_id, post[0][2])
         puts = sorted(os.path.basename(c[2]) for c in ops.calls if c[0] == "put")
         self.assertEqual(puts, ["id_ed25519", "inventory", "sb_run.sh"])
         state = StateStore(tests.results_dir).load()["hosts"]

@@ -4,7 +4,7 @@ NIXL 与 NIXLBench 测试镜像：NIXL 插件 UCX、LIBFABRIC、GDS、GDS_MT、P
 
 - 完整使用指南（testNixl S1-S6、结果解读、基线）：[docs/nixl-benchmark.md](../../docs/nixl-benchmark.md)
 - S1-S6 测试项定义与判定标准：[nixlbench-acceptance-smoke-suite.md](./nixlbench-acceptance-smoke-suite.md)
-- 在 mtest 中运行（`nixl.node`、`nixl.pair`、`nixl.storage`）：[benchmarks/testkit/README.md](../testkit/README.md#nixlnixlbench可选默认关闭)
+- 在 testkit 中运行（`nixl.node`、`nixl.pair`、`nixl.storage`）：[benchmarks/testkit/README.md](../testkit/README.md#nixlnixlbench可选默认关闭)
 
 ## 镜像
 

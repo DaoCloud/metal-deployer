@@ -1,9 +1,9 @@
 import unittest
 
-from mtest.config import load_cluster
-from mtest.items import BY_ID
-from mtest.selection import SelectionError, build_groups, resolve
-from mtest.util import Problems
+from testkit.config import load_cluster
+from testkit.items import BY_ID
+from testkit.selection import SelectionError, build_groups, resolve
+from testkit.util import Problems
 from tests.helpers import Workspace
 
 

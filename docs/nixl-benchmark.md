@@ -2,7 +2,7 @@
 
 ## 一、概述
 
-`nixl-benchmark` 是 NIXL / NIXLBench 测试镜像，用来验证 GPU 显存与内存之间的传输带宽和延迟：节点内 NVLink、跨节点 RDMA 与 GPUDirect RDMA，以及经 NIXL 的本机存储（POSIX、GDS）。验收用 S1-S6 smoke 套件，由镜像内置脚本 `testNixl` 一键执行，也可以由 mtest 调度（见第五章）。
+`nixl-benchmark` 是 NIXL / NIXLBench 测试镜像，用来验证 GPU 显存与内存之间的传输带宽和延迟：节点内 NVLink、跨节点 RDMA 与 GPUDirect RDMA，以及经 NIXL 的本机存储（POSIX、GDS）。验收用 S1-S6 smoke 套件，由镜像内置脚本 `testNixl` 一键执行，也可以由 testkit 调度（见第五章）。
 
 | 工具 | 内容 |
 | --- | --- |
@@ -175,9 +175,9 @@ DETAIL 为首行（最小块）延迟 + 末行（最大块）带宽。initiator 
 
 GB300 / B300 的基线待金样本实测后补充。验收判据见 smoke 套件文档。
 
-## 五、在 mtest 中运行
+## 五、在 testkit 中运行
 
-GB300 验收由 mtest 调度时，在 `tests.yaml`（`mtest init` 生成的模板已有 `nixl` 段）设置 `images.nixl_benchmark`，把 `nixl.node`、`nixl.pair`（可选 `nixl.storage`）改为 `enabled: true`：
+GB300 验收由 testkit 调度时，在 `tests.yaml`（`testkit init` 生成的模板已有 `nixl` 段）设置 `images.nixl_benchmark`，把 `nixl.node`、`nixl.pair`（可选 `nixl.storage`）改为 `enabled: true`：
 
 ```yaml
 images:
@@ -197,10 +197,10 @@ nixl:
 ```
 
 ```bash
-mtest run nixl
+testkit run nixl
 ```
 
-mtest 不使用 testNixl 的 SSH 编排，而是用自己的 mpi 模式容器（rank 0 容器启动 etcd，其他主机的进程经容器内 sshd 启动），结果进入 mtest 报告。细节见 [benchmarks/testkit/README.md](../benchmarks/testkit/README.md#nixlnixlbench可选默认关闭)。
+testkit 不使用 testNixl 的 SSH 编排，而是用自己的 mpi 模式容器（rank 0 容器启动 etcd，其他主机的进程经容器内 sshd 启动），结果进入 testkit 报告。细节见 [benchmarks/testkit/README.md](../benchmarks/testkit/README.md#nixlnixlbench可选默认关闭)。
 
 ## 六、常见问题
 

@@ -1,12 +1,12 @@
 import os
 import unittest
 
-from mtest.checks import check_tests
-from mtest.config import load_both
-from mtest.executor import run_items
-from mtest.parsers import nixl
-from mtest.runners import nixl_case_args, nixl_pairs
-from mtest.state import StateStore, read_json
+from testkit.checks import check_tests
+from testkit.config import load_both
+from testkit.executor import run_items
+from testkit.parsers import nixl
+from testkit.runners import nixl_case_args, nixl_pairs
+from testkit.state import StateStore, read_json
 from tests.helpers import Workspace
 from tests.test_executor import FakeOps
 
@@ -138,8 +138,8 @@ class NixlFlowTest(unittest.TestCase):
         ops = FakeOps(behave)
         run_id, code = run_items(cluster, tests, ["nixl.pair"], None, None, ops, out=self.lines.append)
         launcher = [c for c in ops.calls if c[0] == "exec"]
-        self.assertEqual(launcher[0][2], "bash /mtest/nixl_run.sh")
-        tools = sorted(os.path.basename(c[2]) for c in ops.calls if c[0] == "put" and c[1] == H2 and ".mtest/" in c[2])
+        self.assertEqual(launcher[0][2], "bash /testkit/nixl_run.sh")
+        tools = sorted(os.path.basename(c[2]) for c in ops.calls if c[0] == "put" and c[1] == H2 and ".testkit/" in c[2])
         self.assertEqual(tools, ["nixl_cases.tsv", "nixl_pairs.tsv", "nixl_run.sh"])
         st = StateStore(tests.results_dir).load()["hosts"]
         self.assertEqual(st[H3]["nixl.pair"]["status"], "fail", self.lines)

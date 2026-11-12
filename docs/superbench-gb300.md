@@ -30,7 +30,7 @@
 | `benchmarks/superbenchmark/image/configs/config_gb300_single_node.yaml` | 单机：cublaslt-gemm、nvbandwidth、gpu-copy-bw、gpu-burn、cpu-stream × 4、ib-loopback、nccl-bw × 5（nvlink：allreduce、allgather、reducescatter、alltoall、broadcast） |
 | `benchmarks/superbenchmark/image/configs/config_gb300_multi_node.yaml` | 跨节点 IB：ib-traffic（GPU Direct RDMA 单向/双向 + cpu-to-cpu）、nccl-bw × 4（`NCCL_MNNVL_ENABLE=0`） |
 | `benchmarks/superbenchmark/image/configs/config_gb300_nvl_domain.yaml` | 柜内 MNNVL：nccl-bw × 5（含 broadcast）+ NVLS 对照（`NCCL_MNNVL_ENABLE=1`） |
-| `benchmarks/superbenchmark/image/configs/config_gb300_all_nodes.yaml` | 全部 rack（生产形态）：柜内 NVLink + 柜间 IB，nccl-bw × 5（`NCCL_MNNVL_ENABLE=1`、`NCCL_NVLS_ENABLE=1`）；另有长稳用例 `nccl-bw:soak:allreduce:mnnvl-ib`（不在 enable 中，由 mtest 选择） |
+| `benchmarks/superbenchmark/image/configs/config_gb300_all_nodes.yaml` | 全部 rack（生产形态）：柜内 NVLink + 柜间 IB，nccl-bw × 5（`NCCL_MNNVL_ENABLE=1`、`NCCL_NVLS_ENABLE=1`）；另有长稳用例 `nccl-bw:soak:allreduce:mnnvl-ib`（不在 enable 中，由 testkit 选择） |
 | `benchmarks/superbenchmark/image/configs/config_gb300_disk.yaml` | 磁盘：设备只能由 `--disk` 注入 |
 | `benchmarks/superbenchmark/image/configs/rule_gb300.yaml` | 汇总规则：GPU-COMPUTE、GPU-MEM、GPU-STABILITY、CPU-MEM、RDMA-LOCAL、RDMA-MULTINODE、NCCL-NVLINK、NCCL-MNNVL、NCCL-MNNVL-IB、NCCL-IB、DISK |
 | `benchmarks/superbenchmark/image/scripts/run-tests.sh` | `-p default|gb300`（arm64 上默认 gb300）、`-t nvl-domain`、`--disk` |

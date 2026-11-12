@@ -1,4 +1,4 @@
-# Fake GB300 host for mtest end-to-end tests: sshd plus the docker CLI.
+# Fake GB300 host for testkit end-to-end tests: sshd plus the docker CLI.
 # The host's /var/run/docker.sock is mounted, so "ssh node docker run ..." starts
 # containers on the machine that runs the test.
 FROM docker:cli

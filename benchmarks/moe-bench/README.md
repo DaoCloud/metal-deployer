@@ -21,7 +21,7 @@ HybridEP 和 DeepEP V1 来自 DeepEP `hybrid-ep` 分支的同一个 `deep_ep` �
 | PyTorch | 2.11.0a0+a6c236b9fd1 | 来自基础镜像 |
 | NCCL（运行时） | 2.29.7 | 来自基础镜像，`torch.distributed` 使用 |
 | DeepEP | `hybrid-ep` 分支 `4e890fd` | HybridEP（NVIDIA 贡献）和 DeepEP V1（normal、low_latency） |
-| NVSHMEM | 3.5.21：基础镜像自带 host 库，`nvidia-nvshmem-cu13` wheel 提供 `libnvshmem_device.a`；`libnvshmem3-dev-cuda-13` 提供 perftest（`/usr/bin/nvshmem_13/perftest`） | DeepEP V1 跨节点和 low_latency 路径使用；DeepEP 要求 3.3.9 及以上。wheel 和 dev 包版本必须与基础镜像一致，构建时检查。perftest 供 mtest 的 `nvshmem.*` 测试项使用（put/get 带宽和延迟、alltoall 延迟） |
+| NVSHMEM | 3.5.21：基础镜像自带 host 库，`nvidia-nvshmem-cu13` wheel 提供 `libnvshmem_device.a`；`libnvshmem3-dev-cuda-13` 提供 perftest（`/usr/bin/nvshmem_13/perftest`） | DeepEP V1 跨节点和 low_latency 路径使用；DeepEP 要求 3.3.9 及以上。wheel 和 dev 包版本必须与基础镜像一致，构建时检查。perftest 供 testkit 的 `nvshmem.*` 测试项使用（put/get 带宽和延迟、alltoall 延迟） |
 | NCCL（HybridEP 构建用） | 2.29.2，DeepEP submodule `1e0c869` | 只用于生成 DOCA GPUNetIO 对象，不替换运行时 NCCL |
 | MoonEP | `master` 分支 `d86fda4` | 源码保留在 `/opt/MoonEP`，测试和 benchmark 从这里运行 |
 | CUTLASS DSL | `nvidia-cutlass-dsl[cu13]` 4.6.2 | MoonEP 的 CuTe DSL kernel，运行时编译。基础镜像自带 4.3.5，安装时被升级；`protobuf` 也因依赖约束从 7.x 降到 6.x |

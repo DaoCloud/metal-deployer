@@ -3,10 +3,10 @@ import os
 import tempfile
 import unittest
 
-from mtest.config import load_both
-from mtest.executor import run_items
-from mtest.parsers import imex, sharp
-from mtest.state import StateStore, read_json
+from testkit.config import load_both
+from testkit.executor import run_items
+from testkit.parsers import imex, sharp
+from testkit.state import StateStore, read_json
 from tests.helpers import Workspace
 from tests.test_executor import FakeOps
 
@@ -204,8 +204,8 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(len({c[2] for c in lists}), 1)             # same path on every host
         self.assertEqual([c[1] for c in calls if "nvidia-imex-ctl -N" in c[2]], [HOSTS[0]])
         launcher = [c for c in ops.calls if c[0] == "exec"]
-        self.assertEqual(launcher[0][2], "sh /mtest/imex_bench.sh")
-        tools = sorted(os.path.basename(c[2]) for c in ops.calls if c[0] == "put" and ".mtest/" in c[2])
+        self.assertEqual(launcher[0][2], "sh /testkit/imex_bench.sh")
+        tools = sorted(os.path.basename(c[2]) for c in ops.calls if c[0] == "put" and ".testkit/" in c[2])
         self.assertEqual(tools, ["imex_bench.sh", "imex_bench.sh", "imex_bench.sh", "imex_fabric_ipc_test.c",
                                  "imex_fabric_ipc_test.c", "imex_fabric_ipc_test.c"])
         g = read_json(os.path.join(self.tests.results_dir, run_id, "_groups", "imex", "R1", "summary.json"))

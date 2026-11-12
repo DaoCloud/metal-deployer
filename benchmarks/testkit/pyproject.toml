@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "metal-testkit"
 version = "0.1.0"
-description = "mtest: run GB300 acceptance tests on many nodes over SSH and build an HTML report"
+description = "testkit: run GB300 acceptance tests on many nodes over SSH and build an HTML report"
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = ["PyYAML>=5.1"]
@@ -14,10 +14,10 @@ dependencies = ["PyYAML>=5.1"]
 xlsx = ["openpyxl"]
 
 [project.scripts]
-mtest = "mtest.cli:main"
+testkit = "testkit.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["mtest*"]
+include = ["testkit*"]
 
 [tool.setuptools.package-data]
-mtest = ["templates/*", "node_scripts/*", "report/*"]
+testkit = ["templates/*", "node_scripts/*", "report/*"]

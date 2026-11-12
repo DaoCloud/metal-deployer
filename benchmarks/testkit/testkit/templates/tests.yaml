@@ -1,0 +1,397 @@
+# testkit tests file: which tests to run, on which hosts, and how.
+#
+# Items run in this built-in order, one acceptance layer after another; only "enabled: true" items run:
+#   L0 links                                   link state, error counters, cables (mlxlink), kernel log
+#   L1 dcgm -> superbench.single_node (-> superbench.disk)          one host at a time
+#   L2 superbench.pair -> superbench.rack -> superbench.cross_rack  RDMA only: inside each rack, then rack to rack
+#   L3 imex -> nvlink.pairs -> nvlink.fabric   NVLink: IMEX, every GPU pair, fabric under concurrent traffic
+#   L4 superbench.nccl_node -> superbench.nvl_domain -> superbench.all -> sharp.scale_out -> nvshmem.pair
+#      -> nvshmem.rack -> nixl.node -> nixl.pair -> nixl.storage -> superbench.soak
+#      NCCL: one tray, one rack (MNNVL), all racks, IB SHARP; NVSHMEM and NIXL (optional); soak
+#   L5 moe.single -> moe.rack -> moe.cross_rack -> moe.all -> moe.moonep          MoE workloads
+# (smoke can run first to check SSH, Docker and images.)
+#
+# Gates: an item with "gate: true" (default for L0-L3) that does not pass stops the run, so a bad
+# cable or port is found before the throughput tests. Fix it, then "testkit run --from <item>".
+# "testkit run --no-gate" runs on anyway. full_rack (default for rack-level NVLink items): a rack whose
+# hosts were left out after an earlier failure is not tested (blocked) instead of running with fewer
+# hosts. --force includes those hosts again.
+#
+# Host selection (hosts / groups): all | R1 | gb300-r1-t01 | tag:batch1, or a list of them.
+# scope: node  = one group per host
+#        rack  = one group per rack
+#        group = all selected hosts in one group (or list several groups under "groups")
+#
+# Template variables, rendered per node at run time:
+#   group: {run_id} {group_id} {node_rank} {nnodes} {master_addr} {master_port} {node_list} {rack_list}
+#          {np} (GPUs in the group) {hostfile} (MPI hostfile in mpi mode)
+#   host:  {hostname} {rack} {tray} {gpus} {mgmt_ip} {storage_ip} {ib0_ip}..{ib3_ip}
+#   S3:    {mgmt_if} {ib_hcas} {ib_ucx_devs}   (filled from "testkit nic discover" results)
+# Environment layers, later ones win:
+#   common_env -> <section>.common.env -> <item>.env -> <section>.common.per_rank -> host env in cluster.yaml
+version: 1
+
+images:                           # tag or tag@digest; the digest actually used is recorded in results
+  dcgm: nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04   # same DCGM version as the ISO
+  sbcli: registry.local/metal-deployer/testkit:latest
+  sb_worker: superbench/main:cuda13.0
+  moe_bench: registry.local/metal-deployer/moe-bench:latest
+  nixl_benchmark: registry.local/metal-deployer/nixl-benchmark:latest-cuda13-gb300
+image_pull: registry              # registry: hosts pull; push: copy over ssh (docker save | load); skip: only check
+
+runtime:
+  results_dir: ./runs             # local results, relative to this file
+  node_results_dir: /var/lib/testkit/runs     # on each host, mounted as /results in test containers
+  container_args: [--gpus, all, --network, host, --ipc, host, --privileged,
+                   --ulimit, memlock=-1, --ulimit, stack=67108864, --shm-size, 64g]
+  master_port_base: 29500         # MASTER_PORT = base + group index
+  mpi_ssh_port: 2222              # sshd port inside containers in mpi mode
+  rendezvous_timeout: 600         # seconds
+  run_timeout: 7200               # seconds, per group
+  poll_interval: 3                # seconds between container status checks
+  stop_on_failure: true           # hosts that failed an item do not run later items
+  group_order: serial             # serial / parallel
+
+common_env:                       # injected into every test container
+  NCCL_SOCKET_IFNAME: "{mgmt_if}"
+  GLOO_SOCKET_IFNAME: "{mgmt_if}"
+  NCCL_IB_HCA: "{ib_hcas}"
+  UCX_NET_DEVICES: "{ib_ucx_devs}"
+
+# ---------------- smoke ----------------
+smoke:                            # start one container per host and write summary.json: checks SSH, Docker and the image
+  enabled: false
+  scope: node
+  hosts: all
+  image: sb_worker
+  mode: per-node                  # per-node / mpi / delegate; mpi runs "mpirun hostname" across the group
+  sleep: 0                        # seconds the container waits before finishing
+  exit_code: 0                    # exit code to return; set TESTKIT_SMOKE_EXIT in a host env to fail one host
+
+# ---------------- link error counters ----------------
+counters:                         # around every L1-L5 item: read NVLink / IB error counters and the kernel log
+  enabled: true                   # on each host before and after; a counter that went up, a link that went down
+  items: null                     # or a new GPU/NIC kernel error fails that host (names the GPU link or IB port).
+                                  # null: L1-L3 items fail, L4-L5 items warn; a list: only these items, all fail
+  max_increase: 0                 # allowed increase per counter
+  nvlink_ignore: ['\bfec\b', '\bber\b', '\bsymbol\b']   # regexes of nvidia-smi nvlink -e counters that are not judged
+  ib_watch: [symbol_error, link_error_recovery, link_downed, port_rcv_errors, port_rcv_remote_physical_errors,
+             port_rcv_switch_relay_errors, port_xmit_discards, local_link_integrity_errors,
+             excessive_buffer_overrun_errors, port_rcv_constraint_errors, port_xmit_constraint_errors, VL15_dropped]
+  kernel_patterns: ['NVRM: Xid', 'fallen off the bus', 'nvswitch.*(error|fatal)',
+                    'mlx5_core.*(error|fail|timeout|link down|health|fatal|unrecover)',
+                    'AER: .*(uncorrected|fatal)', 'infiniband.*(error|fail)']   # new kernel lines that fail a host
+  kernel_ignore: []               # regexes of kernel lines that are not judged, e.g. 'Xid \([^)]*\): 43,'
+  warn_layers: [L4, L5]           # layers where counters and kernel lines only warn (default items only)
+
+# ---------------- L0 links ----------------
+links:                            # read-only, over ssh, no container: nvidia-smi nvlink -s / -e, topo -p2p, IB sysfs
+  enabled: true
+  scope: node
+  hosts: all
+  gate: true
+  nvlink_per_gpu: 18              # NVLink5 links per GB300 GPU that must be up (all at the same speed)
+  p2p: true                       # nvidia-smi topo -p2p n: every GPU pair of the host OK
+  ib_ports: 4                     # IB link-layer ports (CX8 rails), all ACTIVE
+  ib_rate_gbps: 800               # minimum port rate; null to skip
+  max_error_count: null           # fail when a watched counter is already above this (since boot); null: report only
+  max_kernel_errors: null         # fail when the kernel log since boot has more GPU/NIC error lines; null: warn only
+  mlxlink: true                   # mlxlink -m -c -e per IB port: module, BER, effective physical errors (MFT)
+  mlxlink_limits: {max_effective_ber: null, max_raw_ber: null, max_module_temp_c: null}   # null: report only
+
+# ---------------- S5 DCGM ----------------
+dcgm:
+  enabled: true
+  scope: node
+  hosts: all
+  level: 3                        # dcgmi diag -r 3; 4 is the long run
+  hostengine: container           # container: run nv-hostengine and the diag plugins of the image; the host
+                                  #            nvidia-dcgm service is stopped during the test, started again after
+                                  # host: use the host's nvidia-dcgm service (port 5555) and its DCGM install
+  health: true
+  checks: [ecc, remapped_rows, nvlink, fabric_state]
+  gpu_burn: {enabled: false, seconds: 600}
+
+# ---------------- S6 SuperBench ----------------
+superbench:
+  # The sbcli image (images.sbcli) runs on the rank 0 host of each group and drives every host of the
+  # group with sb deploy/run; images.sb_worker must already be on every host. A key made for the run is
+  # added to the hosts' authorized_keys and removed afterwards.
+  common:
+    rule: rule_gb300.yaml
+    config_dir: ""                # where configs are in the sbcli image (empty: /workspace)
+    timeout: 14400                # seconds per group; overrides runtime.run_timeout
+    benchmarks: {include: [], exclude: []}    # empty include = every benchmark enabled in the config
+    outlier:                      # compare hosts with the median of the group (same metric)
+      pct: 10                     # more than pct % worse than the median is an outlier
+      action: fail                # fail: the host fails (and a gated item stops the run); warn: only shown
+      metrics: ['^nvbandwidth/', '^gpu-copy-bw', '^ib-loopback']   # single-node metrics compared across hosts
+      rdma_tests: [bw_gpu-to-gpu, bidir_gpu-to-gpu]    # ib-traffic: median of each (host, rail) over all pairs
+    hca_check: fail               # NCCL log (NCCL_DEBUG=INFO): IB devices in use are the CX8 rails, each GPU on its
+                                  # own rail (from "testkit nic discover"), no RoCE/BF3, no NET/Socket; fail/warn/off
+    small_message_bytes: [8, 65536]   # report the NCCL time (us) of messages in this range
+    baseline: {}                  # minimum NCCL busbw in GB/s at the largest message, e.g.
+                                  # {"nccl-bw:bw:allreduce:ib": 300}; set after the golden-sample rack
+
+  single_node:                    # L1: GEMM, GPU memory, nvbandwidth, gpu-burn, cpu-stream, ib-loopback
+    enabled: true
+    scope: node
+    hosts: all
+    config: config_gb300_single_node.yaml
+    benchmarks: {exclude: [nccl-bw:bw:allreduce:nvlink, nccl-bw:bw:alltoall:nvlink, nccl-bw:bw:allgather:nvlink,
+                           nccl-bw:bw:reducescatter:nvlink, nccl-bw:bw:broadcast:nvlink]}   # NCCL runs in L4
+
+  disk:                           # overwrites the selected disks; implemented in a later phase
+    enabled: false
+    scope: node
+    hosts: all
+    config: config_gb300_disk.yaml
+    selector: {model: "", size_gb: 3840}
+    exclude_by_id: []
+    expected_count: 8
+    parallel: false
+
+  # L2 RDMA point to point (ib-traffic only: GPU Direct RDMA bandwidth one way and both ways, latency).
+  # Every pair runs 4 rails at once, rail k to rail k. ib_pairs selects the pairs (one line per round):
+  #   rack_adjacent  inside each rack tray 1-2, 3-4, ... (18 hosts: 9 pairs x 4 rails, one round)
+  #   rack_half      inside each rack tray i with tray i + n/2
+  #   cross_rack     rack A tray i with rack B tray i (2 racks: 18 pairs x 4 rails, one round);
+  #                  with more racks one round per rack pairing (cross_rack_rounds: all / first)
+  #   round_robin    SuperBench one-to-one: every host with every other host (n-1 rounds)
+  # testkit writes the pairing file to /mnt/testkit/<run>/ on every host (the worker containers mount /mnt).
+  pair:                           # optional 2-host smoke test before the rack stage
+    enabled: false
+    scope: group
+    hosts: [gb300-r1-t01, gb300-r1-t02]
+    config: config_gb300_multi_node.yaml
+    benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-bidir,
+                           ib-traffic:perftest:multinode-lat]}
+    ib_pairs: round_robin
+
+  rack:                           # L2 RDMA stage A: inside each rack, fixed pairs
+    enabled: true
+    scope: rack
+    hosts: all
+    config: config_gb300_multi_node.yaml
+    benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-bidir,
+                           ib-traffic:perftest:multinode-lat]}
+    ib_pairs: rack_adjacent
+
+  cross_rack:                     # L2 RDMA stage B: rack to rack, same tray number; skipped with one rack
+    enabled: true
+    scope: group
+    hosts: all
+    config: config_gb300_multi_node.yaml
+    benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-bidir,
+                           ib-traffic:perftest:multinode-lat]}
+    ib_pairs: cross_rack
+    cross_rack_rounds: all
+
+  # L4 NCCL (nccl-bw, 1 B to 16 GiB): order nccl_node -> nvl_domain -> all -> sharp.scale_out -> nvshmem -> soak.
+  # The report shows busbw at the largest message and the time of small messages (8 B .. 64 KiB).
+  nccl_node:                      # L4: NCCL inside one tray (4 GPUs over NVLink), every host on its own
+    enabled: true
+    scope: node
+    hosts: all
+    config: config_gb300_single_node.yaml
+    benchmarks: {include: [nccl-bw:bw:allreduce:nvlink, nccl-bw:bw:allgather:nvlink, nccl-bw:bw:reducescatter:nvlink,
+                           nccl-bw:bw:alltoall:nvlink, nccl-bw:bw:broadcast:nvlink]}
+
+  nvl_domain:                     # L4: NCCL inside each rack (18 hosts, 72 GPUs) over MNNVL, no IB; with NVLS
+    enabled: true
+    scope: rack
+    hosts: all
+    config: config_gb300_nvl_domain.yaml
+    baseline: {}                  # e.g. {"nccl-bw:bw:allreduce:mnnvl-nvls": 700}
+
+  all:                            # L4: NCCL with every host: NVLink inside racks, IB between (production layout)
+    enabled: true
+    scope: group
+    hosts: all
+    config: config_gb300_all_nodes.yaml
+    baseline: {}                  # e.g. {"nccl-bw:bw:allreduce:mnnvl-ib": 300}
+
+  soak:                           # L4: one 8 GiB allreduce repeated (iters in the config), every host; off by default
+    enabled: false
+    scope: group
+    hosts: all
+    config: config_gb300_all_nodes.yaml
+    benchmarks: {include: [nccl-bw:soak:allreduce:mnnvl-ib]}
+    timeout: 7200
+
+# ---------------- S7 IMEX ----------------
+imex:
+  enabled: true
+  scope: rack                     # one IMEX domain per rack
+  hosts: all
+  configure: true                 # imex-configure.sh on every host with the rack's mgmt IPs (rank order)
+  scripts_dir: /opt/resource/scripts   # imex-configure.sh / imex-check.sh installed by the ISO
+  wait_ready_seconds: 300         # wait for nvidia-imex-ctl -N "Domain State: UP"
+  bench:                          # in mpi-mode containers (images.sb_worker)
+    t1_fabric_ipc: true           # imex_fabric_ipc_test, compiled with mpicc in each container
+    t2_nvbandwidth: false         # 2-host multinode nvbandwidth; replaced by nvlink.pairs (whole rack)
+    nvbandwidth: ""               # path of a multinode nvbandwidth in the image (empty: /opt/superbench/bin/nvbandwidth)
+
+# ---------------- S7b NVLink (dcgmi mndiag) ----------------
+# Runs on the hosts, not in containers: the rank 0 host of each rack runs "dcgmi mndiag" with the ISO's
+# DCGM multinode packages (datacenter-gpu-manager-4-multinode{,-cuda13}) and Open MPI. While an item
+# runs, nv-hostengine on every host listens on its mgmt address (drop-in in /run, removed afterwards)
+# and rank 0 reaches the other hosts as root with a key made for the run.
+# Outliers: per GPU (median of its row / column) against the median of the rack.
+nvlink:
+  common:
+    hostengine_port: 5555
+    dcgm_log_dir: /var/log/nvidia-dcgm    # DCGM_HOME_DIR: workload logs are copied from here
+    plugin_dir: /usr/libexec/datacenter-gpu-manager-4/plugins/cuda13
+    stop_on_fail: true            # a step that does not pass skips the later steps
+    outlier_pct: 10
+    outlier_action: fail          # fail / warn
+    baseline: {}                  # minimum per testcase, e.g. {"multinode_device_to_device_memcpy_read_ce": 700}
+  pairs:                          # L3: N1 every GPU pair (72 GPUs: 2556), then N2 the bandwidth matrix
+    enabled: true
+    scope: rack
+    hosts: all
+    gate: true
+    all_pairs: {enabled: true, time_to_run: 3600}       # seconds for the whole sequence of pairs
+    bandwidth: {enabled: true, time_to_run: 3600, target_num_pairs: -1, testcases: []}
+                                  # -1: all directed pairs (72 GPUs: 5112); empty testcases: memcpy write/read CE
+  fabric:                         # L3: NVLoom suites, one after another
+    enabled: true
+    scope: rack
+    hosts: all
+    gate: true
+    suites: [gpu-to-rack, pairwise, all-to-one, multicast, latency, fabric-stress]
+    time_to_run: {default: 1800, fabric-stress: 1200}
+    rich_output: [pairwise]       # suites that print every measured GPU pair
+
+# ---------------- S7a IB SHARP ----------------
+# SuperBench nccl-bw from config_gb300_sharp.yaml; each case is one NCCL setting defined there:
+#   O-A off, O-B NVLS inside racks + plain IB, O-C IB SHARP only, O-D NVLS + IB SHARP (>= 2 racks).
+# NVLink SHARP inside a rack (NVLS) is covered by superbench.nvl_domain.
+# Comparisons (O-B/O-A, O-D/O-B, ...) are shown in the report, not judged.
+sharp:
+  common:
+    config: config_gb300_sharp.yaml
+    ops: [allreduce, reducescatter, allgather]
+    worker_image: ""              # empty: images.sb_worker; or an image with a newer NCCL
+    timeout: 14400
+  scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM
+    enabled: false
+    scope: group
+    groups: [[R1, R2]]
+    cases: [O-A, O-B, O-C, O-D]
+
+# ---------------- S7b NVSHMEM (optional) ----------------
+# NVSHMEM perftests (libnvshmem3-dev-cuda-13 in the moe-bench image) in mpi-mode containers:
+# GPU-initiated put/get bandwidth and latency. Results are recorded, not judged.
+nvshmem:
+  common:
+    image: moe_bench
+    perftest_dir: ""              # empty: /usr/bin/nvshmem_13/perftest/device
+    perftest_args: []
+    nvshmem_env: {}               # extra NVSHMEM_* settings for every perftest
+  pair:                           # two hosts in different trays, one GPU each
+    enabled: false
+    scope: group
+    hosts: [gb300-r1-t01, gb300-r1-t02]
+    tests: [pt-to-pt/shmem_put_bw, pt-to-pt/shmem_get_bw, pt-to-pt/shmem_put_latency, pt-to-pt/shmem_get_latency,
+            pt-to-pt/shmem_p_latency]
+  rack:                           # alltoall latency over every GPU of a rack
+    enabled: false
+    scope: rack
+    hosts: all
+    tests: [coll/alltoall_latency]
+
+# ---------------- NIXL (optional) ----------------
+# NIXLBench (images.nixl_benchmark) in mpi-mode containers. The rank 0 container starts etcd on its mgmt
+# address, then runs every case: both nixlbench processes (initiator first, then target; ranks meet in
+# etcd), on other hosts over ssh in their containers. Cases (testNixl S1-S6 smoke suite):
+#   node     s1 VRAM->VRAM WRITE 4K-64M, s2 VRAM<-VRAM READ + consistency 4K-16M (gpus[0] -> gpus[1])
+#   pair     s3 DRAM->DRAM 4K-64M, s4 DRAM->VRAM 4K-1M, s5 VRAM->VRAM + consistency 4K-1M (GPUDirect),
+#            s6 DRAM->DRAM 64K-64M, 200 iterations; pairs run one at a time
+#   storage  posix / posix_read (POSIX), gds / gds_read (GDS, VRAM, O_DIRECT); a read case reads the
+#            file written by the write case before it, so list the write case first
+# Results are recorded; min_bw_gbps (largest block) and max_lat_us (smallest block) per case fail a run.
+nixl:
+  common:
+    image: nixl_benchmark
+    backend: UCX                  # network cases: UCX or LIBFABRIC
+    device_list: all              # pair cases: all (UCX_NET_DEVICES from common_env applies) or e.g. mlx5_0
+    gpus: [0, 1]                  # GPU of the initiator / target process (pair cases use gpus[0] on both hosts)
+    num_iter: 100
+    warmup_iter: 10
+    case_timeout: 900             # seconds per nixlbench process
+    etcd_port: 12379              # etcd client port in the rank 0 container (peer port: +1, on 127.0.0.1)
+    nixlbench_args: []            # extra arguments for every case
+    case_args: {}                 # extra arguments per case, e.g. {s3: [--num_threads, "4"]}
+    min_bw_gbps: {}               # e.g. {s1: 300, s3: 45, s6: 45}; set after the golden-sample rack
+    max_lat_us: {}                # e.g. {s3: 10}
+  node:                           # two GPUs inside each host
+    enabled: false
+    scope: node
+    hosts: all
+    cases: [s1, s2]
+  pair:                           # RDMA between hosts
+    enabled: false
+    scope: group
+    hosts: [gb300-r1-t01, gb300-r1-t02]
+    cases: [s3, s4, s5, s6]
+    pairs: sequential             # sequential: (h1,h2) (h3,h4) ..., odd count adds (h1,hN);
+                                  # or rack_adjacent / rack_half / cross_rack as in superbench ib_pairs
+  storage:                        # local storage through NIXL; needs a directory on each host
+    enabled: false
+    scope: node
+    hosts: all
+    cases: [posix, posix_read]    # gds / gds_read need GPUDirect Storage (nvidia-fs or a GDS-capable file system)
+    filepath: /mnt/nixl-bench     # created if missing; the test files are removed before and after
+
+# ---------------- S8 MoE ----------------
+moe:
+  common:
+    image: moe_bench
+    env:
+      WORLD_SIZE: "{nnodes}"
+      RANK: "{node_rank}"
+      MASTER_ADDR: "{master_addr}"
+      MASTER_PORT: "{master_port}"
+      HIDDEN_DIM: "7168"
+      NUM_TOKENS_PER_RANK: "4096"
+      NUM_LOCAL_EXPERTS: "8"
+      TOPK: "8"
+    cmd: [moe-bench, --log-dir, /results]
+    per_rank: {}                  # per group rank, for example {"0": {env: {...}, args_append: [...]}}
+
+  single:                         # MoE level 1: one host, HybridEP + DeepGEMM
+    enabled: true
+    scope: node
+    hosts: all
+    args: [--suite, all]
+
+  rack:                           # MoE level 2: inside a rack over MNNVL; needs imex
+    enabled: true
+    scope: rack
+    hosts: all
+    args: [--suite, hybrid-ep]
+
+  cross_rack:                     # MoE level 3: NVLink inside a rack, IB across racks
+    enabled: false
+    scope: group
+    groups: [[R1, R2]]
+    args: [--suite, hybrid-ep]
+    env: {NUM_TOKENS_PER_RANK: "2048"}
+
+  all:                            # MoE level 4: all hosts in one group
+    enabled: false
+    scope: group
+    hosts: all
+    args: [--suite, hybrid-ep]
+
+  moonep:                         # not integrated yet
+    enabled: false
+    scope: node
+    hosts: all
+
+# ---------------- S9 report ----------------
+report:
+  title: GB300 测试报告
+  formats: [html, csv]            # html: report.html (single file, works offline); csv: hosts.csv, metrics.csv

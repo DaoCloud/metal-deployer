@@ -206,7 +206,7 @@ ls -la ~/sbtest/results/{timestamp}/reports/superbench-test-summary.xlsx
 | `single-node` | `config_gb300_single_node.yaml` | GPU 算力 `cublaslt-gemm`（bf16/fp16/fp8，fp4 单独一项）；拷贝带宽 `nvbandwidth`、`gpu-copy-bw`；`gpu-burn`（不测 FP64）；Grace 内存带宽 `cpu-stream`（numa0、numa1、跨 NUMA、整节点）；`ib-loopback`；`nccl-bw` allreduce/alltoall（4 卡） |
 | `multi-node` | `config_gb300_multi_node.yaml` | `ib-traffic`：GPU Direct RDMA（gpu-to-gpu，单向 + 双向）和 cpu-to-cpu 基线，另有 cpu-to-cpu 时延（`ib_write_lat`，2 字节）；`nccl-bw` allreduce/allgather/reducescatter/alltoall，强制走 IB（`NCCL_MNNVL_ENABLE=0`） |
 | `nvl-domain` | `config_gb300_nvl_domain.yaml` | `nccl-bw` allreduce（含 NVLS 对照）/allgather/reducescatter/alltoall，强制走 MNNVL（`NCCL_MNNVL_ENABLE=1`）。hosts 中的节点必须在同一 NVLink 域，宿主机 IMEX 已正常运行 |
-| （mtest `sharp.*`） | `config_gb300_sharp.yaml` | `nccl-bw:sharp:<op>:<组>`：柜内 U-A（NVLS 关）/ U-B（NVLink SHARP），柜间 O-A~O-D（无 SHARP / NVLSTree / IB SHARP / 两级）；由 mtest 按组选择条目，`run-tests.sh` 不使用 |
+| （testkit `sharp.*`） | `config_gb300_sharp.yaml` | `nccl-bw:sharp:<op>:<组>`：柜内 U-A（NVLS 关）/ U-B（NVLink SHARP），柜间 O-A~O-D（无 SHARP / NVLSTree / IB SHARP / 两级）；由 testkit 按组选择条目，`run-tests.sh` 不使用 |
 | `--disk` | `config_gb300_disk.yaml` | `disk-benchmark`，设备由 `--disk` 传入，含顺序写和随机写 |
 
 GB300 配置不包含 `gemm-flops`、`cpu-memory-bw-latency`、`cpu-hpl`。多节点 nvbandwidth、IMEX 检查、stress-ng 不在 SuperBench 中执行。

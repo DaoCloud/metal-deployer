@@ -6,11 +6,11 @@ import unittest
 
 import yaml
 
-from mtest import nic as nicmod
-from mtest import net
-from mtest.config import Host
-from mtest.util import deep_merge
-from mtest.nodecmd import SCRIPT_DIR
+from testkit import nic as nicmod
+from testkit import net
+from testkit.config import Host
+from testkit.util import deep_merge
+from testkit.nodecmd import SCRIPT_DIR
 
 
 def load_node(name):
@@ -249,12 +249,12 @@ class NetplanTest(unittest.TestCase):
         own, edits = net.render(host(), self.nic(), NETWORK, HOST)
         self.assertEqual(sorted(own), [COMPUTE, MS])
         doc = eths(own)
-        mgmt = doc[MS]["mtest-mgmt"]
+        mgmt = doc[MS]["testkit-mgmt"]
         self.assertEqual(mgmt["match"], {"macaddress": "aa:bb:cc:00:00:01"})
         self.assertEqual(mgmt["addresses"], ["10.20.0.11/16"])
         self.assertEqual(mgmt["routes"], [{"to": "default", "via": "10.20.0.1"}])
         self.assertEqual(mgmt["nameservers"], {"addresses": ["10.20.0.53"]})
-        storage = doc[MS]["mtest-storage"]
+        storage = doc[MS]["testkit-storage"]
         self.assertEqual(storage["mtu"], 9000)
         self.assertEqual(storage["routes"], [{"to": "10.30.0.0/16", "scope": "link"}])
         self.assertEqual(sorted(doc[COMPUTE]), ["ibp0s0", "ibp1s0", "ibp2s0", "ibp3s0"])
@@ -274,7 +274,7 @@ class NetplanTest(unittest.TestCase):
         own2, edits2 = net.render(host(), self.nic(), NETWORK, edits)
         self.assertEqual((own2, edits2), (own, {}))
         named = self.render(network=dict(NETWORK, match_by="name"))
-        self.assertEqual(named[MS]["mtest-mgmt"]["match"], {"name": "enP9p1s0f0np0"})
+        self.assertEqual(named[MS]["testkit-mgmt"]["match"], {"name": "enP9p1s0f0np0"})
 
     def test_lom_policy(self):
         lom = self.render(network=dict(NETWORK, lom={"table": 200, "priority": 50}))[MS]["eno1"]
@@ -284,7 +284,7 @@ class NetplanTest(unittest.TestCase):
         lom = yaml.safe_load(edits["50-cloud-init.yaml"])["network"]["ethernets"]["eno1"]
         self.assertNotIn("gateway4", lom)
         self.assertEqual(lom["routes"], [{"to": "default", "via": "10.10.0.254", "table": 100}])
-        # No default route on the LOM: mtest adds the table default via the LOM gateway itself.
+        # No default route on the LOM: testkit adds the table default via the LOM gateway itself.
         own, edits = net.render(host(), self.nic(), NETWORK, lom_file(addresses=["10.10.0.11/24"]))
         self.assertEqual(edits, {})
         self.assertEqual(eths(own)[MS]["eno1"]["routes"], [{"to": "10.10.0.0/24", "scope": "link", "table": 100},
@@ -305,8 +305,8 @@ class NetplanTest(unittest.TestCase):
         h = host()
         h.plan.update({"mgmt_pci": "0009:01:00.1", "storage_pci": "0009:01:00.0"})   # swapped on purpose
         doc = self.render(h)
-        self.assertEqual(doc[MS]["mtest-mgmt"]["match"], {"macaddress": "aa:bb:cc:00:00:02"})
-        self.assertEqual(doc[MS]["mtest-storage"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
+        self.assertEqual(doc[MS]["testkit-mgmt"]["match"], {"macaddress": "aa:bb:cc:00:00:02"})
+        self.assertEqual(doc[MS]["testkit-storage"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
 
     def test_plain_nic_roles(self):
         custom = deep_merge(NETWORK, {"profile": "custom", "mgmt": {"device": "nic"}, "storage": {"device": "nic"},
@@ -314,10 +314,10 @@ class NetplanTest(unittest.TestCase):
         h = host()
         h.plan.update({"mgmt_pci": "0005:02:00.0", "storage_pci": "0005:02:00.1"})
         doc = self.render(h, network=custom)
-        self.assertEqual(doc[MS]["mtest-mgmt"]["match"], {"macaddress": "dd:ee:ff:00:00:01"})
-        self.assertEqual(doc[MS]["mtest-storage"]["match"], {"macaddress": "dd:ee:ff:00:00:02"})
+        self.assertEqual(doc[MS]["testkit-mgmt"]["match"], {"macaddress": "dd:ee:ff:00:00:01"})
+        self.assertEqual(doc[MS]["testkit-storage"]["match"], {"macaddress": "dd:ee:ff:00:00:02"})
         h.plan["mgmt_pci"] = "0009:01:00.0"                       # any network port will do, BF3 included
-        self.assertEqual(self.render(h, network=custom)[MS]["mtest-mgmt"]["match"],
+        self.assertEqual(self.render(h, network=custom)[MS]["testkit-mgmt"]["match"],
                          {"macaddress": "aa:bb:cc:00:00:01"})
         for change, msg in (({"mgmt_pci": None}, "mgmt_pci is empty in the IP plan (network.mgmt.device is nic)"),
                             ({"storage_pci": "0000:03:00.0"}, "it is a compute rail"),
@@ -334,7 +334,7 @@ class NetplanTest(unittest.TestCase):
         h = host()
         h.plan.pop("mgmt_pci")
         own, edits = net.render(h, self.nic(), on_lom, NO_LOM)
-        self.assertEqual((sorted(eths(own)[MS]), edits), (["mtest-storage"], {}))
+        self.assertEqual((sorted(eths(own)[MS]), edits), (["testkit-storage"], {}))
         args = net.verify_args(h, self.nic(), on_lom)
         self.assertNotIn("default_if", args)
         self.assertNotIn("control_src", args)
@@ -366,8 +366,8 @@ class NetplanTest(unittest.TestCase):
                        "storage_routes": ["10.61.1.0/24"]})
         doc = self.render(h)
         self.assertEqual(doc[COMPUTE]["ibp0s0"], {"dhcp4": False, "dhcp6": False, "link-local": [], "mtu": 2044})
-        self.assertEqual(doc[MS]["mtest-mgmt"]["routes"], [{"to": "default", "via": "10.20.0.254"}])
-        self.assertEqual(doc[MS]["mtest-storage"]["routes"],
+        self.assertEqual(doc[MS]["testkit-mgmt"]["routes"], [{"to": "default", "via": "10.20.0.254"}])
+        self.assertEqual(doc[MS]["testkit-storage"]["routes"],
                          [{"to": "10.61.1.0/24", "via": "10.30.0.1"}])
         args = net.verify_args(h, self.nic(), NETWORK, peer={"host": host("b", tray=2, last=12), "nic": self.nic()})
         ib0 = [i for i in args["ifaces"] if i["label"] == "ib1"][0]
@@ -380,7 +380,7 @@ class NetplanTest(unittest.TestCase):
         h = host()
         h.plan = {}
         doc = self.render(h, network=dict(NETWORK, require_pci=False))
-        self.assertEqual(doc[MS]["mtest-mgmt"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
+        self.assertEqual(doc[MS]["testkit-mgmt"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
         self.assertEqual(doc[COMPUTE]["ibp2s0"]["addresses"], ["10.100.0.11/16"])
 
     def test_render_refuses_unsafe(self):
@@ -404,11 +404,11 @@ class NetplanTest(unittest.TestCase):
                         dict(NETWORK, mgmt=dict(NETWORK["mgmt"], gateway=None))):
             # Nothing to change on the LOM, and an unmanaged LOM is then acceptable.
             own, edits = net.render(host(), self.nic(), network, NO_LOM)
-            self.assertEqual((sorted(eths(own)[MS]), edits), (["mtest-mgmt", "mtest-storage"], {}))
+            self.assertEqual((sorted(eths(own)[MS]), edits), (["testkit-mgmt", "testkit-storage"], {}))
             self.assertNotIn("default_if", net.verify_args(host(), self.nic(), network))
         no_mgmt = host()
         no_mgmt.mgmt = None
-        self.assertEqual(sorted(eths(net.render(no_mgmt, self.nic(), NETWORK, NO_LOM)[0])[MS]), ["mtest-storage"])
+        self.assertEqual(sorted(eths(net.render(no_mgmt, self.nic(), NETWORK, NO_LOM)[0])[MS]), ["testkit-storage"])
 
     def test_link_type_actions(self):
         nic = self.nic()
@@ -451,7 +451,7 @@ class RollbackScriptTest(unittest.TestCase):
         os.chmod(t + "/bin/netplan", 0o755)
         self.env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"])
         w(t + "/netplan/50-lom.yaml", "new-lom")
-        w(t + "/netplan/90-static-compute.yaml", "new-mtest")
+        w(t + "/netplan/90-static-compute.yaml", "new-testkit")
         w(t + "/backup/50-lom.yaml", "old-lom")
 
     def tearDown(self):
@@ -475,16 +475,16 @@ class RollbackScriptTest(unittest.TestCase):
         apply = lambda files, edits: self.mod.apply({"files": files, "edits": edits, "rollback_seconds": 60})
         with mock.patch.object(self.mod.shutil, "which", return_value="/bin/true"), \
                 mock.patch.object(self.mod.subprocess, "Popen"):
-            self.assertIn("changed since mtest read it",
+            self.assertIn("changed since testkit read it",
                           apply({}, {"50-lom.yaml": {"old": "old-lom", "new": "x"}})["error"])
             self.assertIn("unexpected file name", apply({"../50-lom.yaml": "x"}, {})["error"])
             self.assertIn("unexpected file name", apply({}, {"90-static-compute.yaml": {"old": "", "new": ""}})["error"])
-            self.assertEqual(self.files(), {"50-lom.yaml": "new-lom", "90-static-compute.yaml": "new-mtest"})
+            self.assertEqual(self.files(), {"50-lom.yaml": "new-lom", "90-static-compute.yaml": "new-testkit"})
             res = apply({"90-static-mgmt-storage.yaml": "ms"}, {"50-lom.yaml": {"old": "new-lom", "new": "moved"}})
             self.assertEqual(res, {"ok": True})
             self.assertEqual(self.files(), {"50-lom.yaml": "moved", "90-static-mgmt-storage.yaml": "ms"})
             self.assertEqual(self.files(self.mod.BACKUP), {"50-lom.yaml": "new-lom",
-                                                           "90-static-compute.yaml": "new-mtest"})
+                                                           "90-static-compute.yaml": "new-testkit"})
         info = self.mod.inspect({})
         self.assertEqual((list(info["own"]), list(info["files"])), (["90-static-mgmt-storage.yaml"], ["50-lom.yaml"]))
 
@@ -499,7 +499,7 @@ class RollbackScriptTest(unittest.TestCase):
         import shutil
         shutil.rmtree(self.mod.BACKUP)
         self.assertEqual(self.restore(), 1)
-        self.assertEqual(self.files(), {"50-lom.yaml": "new-lom", "90-static-compute.yaml": "new-mtest"})
+        self.assertEqual(self.files(), {"50-lom.yaml": "new-lom", "90-static-compute.yaml": "new-testkit"})
 
     def test_confirm_and_rollback_exclude_each_other(self):
         self.mod.run = lambda *a, **k: (0, "")

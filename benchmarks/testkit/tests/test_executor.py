@@ -2,11 +2,11 @@ import os
 import threading
 import unittest
 
-from mtest.config import load_both
-from mtest.executor import excluded_hosts, run_items
-from mtest.runs import cancel, logs, status
-from mtest.ssh import Result
-from mtest.state import HostLocks, StateStore, read_json, write_json
+from testkit.config import load_both
+from testkit.executor import excluded_hosts, run_items
+from testkit.runs import cancel, logs, status
+from testkit.ssh import Result
+from testkit.state import HostLocks, StateStore, read_json, write_json
 from tests.helpers import Workspace
 
 TESTS = """
@@ -141,7 +141,7 @@ class FakeOps:
 
     def host_script(self, host, name, args, timeout=300):
         """behave[host]["snaps"]: list of snapshots returned in turn (the last one repeats)."""
-        from mtest.nodecmd import NodeError
+        from testkit.nodecmd import NodeError
         self.calls.append(("host_script", host.name, name))
         if self.b(host, "script_fails"):
             raise NodeError("{} failed (exit 1): python3 not found".format(name))
@@ -225,11 +225,11 @@ class ExecutorTest(unittest.TestCase):
         run_id, _ = self.run_(cluster, tests, ops)
         args = captured["gb300-r1-t02"]
         self.assertEqual(args[:2], ["--name", "acc-{}-smoke-gb300-r1-t02".format(run_id)])
-        self.assertIn("mtest.run=" + run_id, args)
+        self.assertIn("testkit.run=" + run_id, args)
         self.assertIn("--privileged", args)
         self.assertIn("/var/lib/testkit/runs/{}/smoke/gb300-r1-t02:/results".format(run_id), args)
-        self.assertIn("MTEST_NODE_RANK=0", args)
-        self.assertIn("MTEST_SMOKE_EXIT=0", args)
+        self.assertIn("TESTKIT_NODE_RANK=0", args)
+        self.assertIn("TESTKIT_SMOKE_EXIT=0", args)
         self.assertEqual(args[args.index("img:1") + 1:args.index("img:1") + 3], ["sh", "-c"])
 
     def test_rack_failure_stops_group_and_later_items(self):
@@ -365,7 +365,7 @@ class ExecutorTest(unittest.TestCase):
         self.assertEqual(len(puts), 3 * 5)
         execs = [c for c in ops.calls if c[0] == "exec"]
         self.assertEqual(execs[0][1], "gb300-r1-t01")
-        self.assertIn("mpirun --allow-run-as-root --hostfile /mtest-ssh/hostfile --map-by node -np 3 hostname",
+        self.assertIn("mpirun --allow-run-as-root --hostfile /testkit-ssh/hostfile --map-by node -np 3 hostname",
                       execs[0][2])
         for h in ("gb300-r1-t01", "gb300-r1-t03"):
             st = self.host_state(tests, h)

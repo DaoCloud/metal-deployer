@@ -1,7 +1,7 @@
 import os
 import tempfile
 
-from mtest import scaffold
+from testkit import scaffold
 
 
 class Workspace:

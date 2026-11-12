@@ -1,5 +1,5 @@
 # SuperBench SHARP config for GB300 NVL72: NVLink SHARP (NVLS) inside a rack and IB SHARP (CollNet)
-# across racks, each case compared with SHARP off. Used by mtest items sharp.scale_up / sharp.scale_out,
+# across racks, each case compared with SHARP off. Used by testkit items sharp.scale_up / sharp.scale_out,
 # which select benchmarks by name: nccl-bw:sharp:<op>:<case>.
 #
 #   U-A  rack, MNNVL, NVLS off                         baseline inside the NVLink domain
@@ -14,7 +14,7 @@
 # used makes NCCL fail instead of silently picking another algorithm.
 # IB SHARP needs the SHARP aggregation manager enabled in UFM. The SHARP plugin and libraries come from
 # HPC-X in the worker image (/opt/hpcx); confirm the paths on the first host.
-# No "enable" list: every benchmark below is a candidate and mtest passes the selection
+# No "enable" list: every benchmark below is a candidate and testkit passes the selection
 # (superbench.enable=[...]) for the cases of each item.
 version: v0.13
 superbench:

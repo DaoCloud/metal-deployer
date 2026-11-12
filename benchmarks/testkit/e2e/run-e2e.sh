@@ -1,8 +1,8 @@
 #!/bin/bash
-# End-to-end test of the mtest executor without GPU hosts.
+# End-to-end test of the testkit executor without GPU hosts.
 #
 # Starts three fake hosts (containers with sshd and the docker CLI, using this machine's
-# Docker daemon), then runs mtest against them over real ssh: per-node, mpi and delegate
+# Docker daemon), then runs testkit against them over real ssh: per-node, mpi and delegate
 # modes, a failing host, timeout, cancel, SIGTERM, status and logs.
 #
 # Usage: benchmarks/testkit/e2e/run-e2e.sh [--keep]
@@ -12,13 +12,13 @@ set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 TESTKIT=$(cd "$HERE/.." && pwd)
-E2E_ROOT=${E2E_ROOT:-/tmp/mtest-e2e}
+E2E_ROOT=${E2E_ROOT:-/tmp/testkit-e2e}
 SSH_NET=${SSH_NET:-172.28.0}
 MGMT_NET=${MGMT_NET:-172.29.0}
-NODE_IMAGE=mtest-e2e-node:latest
-WORKER_IMAGE=mtest-e2e-worker:latest
+NODE_IMAGE=testkit-e2e-node:latest
+WORKER_IMAGE=testkit-e2e-worker:latest
 DCGM_IMAGE=${DCGM_IMAGE:-nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04}
-SBCLI_IMAGE=mtest-e2e-sbcli:latest
+SBCLI_IMAGE=testkit-e2e-sbcli:latest
 HOSTS=(gb300-r1-t01 gb300-r1-t02 gb300-r1-t03)
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
@@ -45,23 +45,23 @@ cleanup() {
         log "kept fake hosts and $E2E_ROOT"
         return
     fi
-    docker ps -aq --filter label=mtest.run | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker ps -aq --filter label=testkit.run | xargs -r docker rm -f >/dev/null 2>&1 || true
     docker rm -f "${HOSTS[@]}" >/dev/null 2>&1 || true
-    docker network rm mtest-e2e-ssh mtest-e2e-mgmt >/dev/null 2>&1 || true
+    docker network rm testkit-e2e-ssh testkit-e2e-mgmt >/dev/null 2>&1 || true
     rm -rf "$E2E_ROOT"
 }
 
-mtest() {
+testkit() {
     local dir=$1
     shift
-    PYTHONPATH="$TESTKIT" python3 -m mtest -c "$E2E_ROOT/$dir/cluster.yaml" -t "$E2E_ROOT/$dir/tests.yaml" "$@"
+    PYTHONPATH="$TESTKIT" python3 -m testkit -c "$E2E_ROOT/$dir/cluster.yaml" -t "$E2E_ROOT/$dir/tests.yaml" "$@"
 }
 
-# mtest_bg DIR ARGS...: start mtest in the background; $! is the python process itself.
-mtest_bg() {
+# testkit_bg DIR ARGS...: start testkit in the background; $! is the python process itself.
+testkit_bg() {
     local dir=$1
     shift
-    (PYTHONPATH="$TESTKIT" exec python3 -m mtest -c "$E2E_ROOT/$dir/cluster.yaml" \
+    (PYTHONPATH="$TESTKIT" exec python3 -m testkit -c "$E2E_ROOT/$dir/cluster.yaml" \
         -t "$E2E_ROOT/$dir/tests.yaml" "$@") &
 }
 
@@ -72,7 +72,7 @@ state() { json "$E2E_ROOT/$1/runs/state.json" "d['hosts']['$2']['$3']['status']"
 
 last_run() { ls "$E2E_ROOT/$1/runs" | grep -E '^[0-9]{8}-' | sort | tail -1; }
 
-no_containers() { [ -z "$(docker ps -aq --filter "label=mtest.run=$1")" ]; }
+no_containers() { [ -z "$(docker ps -aq --filter "label=testkit.run=$1")" ]; }
 
 no_locks() { ! ls "$E2E_ROOT/$1/runs/locks/"*.lock >/dev/null 2>&1; }
 
@@ -86,7 +86,7 @@ scenario() {
         local i=1
         for h in "${HOSTS[@]}"; do
             echo "  - {name: $h, rack: R1, tray: $i, ssh: $SSH_NET.1$i, mgmt: $MGMT_NET.1$i/24$( \
-                [ "$h" = "$fail_host" ] && echo ", env: {MTEST_SMOKE_EXIT: '1'}")}"
+                [ "$h" = "$fail_host" ] && echo ", env: {TESTKIT_SMOKE_EXIT: '1'}")}"
             i=$((i + 1))
         done
     } > "$E2E_ROOT/$dir/cluster.yaml"
@@ -115,17 +115,17 @@ setup() {
     ssh-keygen -q -t ed25519 -N "" -f "$E2E_ROOT/id_ed25519"
     cp "$E2E_ROOT/id_ed25519.pub" "$E2E_ROOT/authorized_keys"
     chmod 600 "$E2E_ROOT/authorized_keys"
-    docker network create --subnet "$SSH_NET.0/24" mtest-e2e-ssh >/dev/null
-    docker network create --subnet "$MGMT_NET.0/24" mtest-e2e-mgmt >/dev/null
+    docker network create --subnet "$SSH_NET.0/24" testkit-e2e-ssh >/dev/null
+    docker network create --subnet "$MGMT_NET.0/24" testkit-e2e-mgmt >/dev/null
     local i=1
     for h in "${HOSTS[@]}"; do
-        docker run -d --name "$h" --hostname "$h" --network mtest-e2e-ssh --ip "$SSH_NET.1$i" \
+        docker run -d --name "$h" --hostname "$h" --network testkit-e2e-ssh --ip "$SSH_NET.1$i" \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "$E2E_ROOT/noderes:$E2E_ROOT/noderes" \
             "$NODE_IMAGE" >/dev/null
         docker cp "$E2E_ROOT/authorized_keys" "$h:/root/.ssh/authorized_keys"
         docker exec "$h" chown root:root /root/.ssh/authorized_keys
-        docker network connect --ip "$MGMT_NET.1$i" mtest-e2e-mgmt "$h"
+        docker network connect --ip "$MGMT_NET.1$i" testkit-e2e-mgmt "$h"
         i=$((i + 1))
     done
     for i in 1 2 3; do
@@ -142,12 +142,12 @@ setup
 
 log "1. validate --ssh"
 scenario s1 node per-node 0 60
-out=$(mtest s1 validate --ssh 2>&1) && rc=0 || rc=$?
+out=$(testkit s1 validate --ssh 2>&1) && rc=0 || rc=$?
 check "validate exits 0" [ "$rc" = 0 ]
 check "all hosts reachable" grep -q "ssh: 3/3 hosts reachable" <<<"$out"
 
 log "2. per-node, scope node"
-mtest s1 run smoke >"$E2E_ROOT/s1.log" 2>&1 && rc=0 || rc=$?
+testkit s1 run smoke >"$E2E_ROOT/s1.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s1)
 check "run exits 0" [ "$rc" = 0 ]
 check "every host passed" [ "$(state s1 gb300-r1-t01 smoke)$(state s1 gb300-r1-t02 smoke)$(state s1 gb300-r1-t03 smoke)" = passpasspass ]
@@ -159,20 +159,20 @@ check "locks released" no_locks s1
 log "3. per-node, scope rack, one host fails"
 scenario s3 rack per-node 30 120 gb300-r1-t02 "dcgm: {enabled: true, scope: node, hosts: all}"
 start=$(date +%s)
-mtest s3 run smoke >"$E2E_ROOT/s3.log" 2>&1 && rc=0 || rc=$?
+testkit s3 run smoke >"$E2E_ROOT/s3.log" 2>&1 && rc=0 || rc=$?
 took=$(( $(date +%s) - start ))
 check "run exits 1" [ "$rc" = 1 ]
 check "failing host is fail" [ "$(state s3 gb300-r1-t02 smoke)" = fail ]
 check "other hosts are stopped" [ "$(state s3 gb300-r1-t01 smoke)$(state s3 gb300-r1-t03 smoke)" = stoppedstopped ]
 check "group stopped early (${took}s < 15s)" [ "$took" -lt 15 ]
 check "containers removed" no_containers "$(last_run s3)"
-out=$(mtest s3 run dcgm 2>&1) || true
+out=$(testkit s3 run dcgm 2>&1) || true
 check "failed host left out of later items" grep -q "dcgm: gb300-r1-t02 left out (smoke fail" <<<"$out"
 
 log "4. run_timeout"
 scenario s4 node per-node 120 5
 start=$(date +%s)
-mtest s4 run smoke >"$E2E_ROOT/s4.log" 2>&1 && rc=0 || rc=$?
+testkit s4 run smoke >"$E2E_ROOT/s4.log" 2>&1 && rc=0 || rc=$?
 took=$(( $(date +%s) - start ))
 check "run exits 1" [ "$rc" = 1 ]
 check "status is timeout" [ "$(state s4 gb300-r1-t01 smoke)" = timeout ]
@@ -181,7 +181,7 @@ check "containers removed" no_containers "$(last_run s4)"
 
 log "5. mpi mode"
 scenario s5 rack mpi 0 120
-mtest s5 run smoke >"$E2E_ROOT/s5.log" 2>&1 && rc=0 || rc=$?
+testkit s5 run smoke >"$E2E_ROOT/s5.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s5)
 check "run exits 0" [ "$rc" = 0 ]
 check "mpirun reached all 3 hosts" [ "$(grep -c '^gb300-r1-t0' "$E2E_ROOT/s5/runs/$run/gb300-r1-t01/smoke/launcher.log" || true)" = 3 ]
@@ -190,22 +190,22 @@ check "containers removed" no_containers "$run"
 
 log "6. delegate mode"
 scenario s6 group delegate 0 60
-mtest s6 run smoke >"$E2E_ROOT/s6.log" 2>&1 && rc=0 || rc=$?
+testkit s6 run smoke >"$E2E_ROOT/s6.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s6)
 check "run exits 0" [ "$rc" = 0 ]
 check "only the master ran a container" [ -f "$E2E_ROOT/s6/runs/$run/gb300-r1-t01/smoke/container.log" ] && \
     [ ! -f "$E2E_ROOT/s6/runs/$run/gb300-r1-t02/smoke/container.log" ]
 
-log "7. mtest cancel"
+log "7. testkit cancel"
 scenario s7 rack per-node 120 300
-mtest_bg s7 run smoke >"$E2E_ROOT/s7.log" 2>&1
+testkit_bg s7 run smoke >"$E2E_ROOT/s7.log" 2>&1
 pid=$!
 for _ in $(seq 60); do
     run=$(last_run s7 2>/dev/null || true)
-    [ -n "$run" ] && [ "$(docker ps -q --filter "label=mtest.run=$run" | wc -l)" = 3 ] && break
+    [ -n "$run" ] && [ "$(docker ps -q --filter "label=testkit.run=$run" | wc -l)" = 3 ] && break
     sleep 1
 done
-mtest s7 cancel "$run" >/dev/null
+testkit s7 cancel "$run" >/dev/null
 start=$(date +%s)
 wait "$pid" && rc=0 || rc=$?
 took=$(( $(date +%s) - start ))
@@ -217,11 +217,11 @@ check "locks released" no_locks s7
 
 log "8. SIGTERM"
 scenario s8 rack per-node 120 300
-mtest_bg s8 run smoke >"$E2E_ROOT/s8.log" 2>&1
+testkit_bg s8 run smoke >"$E2E_ROOT/s8.log" 2>&1
 pid=$!
 for _ in $(seq 60); do
     run=$(last_run s8 2>/dev/null || true)
-    [ -n "$run" ] && [ "$(docker ps -q --filter "label=mtest.run=$run" | wc -l)" = 3 ] && break
+    [ -n "$run" ] && [ "$(docker ps -q --filter "label=testkit.run=$run" | wc -l)" = 3 ] && break
     sleep 1
 done
 kill -TERM "$pid"
@@ -234,15 +234,15 @@ check "containers removed" no_containers "$run"
 check "run.json says cancelled" [ "$(json "$E2E_ROOT/s8/runs/$run/run.json" "d['status']")" = cancelled ]
 
 log "9. status and logs"
-out=$(mtest s3 status)
+out=$(testkit s3 status)
 check "status counts the failed host" grep -q "gb300-r1-t02 .*smoke .*fail" <<<"$out"
-out=$(mtest s1 logs "$(last_run s1)" --host gb300-r1-t02)
+out=$(testkit s1 logs "$(last_run s1)" --host gb300-r1-t02)
 check "logs prints the container log" grep -q "smoke: host gb300-r1-t02" <<<"$out"
 
 log "10. dcgm (official DCGM image, no GPUs here)"
 if docker image inspect "$DCGM_IMAGE" >/dev/null 2>&1 || docker pull -q "$DCGM_IMAGE" >/dev/null 2>&1; then
     scenario s10 node per-node 0 300 "" "dcgm: {enabled: true, scope: node, hosts: all, hostengine: container, level: 1}"
-    mtest s10 run dcgm >"$E2E_ROOT/s10.log" 2>&1 && rc=0 || rc=$?
+    testkit s10 run dcgm >"$E2E_ROOT/s10.log" 2>&1 && rc=0 || rc=$?
     run=$(last_run s10)
     d="$E2E_ROOT/s10/runs/$run/gb300-r1-t01/dcgm"
     check "run exits 1 (no GPUs)" [ "$rc" = 1 ]
@@ -252,7 +252,7 @@ if docker image inspect "$DCGM_IMAGE" >/dev/null 2>&1 || docker pull -q "$DCGM_I
     check "summary has checks" [ "$(json "$d/summary.json" "d['checks']['gpu_count']['result']")" = fail ]
     check "containers removed" no_containers "$run"
     sed -i 's/hostengine: container/hostengine: host/' "$E2E_ROOT/s10/tests.yaml"
-    mtest s10 run dcgm >"$E2E_ROOT/s10b.log" 2>&1 || true
+    testkit s10 run dcgm >"$E2E_ROOT/s10b.log" 2>&1 || true
     check "host mode without host hostengine is an error" [ "$(state s10 gb300-r1-t02 dcgm)" = error ]
     check "error explains the missing hostengine" grep -q "cannot reach the host nv-hostengine" \
         "$E2E_ROOT/s10/runs/$(last_run s10)/gb300-r1-t02/dcgm/container.log"
@@ -266,7 +266,7 @@ scenario s11 node per-node 0 300 "" "superbench:
   single_node: {enabled: true, scope: node, hosts: all, config: config_gb300_single_node.yaml, benchmarks: {exclude: [gpu-burn]}}
   rack: {enabled: true, scope: rack, hosts: all, config: config_gb300_multi_node.yaml}"
 sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s11/tests.yaml"
-mtest s11 run superbench >"$E2E_ROOT/s11.log" 2>&1 && rc=0 || rc=$?
+testkit s11 run superbench >"$E2E_ROOT/s11.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s11)
 check "run exits 0" [ "$rc" = 0 ]
 check "single-node: every host passed" [ "$(state s11 gb300-r1-t01 superbench.single_node)$(state s11 gb300-r1-t02 superbench.single_node)$(state s11 gb300-r1-t03 superbench.single_node)" = passpasspass ]
@@ -276,10 +276,10 @@ check "exclude reached sb" grep -q 'superbench.enable=\["cublaslt-gemm:compute",
 check "per-host metrics split out" [ "$(json "$E2E_ROOT/s11/runs/$run/gb300-r1-t03/superbench.single_node/summary.json" "d['metrics']['cublaslt-gemm:compute/fp8e4m3_0_8192_8192_8192_flops']['value']")" = 4477.0 ]
 check "rack: fixed pairs t01-t02, then t03-t01 (odd host)" [ "$(json "$E2E_ROOT/s11/runs/$run/_groups/superbench.rack/R1/summary.json" "sorted(d['rdma']['pairs'])")" = "['gb300-r1-t01|gb300-r1-t02', 'gb300-r1-t01|gb300-r1-t03']" ]
 check "rack: pairing file by SuperBench hostfile index" [ "$(cat "$E2E_ROOT/s11/runs/$run/gb300-r1-t01/superbench.rack/raw/ib-pairs.txt" | tr '\n' ' ')" = "0,1 2,0 " ]
-check "rack: pairing files removed from the hosts" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h sh -c "ls /mnt/mtest/$run 2>/dev/null | wc -l"; done | tr -d '\n')" = 000 ]
-check "run key removed from every host" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h grep -c mtest- /root/.ssh/authorized_keys; done | tr -d '\n')" = 000 ]
+check "rack: pairing files removed from the hosts" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h sh -c "ls /mnt/testkit/$run 2>/dev/null | wc -l"; done | tr -d '\n')" = 000 ]
+check "run key removed from every host" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h grep -c testkit- /root/.ssh/authorized_keys; done | tr -d '\n')" = 000 ]
 check "private run key removed from the rank 0 host" [ -z "$(find "$E2E_ROOT/noderes/$run" -name id_ed25519)" ]
-mtest s11 report >/dev/null
+testkit s11 report >/dev/null
 check "report has the RDMA matrix" python3 -c "
 import json,re,sys; s=open('$E2E_ROOT/s11/runs/report/report.html').read()
 d=json.loads(re.search(r'const D = (.*);\n', s).group(1).replace('<\\\\/', '</'))
@@ -313,10 +313,10 @@ sharp:
   common: {ops: [allreduce, allgather]}
   scale_out: {enabled: true, scope: rack, hosts: all, cases: [O-A, O-B]}"
 sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s12/tests.yaml"
-mtest s12 run imex superbench sharp >"$E2E_ROOT/s12-gate.log" 2>&1 || true
+testkit s12 run imex superbench sharp >"$E2E_ROOT/s12-gate.log" 2>&1 || true
 check "imex is a gate: the run stops before nvl-domain" grep -q "gate: imex fail" "$E2E_ROOT/s12-gate.log"
-check "gate stop prints how to resume" grep -q "mtest run --from imex" "$E2E_ROOT/s12-gate.log"
-mtest s12 run imex superbench sharp --no-gate >"$E2E_ROOT/s12.log" 2>&1 && rc=0 || rc=$?
+check "gate stop prints how to resume" grep -q "testkit run --from imex" "$E2E_ROOT/s12-gate.log"
+testkit s12 run imex superbench sharp --no-gate >"$E2E_ROOT/s12.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s12)
 g="$E2E_ROOT/s12/runs/$run/_groups"
 check "IMEX configured on every host with the same list" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h md5sum /tmp/imex-nodes.list; done | awk '{print $1}' | sort -u | wc -l)" = 1 ]
@@ -340,7 +340,7 @@ import json,sys,glob; t=json.load(open(glob.glob('$g/superbench.all/*/summary.js
 sys.exit(0 if any(x['title'].startswith('NCCL 网卡使用') for x in t) else 1)"
 
 log "13. report"
-out=$(mtest s3 report --archive) && rc=0 || rc=$?
+out=$(testkit s3 report --archive) && rc=0 || rc=$?
 check "report exits 0" [ "$rc" = 0 ]
 check "report.html written" grep -q "const D = " "$E2E_ROOT/s3/runs/report/report.html"
 check "hosts.csv marks the failing host" grep -q '^gb300-r1-t02,R1,2,,fail,' "$E2E_ROOT/s3/runs/report/hosts.csv"

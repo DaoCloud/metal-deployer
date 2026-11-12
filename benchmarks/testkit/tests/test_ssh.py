@@ -4,7 +4,7 @@ import tarfile
 import tempfile
 import unittest
 
-from mtest.ssh import safe_extract
+from testkit.ssh import safe_extract
 
 
 def archive(entries):
