@@ -19,7 +19,7 @@ CUDA_PROFILE ?= cuda13
 ISO_MANIFEST ?= $(ISO_DIR)/manifests/manifest.yaml
 CACHE_BASE_DIR ?= $(ISO_DIR)/.ci-work/cache
 
-# moe-bench 镜像变量（GB300/B300：HybridEP + DeepEP V1 + MoonEP + DeepGEMM，仅 linux/arm64）
+# moe-bench 镜像变量（GB300/B300：HybridEP + DeepEP V1 + MoonEP + FlashInfer + DeepGEMM，仅 linux/arm64）
 MOE_BENCH_IMAGE_NAME ?= $(REPOSITORY)/moe-bench
 MOE_BENCH_IMAGE_TAG ?= latest
 MOE_BENCH_CONTEXT ?= ./benchmarks/moe-bench/image
@@ -46,7 +46,7 @@ help: ## Show help information
 	@echo "常用命令:"
 	@echo "  make build-sbcli              # 本地构建 sbcli 镜像"
 	@echo "  make build-sbcli-arm64        # 本地构建 arm64 sbcli 镜像（GB300）"
-	@echo "  make build-moe-bench          # 本地构建 GB300 MoE 测试镜像（HybridEP、DeepEP V1、MoonEP、DeepGEMM，arm64）"
+	@echo "  make build-moe-bench          # 本地构建 GB300 MoE 测试镜像（HybridEP、DeepEP V1、MoonEP、FlashInfer、DeepGEMM，arm64）"
 	@echo "  make build-nixl-benchmark     # 本地构建 NIXL/NIXLBench 镜像（NIXL_PROFILE=$(NIXL_PROFILE)，可选: $$($(NIXL_BENCHMARK_PROFILE_SH) list | tr '\n' ' ')）"
 	@echo "  make prepare-iso / sudo make build-iso / make test-iso   # ISO（GB300: ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA_PROFILE=cuda13-gb300）"
 	@echo ""
@@ -76,7 +76,7 @@ build-sbcli-arm64: ## Build arm64 sbcli image locally (GB300)
 	$(MAKE) build-sbcli SBCLI_PLATFORM=linux/arm64 SBCLI_IMAGE_TAG=$(SBCLI_IMAGE_TAG)-arm64
 
 .PHONY: build-moe-bench
-build-moe-bench: ## Build GB300 MoE test image (HybridEP, DeepEP V1, MoonEP, DeepGEMM, linux/arm64)
+build-moe-bench: ## Build GB300 MoE test image (HybridEP, DeepEP V1, MoonEP, FlashInfer, DeepGEMM, linux/arm64)
 	docker buildx build --load \
 		--platform $(MOE_BENCH_PLATFORM) \
 		--build-arg MAX_JOBS=$(MOE_BENCH_MAX_JOBS) \

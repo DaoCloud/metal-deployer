@@ -2,7 +2,7 @@
 
 > 状态：设计稿，按里程碑逐步实现。本文定义整体流程、职责分工、输入格式、各阶段通过标准和里程碑。
 >
-> **当前实现方式**：Web UI、控制面服务（API、数据库、K8s 部署）和它的命令行客户端 `macc` 暂不实施，第 6 节只保留设计。S3–S9 由命令行工具 `testkit`（[benchmarks/testkit](../benchmarks/testkit/README.md)）在一台控制机上经 LOM SSH 执行：配置写在 `cluster.yaml`（主机、网络，规划表用 `testkit import` 导入）和 `tests.yaml`（测试项、主机范围、scope），结果拉回本地并生成 HTML 报告。下文的“控制面”在当前阶段即指 testkit 所在的控制机；涉及 UI、数据库、回调、`nico-sync` 的内容属于暂不实施的部分。
+> **当前实现方式**：Web UI、控制面服务（API、数据库、K8s 部署）和它的命令行客户端 `macc` 暂不实施，第 6 节只保留设计。S3–S9 由命令行工具 `testkit`（[benchmarks/testkit](../benchmarks/testkit/README.md)）在一台控制机上经 LOM SSH 执行：配置写在 `network.yaml`（主机与网络规划：rack、tray、各网卡 PCI 与地址；由 IP 规划表经 AI 或人工转换，现场配置脚本也读它）和 `tests.yaml`（测试项、主机范围、scope、金样本、单机设置），结果拉回本地并生成 HTML 报告。下文的“控制面”在当前阶段即指 testkit 所在的控制机；涉及 UI、数据库、回调、`nico-sync` 的内容属于暂不实施的部分。
 
 ## 1. 目标与范围
 
@@ -11,7 +11,7 @@
 1. 装机：NICo 经 LOM 口 PXE 安装本仓库构建的 ISO，首启自动安装驱动和工具。
 2. 装机进度可见：每台主机处于哪个阶段、成功还是失败、失败日志。
 3. 批量网络配置：BlueField-3（BF3）两个口配业务管理网和存储网；4 张 ConnectX-8（CX8）确保为 IB 模式，配 IPoIB 地址和 MTU。
-4. 测试验收：DCGM 硬件诊断 → SuperBench → IMEX 配置与测试 → MoE 测试（HybridEP、DeepEP V1、[MoonEP](https://github.com/MoonshotAI/MoonEP)、DeepGEMM）。
+4. 测试验收：DCGM 硬件诊断 → SuperBench → IMEX 配置与测试 → MoE 测试（FlashInfer NVLink one-sided、DeepGEMM Mega MoE、HybridEP、DeepEP V1、[MoonEP](https://github.com/MoonshotAI/MoonEP)、DeepGEMM）。
 5. 结果收集：测试全部由控制面以 Docker 容器方式在各节点启动，日志和结果回传控制面，汇总为一份验收报告（当前为 `testkit report` 生成的 HTML 和 CSV）。
 
 不在范围内：修改 NICo 本身；交换机、UFM、NMX 的配置（只做校验并提示）。
@@ -164,7 +164,7 @@ S4 的 BF3（及 IPoIB）IP、MTU 由谁、在什么时候下发，目前有三�
 
 两个文件：`hosts.csv` 放每台主机不同的数据；`site.yaml` 放全局参数。两者以 ConfigMap 挂载，UI 也支持上传和校验。
 
-当前用 testkit 时的对应关系：`hosts.csv` 的内容进入 `cluster.yaml` 的 `hosts` 段（由 `testkit import` 从 IP 规划表导入）；`site.yaml` 的 SSH、网卡期望、网络参数在 `cluster.yaml` 的 `ssh`、`network` 段，镜像、测试参数在 `tests.yaml`。下文出现 `hosts.csv`、`site.yaml` 的地方按此对应。
+当前用 testkit 时的对应关系：`hosts.csv` 与 `site.yaml` 的网络参数合并为 `network.yaml`（每台主机一段，含各网卡 PCI、地址、MTU、网关、路由）；网卡期望在 `tests.yaml` 的 `nic.expect`，镜像、测试参数也在 `tests.yaml`；SSH 不再配置，控制机到主机的 root 免密事先做好。下文出现 `hosts.csv`、`site.yaml` 的地方按此对应。
 
 ### 4.1 hosts.csv
 
@@ -232,7 +232,7 @@ tests:
     disk_expected_count: 8                       # 每台主机期望的可测试数据盘数量，按实际配置填写（4 或 8）
     disk_parallel: false                         # true 时同一主机多盘并发测试
     rule: rule_gb300.yaml
-  moe_suites: [hybrid-ep, deepep, moonep, deepgemm]
+  moe_suites: [nvlink-ep, hybrid-ep, deepep, moonep, deepgemm]
   results_dir: /var/lib/metal-acceptance/runs   # 节点上的结果目录
   master_port_base: 29500                        # 每组 MASTER_PORT = base + 组序号
   mpi_ssh_port: 2222                             # MPI 模式容器内 sshd 端口
@@ -302,7 +302,7 @@ registry: ""                                     # 内网仓库；为空时由�
 
 ### S4 网络配置
 
-由 `testkit net` 执行（实现与用法见 [testkit README](../benchmarks/testkit/README.md) 的“网卡识别与网络配置”一节）：检查差异、幂等，`testkit net apply --dry-run` 用于下发前预览 netplan diff，`testkit net verify` 只验证。下面是流程设计，实现中写 `/etc/netplan/90-static-mgmt-storage.yaml`（含 LOM 策略路由）与 `90-static-compute.yaml`，网卡按规划表的 PCI 地址定位后用永久 MAC 匹配。
+下发由现场配置脚本按 `network.yaml` 执行，不在本仓库；testkit 只做只读检查：测试前 `testkit net-check` 逐台核对 PCI、地址、MTU、默认路由、存储路由、LOM 策略路由与连通性（见 [testkit README](../benchmarks/testkit/README.md) 的“测试前检查网络”一节）。下面的流程设计供配置脚本参考。
 
 1. CX8 模式：`mlxconfig -d <CX8> q LINK_TYPE_P1`；不是 `IB(1)` 则设置为 1，标记需重启。
 2. 需要时重启：经 SSH 重启，等待主机从 LOM 回来；必要时经 Redfish 断电重启。
@@ -340,7 +340,7 @@ testkit run moe --exclude gb300-r1-t07       # 全部 enabled 的 moe 项，排�
 testkit run                                  # 按内置顺序执行全部 enabled 项
 ```
 
-`moe.rack` 跑哪个 suite（`hybrid-ep`、`deepep`、`moonep`）由 `tests.yaml` 中该项的 `args` 决定；要依次跑多个 suite 时修改 `args` 后分别执行。`testkit plan` 打印每组的节点、rank 和渲染后的命令，`testkit status`、`testkit logs`、`testkit cancel` 查看和停止执行。
+`moe.rack` 跑哪个 suite（默认 `nvlink-ep`，可改为 `hybrid-ep`、`deepep`、`moonep`）由 `tests.yaml` 中该项的 `args` 决定；要依次跑多个 suite 时修改 `args` 后分别执行。`testkit plan` 打印每组的节点、rank 和渲染后的命令，`testkit status`、`testkit logs`、`testkit cancel` 查看和停止执行。
 
 分组规则（`tests.yaml` 中每项的 `scope`）：
 
@@ -378,7 +378,7 @@ testkit run                                  # 按内置顺序执行全部 enabl
 
 | 模式 | 做法 | 适用 |
 |---|---|---|
-| 逐节点启动 | 每个节点的容器各自运行同一入口，按 `RANK`/`MASTER_ADDR` 汇合 | moe-bench（HybridEP、DeepEP V1、MoonEP；MoonEP 由 `moe-bench` 内部调用 `torchrun`）、PyTorch 类测试 |
+| 逐节点启动 | 每个节点的容器各自运行同一入口，按 `RANK`/`MASTER_ADDR` 汇合 | moe-bench（HybridEP、DeepEP V1、MoonEP、FlashInfer；MoonEP 和 FlashInfer 由 `moe-bench` 内部调用 `torchrun`）、PyTorch 类测试 |
 | MPI | 所有节点先启动带 sshd 的容器（端口取自 `site.yaml`）；控制面在 rank 0 容器内执行 `mpirun`，hostfile 由控制面生成 | nccl-tests、`nvbandwidth` multinode、IMEX T1–T3 |
 | 委托 | 控制面只启动一个控制容器，由它自己分发到各节点 | SuperBench（sbcli） |
 
@@ -406,7 +406,7 @@ testkit run                                  # 按内置顺序执行全部 enabl
 | S6 磁盘 | 复用 `superbench/main:cuda13.0` worker 镜像（含 fio 3.28） | 已有 | 新增包装脚本：执行前复核、建立 `dataN` 逻辑名、`sb exec` 执行 `disk-benchmark`、输出 `summary.json` |
 | S7 IMEX 测试 | 复用 SuperBench worker 镜像（MPI）：T1 `imex_fabric_ipc_test` 由 testkit 下发源码、在各节点容器内用 mpicc 编译后运行；T2 需要 MULTINODE 版 nvbandwidth，worker 镜像自带的版本没有 multinode 用例时跳过并注明 | 已实现 | IMEX 配置与 imex-check 在主机上执行；实机确认容器内 IMEX channel 可见、mpicc 与 CUDA 头文件可用 |
 | S7a SHARP | 用 SuperBench 执行：`config_gb300_sharp.yaml`（nccl-bw，每组 NCCL 设置一个条目），worker 镜像 NCCL 2.27.7 + HPC-X 2.24.1 SHARP 插件 | 已实现 | 需要更新 NCCL 时可在 `sharp.common.worker_image` 指定加层镜像；实机确认插件路径 |
-| S8 MoE | `moe-bench` | 已有（HybridEP、DeepEP V1、MoonEP、DeepGEMM 同一镜像） | 包装 `summary.json` |
+| S8 MoE | `moe-bench` | 已有（HybridEP、DeepEP V1、MoonEP、FlashInfer、DeepGEMM 同一镜像） | 包装 `summary.json` |
 
 **镜像分发**
 
@@ -432,7 +432,7 @@ testkit run                                  # 按内置顺序执行全部 enabl
 
 **rack 完整性**：rack 级 NVLink 测试项要求整个 rack 都在。某台主机在前面失败被排除后，该 rack 记为 `blocked`，不会用 17 台照跑。
 
-**RDMA 配对的实现**：SuperBench `ib-traffic` 支持自定义配对文件（`--config`，每行一轮，格式 `i,j;k,l`）。下标是 SuperBench hostfile 中的行号；这个 hostfile 由各主机的 OS 短主机名排序（不区分大小写）生成，与 `cluster.yaml` 的顺序无关。testkit 先读各主机的 `hostname` 再换算下标，把文件写到每台主机的 `/mnt/testkit/<run>/`（worker 容器挂载了 `/mnt`），通过配置覆盖传给 `ib-traffic`，测试结束后删除。原来的 `one-to-one`（每台与所有其他主机打流，n−1 轮）保留为 `ib_pairs: round_robin`。
+**RDMA 配对的实现**：SuperBench `ib-traffic` 支持自定义配对文件（`--config`，每行一轮，格式 `i,j;k,l`）。下标是 SuperBench hostfile 中的行号；这个 hostfile 由各主机的 OS 短主机名排序（不区分大小写）生成，与 `network.yaml` 的顺序无关。testkit 先读各主机的 `hostname` 再换算下标，把文件写到每台主机的 `/mnt/testkit/<run>/`（worker 容器挂载了 `/mnt`），通过配置覆盖传给 `ib-traffic`，测试结束后删除。原来的 `one-to-one`（每台与所有其他主机打流，n−1 轮）保留为 `ib_pairs: round_robin`。
 
 ### S5 DCGM 硬件诊断
 
@@ -536,7 +536,7 @@ SuperBench 由两部分组成：sbcli 控制镜像（`sb` 命令、测试配置�
 - S5 DCGM 通过。
 - 在金样本主机上完成 [superbench-gb300.md](./superbench-gb300.md) 第 6 节的实机确认项（GPU/NIC/Grace 亲和、IB 设备顺序、Grace 核编号、`nvidia-peermem`、fp4 GEMM、nccl-tests 在 SM103 上可运行、NCCL 未选到 BF3）。不一致时先调整配置，再批量执行。
 
-**不在 SuperBench 中的测试**：多节点 nvbandwidth、IMEX fabric IPC、MNNVL 开关对比由 S7 `imex-bench.sh` 负责；HybridEP、DeepEP V1、MoonEP、DeepGEMM 由 S8 moe-bench 负责；IMEX 状态检查在主机上执行；stress-ng 长稳、Grace HPL 暂不纳入。
+**不在 SuperBench 中的测试**：多节点 nvbandwidth、IMEX fabric IPC、MNNVL 开关对比由 S7 `imex-bench.sh` 负责；HybridEP、DeepEP V1、MoonEP、FlashInfer、DeepGEMM 由 S8 moe-bench 负责；IMEX 状态检查在主机上执行；stress-ng 长稳、Grace HPL 暂不纳入。
 
 ### S7 IMEX 配置与测试（按 rack）
 
@@ -736,26 +736,30 @@ M4 先直接用现有 worker 镜像（显式设置 `NCCL_NVLS_ENABLE`）跑通�
 
 ### S8 MoE 测试
 
-使用 `moe-bench` 容器，逐节点启动模式。镜像中有三种 EP 通信库，见 [moe-bench](../benchmarks/moe-bench/README.md)：
+使用 `moe-bench` 容器，逐节点启动模式。镜像中有四种 EP 通信库和 DeepGEMM，见 [moe-bench](../benchmarks/moe-bench/README.md)：
 
 | suite | EP 库 | 代表的生产用法 |
 |---|---|---|
+| `nvlink-ep` | FlashInfer NVLink one-sided（`flashinfer.moe_ep`）+ DeepGEMM Mega MoE | vLLM 在 GB300 上的推理配置：`--all2all-backend flashinfer_nvlink_one_sided --moe-backend deep_gemm_mega_moe`；只走 NVLink |
 | `hybrid-ep` | HybridEP（DeepEP `hybrid-ep` 分支，NVIDIA） | Megatron-LM `flex` dispatcher 训练 |
 | `deepep` | DeepEP V1（`deep_ep.Buffer`，NVSHMEM） | SGLang `--moe-a2a-backend deepep`；GLM 推理 prefill 用 normal、decode 用 low_latency（见 THUDM/slime `run-glm5.3-744B-A40B.sh`） |
 | `moonep` | [MoonshotAI/MoonEP](https://github.com/MoonshotAI/MoonEP)，动态冗余专家 | Kimi 训练 |
 | `deepgemm` | 无（单 GPU GEMM） | FP8/FP4/BF16 GEMM |
 
+GB300 NVL72 机柜内全部是 NVLink，第 1、2 档以 `nvlink-ep` 为主。DeepEP V1 normal 模式每个 NVLink 组最多 8 个 rank，在 GB300 上覆盖有限。跨机柜（第 3、4 档）没有 NVLink，`nvlink-ep` 不适用，保留 HybridEP 和 DeepEP V1。
+
 测试矩阵：
 
-| 档 | scope | 规模 | 通信路径 | hybrid-ep | deepep | moonep | deepgemm |
-|---|---|---|---|---|---|---|---|
-| 第 1 档 单机 | `node`，全部节点并行 | 1 节点 / 4 GPU | 节点内 NVLink | 4 项 | `intranode`、`low_latency` | `tests`、`bench` | 3 项 |
-| 第 2 档 rack 内 | `rack`，每个 rack 一组 | 18 节点 / 72 GPU | MNNVL（依赖 S7 IMEX 通过） | 4 项 | `low_latency` | `tests`、`bench` | rank 0 |
-| 第 3 档 跨 rack | `group`，2 个 rack 一组（如 R1+R2、R3+R4） | 36 节点 / 144 GPU | rack 内 NVLink，跨 rack IB | 4 项 | `low_latency` | 不适用 | rank 0 |
-| 第 4 档 全部 | `group`，`--targets all` | 72 节点 / 288 GPU | 同上 | 4 项 | `low_latency` | 不适用 | rank 0 |
+| 档 | scope | 规模 | 通信路径 | nvlink-ep | hybrid-ep | deepep | moonep | deepgemm |
+|---|---|---|---|---|---|---|---|---|
+| 第 1 档 单机 | `node`，全部节点并行 | 1 节点 / 4 GPU | 节点内 NVLink | 3 项 | 4 项 | `intranode`、`low_latency` | `tests`、`bench` | 3 项 |
+| 第 2 档 rack 内 | `rack`，每个 rack 一组 | 18 节点 / 72 GPU | MNNVL（依赖 S7 IMEX 通过） | 3 项（默认） | 4 项 | `low_latency` | `tests`、`bench` | rank 0 |
+| 第 3 档 跨 rack | `group`，2 个 rack 一组（如 R1+R2、R3+R4） | 36 节点 / 144 GPU | rack 内 NVLink，跨 rack IB | 不适用 | 4 项 | `low_latency` | 不适用 | rank 0 |
+| 第 4 档 全部 | `group`，`--targets all` | 72 节点 / 288 GPU | 同上 | 不适用 | 4 项 | `low_latency` | 不适用 | rank 0 |
 
-第 2–4 档由编排按档依次执行 `--suite hybrid-ep`、`--suite deepep`（不适用的项自动 SKIP），第 2 档另加 `--suite moonep`。
+第 2 档默认执行 `--suite nvlink-ep`，需要时再依次执行 `--suite hybrid-ep`、`--suite deepep`、`--suite moonep`；第 3–4 档依次执行 `--suite hybrid-ep`、`--suite deepep`（不适用的项自动 SKIP）。
 
+- `nvlink-ep` 的 3 项：`fi_one_sided`（正确性）、`fi_one_sided_bench`（dispatch/combine 耗时）、`mega_moe`（融合 EP + GEMM）。它测的是 vLLM 使用的 kernel，不启动 vLLM 服务。
 - DeepGEMM 是单 GPU 测试，多节点运行时只在 rank 0 执行。
 - DeepEP V1 normal 模式固定每个 NVLink 组 8 个 rank，GB300 每节点 4 GPU：`deepep_intranode` 只在 1 节点或 2 节点（MNNVL）运行，`deepep_internode` 报告 SKIP。第 2–4 档的 V1 覆盖以 `low_latency` 为准。
 - MoonEP 跨节点用 CUDA fabric handle，没有 RDMA 路径，第 3、4 档不适用。
@@ -917,12 +921,12 @@ NICo 还有自带的 phone-home：OS 定义设 `phoneHomeEnabled: true` 后，NI
 
 | 里程碑 | 内容 | 交付物 | 依赖 | 完成标准 | 状态 |
 |---|---|---|---|---|---|
-| M0 | 计划与格式确定 | 本文；`cluster.yaml`、`tests.yaml` 模板（`testkit init`）；IP 规划表导入（`testkit import`） | — | 评审通过 | 完成 |
+| M0 | 计划与格式确定 | 本文；`network.yaml`、`tests.yaml` 模板（`testkit init`） | — | 评审通过 | 完成 |
 | M1 | 装机进度 | ISO 内 `state.json`（S2）；控制面服务、UI、K8s 部署、`nico-sync`、回调 | M0；控制面 SSH 公钥打进 ISO | 当前阶段：可经 LOM SSH 查看 `state.json` 和阶段日志 | `state.json` 已实现；其余暂不实施 |
-| M2 | 网卡识别与网络配置 | S3、S4（`testkit nic`、`testkit net`，含 `--dry-run` 差异预览、自动回滚） | M0；第一台实机 | 金样本确认；一个 rack 批量配置通过，重复执行无变更 | 已实现，实机待确认 |
+| M2 | 网卡识别与网络检查 | S3（`testkit nic discover`，只读）、网络检查（`testkit net-check`，只读）；S4 下发由现场脚本完成 | M0；第一台实机 | 金样本确认；一个 rack 网络检查全部通过 | 已实现，实机待确认 |
 | M3 | 容器测试框架 + DCGM 诊断 | testkit 执行器（远程 Docker、多节点批量启动三种模式、实时日志、结果拉回、取消）；S5 | M2 | 一个 rack 并发执行 DCGM 并拿到全部节点结果；用最小多节点示例验证一条命令批量启动和失败联动停止 | 已实现，实机待确认 |
 | M4 | SuperBench + IMEX + NVLink Fabric + SHARP | S6、S7、S7a 编排与结果解析；S7b（`nvlink.pairs`、`nvlink.fabric`，主机模式；`nvshmem.*` 可选）；分层关卡与链路计数器；SHARP 测试镜像 | M3；UFM（含 SHARP AM）、NMX 就绪；NMX-T 地址 | 一个 rack 全部通过或给出明确的失败归类；在金样本 rack 上确定 S7b 各步耗时和性能基线；有 2 个 rack 时完成 O-A~O-D 对比 | S6、S7、S7a、S7b（N1–N4）、分层关卡已实现（单元测试与 e2e 通过），实机待确认；N5 NMX-T 待做 |
-| M5 | MoE 测试 | S8 第 1–4 档编排；HybridEP、DeepEP V1、MoonEP 实机验证 | M4 | 四档都能一条命令启动并出结果；建立基线 | 待做 |
+| M5 | MoE 测试 | S8 第 1–4 档编排；FlashInfer one-sided、Mega MoE、HybridEP、DeepEP V1、MoonEP 实机验证 | M4 | 四档都能一条命令启动并出结果；建立基线 | 待做 |
 | M6 | 验收报告 | S9：`testkit report` 生成 HTML、CSV，可打包原始日志 | M5 | 全部主机一份报告 | 报告框架已实现，随各测试项补充 |
 
 各阶段的实现进度以 [testkit README](../benchmarks/testkit/README.md) 的进度表为准。

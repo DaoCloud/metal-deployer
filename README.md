@@ -10,7 +10,7 @@ Metal Deployer 是一个用于裸金属服务器部署和性能测试的工具�
 |---------|------|------|
 | **ISO 构建** | 自定义 Ubuntu Server 24.04 自动化安装镜像 | [`build-iso/`](./build-iso/) |
 | **GPU 性能测试** | 基于 SuperBench 的 GPU 集群一键性能测试 | [`superbenchmark/`](./superbenchmark/) |
-| **MoE 测试镜像** | GB300 DeepEP（HybridEP）+ DeepGEMM 测试镜像（arm64） | [`benchmarks/moe-bench/`](./benchmarks/moe-bench/) |
+| **MoE 测试镜像** | GB300 DeepEP（HybridEP）+ FlashInfer NVLink one-sided + DeepGEMM 测试镜像（arm64） | [`benchmarks/moe-bench/`](./benchmarks/moe-bench/) |
 | **NIXL 测试镜像** | NIXL + NIXLBench（UCX / libfabric / GDS / POSIX），按 profile 构建 GB300 arm64 与 x86 镜像 | [`benchmarks/nixl-benchmark/`](./benchmarks/nixl-benchmark/) |
 
 ---
