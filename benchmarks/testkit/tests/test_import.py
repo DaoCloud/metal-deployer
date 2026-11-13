@@ -90,7 +90,8 @@ class ImportTest(unittest.TestCase):
         self.assertEqual(run_import(self.plan, path, out=self.out.append), 0)
         data = load_yaml(path)
         self.assertEqual(data["network"]["mgmt"], {"default_route": True})
-        self.assertEqual(data["network"]["profile"], "gb300")
+        self.assertEqual(data["platform"], "gb300")
+        self.assertNotIn("profile", data["network"])
         self.assertNotIn("dns", data["network"]["mgmt"])
         self.assertEqual(data["hosts"][0]["tags"], ["golden"])
 

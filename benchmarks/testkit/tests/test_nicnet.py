@@ -309,7 +309,7 @@ class NetplanTest(unittest.TestCase):
         self.assertEqual(doc[MS]["testkit-storage"]["match"], {"macaddress": "aa:bb:cc:00:00:01"})
 
     def test_plain_nic_roles(self):
-        custom = deep_merge(NETWORK, {"profile": "custom", "mgmt": {"device": "nic"}, "storage": {"device": "nic"},
+        custom = deep_merge(NETWORK, {"mgmt": {"device": "nic"}, "storage": {"device": "nic"},
                                       "require_pci": False})
         h = host()
         h.plan.update({"mgmt_pci": "0005:02:00.0", "storage_pci": "0005:02:00.1"})

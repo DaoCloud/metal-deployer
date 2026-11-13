@@ -1,25 +1,27 @@
-"""Hardware profiles: defaults for network.expect and the NIC that carries each network role.
+"""Hardware platforms. cluster.yaml and tests.yaml name one with the top-level "platform" key.
 
-cluster.yaml selects one with network.profile; keys written under network win over the profile.
-  gb300   BlueField-3 port 0 = mgmt, port 1 = storage; 4 ConnectX-8 rails on InfiniBand
-  custom  nothing is assumed: mgmt / storage are plain NICs found by mgmt_pci / storage_pci
-          (or mgmt stays on the LOM), and expect describes the rails
+A platform decides the templates "testkit init" writes (templates/<platform>/) and the defaults of
+the network section: network.expect and the NIC that carries each network role. Keys written under
+network in cluster.yaml win over the platform defaults.
+  gb300   BlueField-3 port 0 = mgmt, port 1 = storage; 4 ConnectX-8 rails on InfiniBand; 4 GPUs
 """
 
-from testkit.util import deep_merge
+from testkit.util import dig, deep_merge
 
 DEFAULT = "gb300"
 
-PROFILES = {
+PLATFORMS = {
     "gb300": {
-        "expect": {"gpus": 4, "cx8": {"count": 4, "pci_id": "15b3:1023", "link_layer": "InfiniBand", "rate_gbps": 800},
-                   "bf3": {"pf_count": 2, "pci_id": "15b3:a2dc", "mode": "nic"}, "compare_golden": True},
-        "mgmt": {"device": "bf3", "port": 0},
-        "storage": {"device": "bf3", "port": 1},
-    },
-    "custom": {
-        "mgmt": {"device": "nic"},
-        "storage": {"device": "nic"},
+        "network": {
+            "expect": {"gpus": 4, "cx8": {"count": 4, "pci_id": "15b3:1023", "link_layer": "InfiniBand",
+                                          "rate_gbps": 800},
+                       "bf3": {"pf_count": 2, "pci_id": "15b3:a2dc", "mode": "nic"}, "compare_golden": True},
+            "mgmt": {"device": "bf3", "port": 0},
+            "storage": {"device": "bf3", "port": 1},
+        },
+        # PCI addresses of the example hosts written by "testkit init".
+        "example": {"mgmt_pci": "0009:01:00.0", "storage_pci": "0009:01:00.1",
+                    "ib_pci": ["0000:03:00.0", "0001:03:00.0", "0002:03:00.0", "0003:03:00.0"]},
     },
 }
 
@@ -28,11 +30,31 @@ PROFILES = {
 DEVICES = {"mgmt": ("bf3", "nic", "lom"), "storage": ("bf3", "nic")}
 
 
-def resolve(network):
-    """network section with the profile defaults filled in; unknown profiles resolve to the raw section."""
+def names():
+    return ", ".join(sorted(PLATFORMS))
+
+
+def check(name, where, problems):
+    """Report a missing or unknown platform; returns the name when it is supported, else None."""
+    if name in (None, ""):
+        problems.error("{}: platform is required (one of: {}), e.g. 'platform: {}'".format(where, names(), DEFAULT))
+        return None
+    if name not in PLATFORMS:
+        problems.error("{}: platform '{}' is not supported (one of: {})".format(where, name, names()))
+        return None
+    return name
+
+
+def resolve(platform, network):
+    """network section with the platform defaults filled in; an unknown platform adds nothing."""
     network = network or {}
-    base = PROFILES.get(network.get("profile") or DEFAULT)
-    return deep_merge(base, network) if base is not None else dict(network)
+    base = (PLATFORMS.get(platform) or {}).get("network")
+    return deep_merge(base, network) if base else dict(network)
+
+
+def rails(network):
+    """Number of compute rails (IB ports) of the resolved network section."""
+    return dig(network, "expect.cx8.count", 4)
 
 
 def device(network, role):

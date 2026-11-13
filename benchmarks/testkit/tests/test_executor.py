@@ -10,6 +10,7 @@ from testkit.state import HostLocks, StateStore, read_json, write_json
 from tests.helpers import Workspace
 
 TESTS = """
+platform: gb300
 images: {sb_worker: "img:1"}
 image_pull: %(pull)s
 runtime: {results_dir: ./runs, run_timeout: %(timeout)s, poll_interval: 0.01, rendezvous_timeout: 5}

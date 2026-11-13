@@ -1,5 +1,6 @@
 """Build and print what "testkit run" would do, without touching any host."""
 
+from testkit import platforms
 from testkit.checks import enabled_items
 from testkit.items import full_rack_of, gate_of, matches
 from testkit.render import node_cmd, node_env, node_vars
@@ -38,6 +39,7 @@ def build_plan(cluster, tests, selectors=None, only=None, exclude=None, run_id="
     drop maps item id to host names to leave out of that item.
     """
     base = tests.runtime["master_port_base"]
+    rails = platforms.rails(cluster.network)
     plans = []
     nic_cache = {}
     for item, cfg in enabled_items(tests):
@@ -51,7 +53,7 @@ def build_plan(cluster, tests, selectors=None, only=None, exclude=None, run_id="
             for rank, host in enumerate(g.hosts):
                 if host.name not in nic_cache:
                     nic_cache[host.name] = load_nic(tests.results_dir, host.name)
-                variables = node_vars(run_id, g, rank, host, port, nic_cache[host.name])
+                variables = node_vars(run_id, g, rank, host, port, nic_cache[host.name], rails)
                 nodes.append(NodePlan(g, rank, host, node_env(tests.common_env, cfg, rank, host, variables),
                                       node_cmd(cfg, rank, variables), variables))
         plans.append(ItemPlan(item, cfg, tests.image_for(item, cfg), groups, notes, nodes))

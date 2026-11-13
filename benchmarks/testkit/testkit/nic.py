@@ -2,7 +2,7 @@
 
 import os
 
-from testkit import profiles
+from testkit import platforms
 from testkit.executor import pmap
 from testkit.nodecmd import NodeError, run_script
 from testkit.ssh import Remote
@@ -28,7 +28,7 @@ def summarize(raw, network):
     pf = lambda i: pfs[i] if i < len(pfs) else {}
 
     def role_port(role, default):
-        kind = profiles.device(network, role)
+        kind = platforms.device(network, role)
         if kind == "bf3":
             return pf(int(dig(network, role + ".port", default) or default))
         if kind == "lom":
@@ -137,7 +137,7 @@ def apply_plan(rec, host, network=None):
     problems = []
     used = False
     for role in ("mgmt", "storage"):
-        kind = profiles.device(network, role)
+        kind = platforms.device(network, role)
         if kind == "lom":
             continue
         pci = plan.get(role + "_pci")
@@ -190,7 +190,7 @@ def discover(cluster, tests, hosts, out=print):
               "items": {ITEM: {"status": "running", "hosts": names, "groups": {}}}}
     write_json(os.path.join(run_dir, "run.json"), record)
     args = {"cx8_ids": _ids(dig(exp, "cx8.pci_id"), "1023"), "bf3_ids": _ids(dig(exp, "bf3.pci_id"), "a2dc")}
-    nic_roles = [r for r in ("mgmt", "storage") if profiles.device(network, r) == "nic"]
+    nic_roles = [r for r in ("mgmt", "storage") if platforms.device(network, r) == "nic"]
 
     def one(host):
         host_args = dict(args, nic_pcis=[host.plan[r + "_pci"] for r in nic_roles if host.plan.get(r + "_pci")])

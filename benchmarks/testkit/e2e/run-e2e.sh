@@ -81,6 +81,7 @@ scenario() {
     local dir=$1 scope=$2 mode=$3 sleep=$4 timeout=$5 fail_host=${6:-} extra=${7:-}
     mkdir -p "$E2E_ROOT/$dir"
     {
+        echo "platform: gb300"
         echo "ssh: {user: root, key: $E2E_ROOT/id_ed25519, port: 22, parallel: 8, connect_timeout: 5}"
         echo "hosts:"
         local i=1
@@ -91,6 +92,7 @@ scenario() {
         done
     } > "$E2E_ROOT/$dir/cluster.yaml"
     cat > "$E2E_ROOT/$dir/tests.yaml" <<EOF
+platform: gb300
 images: {sb_worker: $WORKER_IMAGE, dcgm: $DCGM_IMAGE, sbcli: $SBCLI_IMAGE}
 image_pull: skip
 runtime:

@@ -316,6 +316,7 @@ class OtherParsersTest(unittest.TestCase):
 
 
 FLOW = """
+platform: gb300
 images: {sb_worker: "img:1", sbcli: "sb:1"}
 image_pull: skip
 runtime: {results_dir: ./runs, run_timeout: 30, poll_interval: 0.01, rendezvous_timeout: 5}
@@ -410,6 +411,7 @@ class FlowTest(unittest.TestCase):
 
 
 NVLINK_FLOW = """
+platform: gb300
 images: {}
 image_pull: skip
 runtime: {results_dir: ./runs, run_timeout: 30, poll_interval: 0.01, rendezvous_timeout: 5}
@@ -555,6 +557,7 @@ class IbPairsTest(unittest.TestCase):
 
 
 SB_FLOW = """
+platform: gb300
 images: {sb_worker: "img:1", sbcli: "sb:1"}
 image_pull: skip
 runtime: {results_dir: ./runs, run_timeout: 30, poll_interval: 0.01, rendezvous_timeout: 5}

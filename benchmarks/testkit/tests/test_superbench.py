@@ -98,6 +98,7 @@ class ParserTest(unittest.TestCase):
 
 
 TESTS = """
+platform: gb300
 images: {sb_worker: "worker:1", sbcli: "sbcli:1"}
 image_pull: skip
 runtime: {results_dir: ./runs, poll_interval: 0.01}

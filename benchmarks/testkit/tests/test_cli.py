@@ -54,7 +54,9 @@ class CliTest(unittest.TestCase):
             c, t = os.path.join(target, "cluster.yaml"), os.path.join(target, "tests.yaml")
             code, out = run(["-c", c, "-t", t, "validate"])
             self.assertEqual(code, 0, out)
-            self.assertIn("6 hosts (R1 3, R2 3), golden gb300-r1-t01", out)
+            self.assertIn("platform gb300, 6 hosts (R1 3, R2 3), golden gb300-r1-t01", out)
+            with open(t, encoding="utf-8") as f:
+                self.assertIn("\nplatform: gb300", f.read())
             code, out = run(["-c", c, "-t", t, "plan", "moe.rack"])
             self.assertEqual(code, 0, out)
             self.assertIn("group R2: 3 hosts", out)

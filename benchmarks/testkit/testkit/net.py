@@ -17,7 +17,7 @@ import time
 
 import yaml
 
-from testkit import profiles
+from testkit import platforms
 from testkit.executor import pmap
 from testkit.nic import STRUCTURAL
 from testkit.nodecmd import NodeError, run_script
@@ -115,7 +115,7 @@ def resolve_ports(host, nic, network):
     found_cx8 = ", ".join(sorted(k for k, v in devs.items() if v["kind"] == "cx8")) or "none"
 
     def role_port(role, fallback_if, fallback_mac):
-        kind = profiles.device(network, role)
+        kind = platforms.device(network, role)
         pci = plan.get(role + "_pci")
         if pci:
             d = devs.get(pci)
@@ -140,7 +140,7 @@ def resolve_ports(host, nic, network):
         return port
 
     out = {"mgmt": role_port("mgmt", "mgmt_if", "mgmt_mac")
-           if host.mgmt is not None and profiles.device(network, "mgmt") != "lom" else None,
+           if host.mgmt is not None and platforms.device(network, "mgmt") != "lom" else None,
            "storage": role_port("storage", "storage_if", "storage_mac") if host.storage is not None else None,
            "rails": []}
     ib_mtu = plan.get("ib_mtu") or dig(network, "ipoib.mtu")

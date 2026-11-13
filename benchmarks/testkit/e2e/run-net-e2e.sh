@@ -51,6 +51,7 @@ state() { json "$ROOT/runs/state.json" "d['hosts']['$1']['$2']['status']"; }
 
 cluster() {   # cluster FILE [BAD_GW_HOST] [BAD_PCI_HOST]: base file + "testkit import" of a CSV IP plan
     cat > "$ROOT/$1" <<EOF
+platform: gb300
 ssh: {user: root, key: $ROOT/id_ed25519, connect_timeout: 5, parallel: 8}
 network:
   expect: {gpus: 0, cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}
@@ -102,7 +103,7 @@ setup() {
         on "$h" "ip route show default | while read -r r; do ip route del \$r; done; netplan apply 2>/dev/null; for _ in \$(seq 30); do ip route show default proto static | grep -q . && break; sleep 1; done"
     done
     for h in "${HOSTS[@]}"; do on "$h" "sed -i 's/172\.28\./$P./g' /root/fake_sysfs.py && python3 /root/fake_sysfs.py /fake-sys" >/dev/null; done
-    printf 'images: {sb_worker: "x"}\nruntime: {results_dir: ./runs}\n' > "$ROOT/tests.yaml"
+    printf 'platform: gb300\nimages: {sb_worker: "x"}\nruntime: {results_dir: ./runs}\n' > "$ROOT/tests.yaml"
     cluster cluster.yaml
     cluster bad-gw.yaml gb300-r2-t01
     cluster bad-pci.yaml "" gb300-r1-t02

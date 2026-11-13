@@ -4,7 +4,7 @@ import ipaddress
 import os
 import re
 
-from testkit import profiles, scaffold
+from testkit import platforms, scaffold
 from testkit.util import ConfigError, Problems, deep_merge, dig, env_str, load_yaml, natural_key, unknown_keys
 
 SSH_DEFAULTS = {"user": "root", "key": None, "port": 22, "parallel": 24, "connect_timeout": 10, "options": []}
@@ -77,8 +77,9 @@ class Host:
 
 class Cluster:
 
-    def __init__(self, path, ssh, network, hosts):
+    def __init__(self, path, ssh, network, hosts, platform=platforms.DEFAULT):
         self.path = path
+        self.platform = platform
         self.ssh = ssh
         self.network = network
         self.hosts = sorted(hosts, key=Host.sort_key)
@@ -241,9 +242,11 @@ def _parse_plan(merged, where, problems, ib_count):
 def load_cluster(path, problems):
     """Load cluster.yaml. Bad hosts are reported and left out; ConfigError if unreadable."""
     data = load_yaml(path)
+    platform = platforms.check(data.get("platform"), os.path.basename(path), problems)
+    schema = scaffold.cluster_schema(platform or platforms.DEFAULT)
     extra = []
-    unknown_keys({k: v for k, v in data.items() if k != "hosts"}, scaffold.cluster_schema(), "", CLUSTER_FREE, extra)
-    host_schema = scaffold.cluster_schema()["hosts"]
+    unknown_keys({k: v for k, v in data.items() if k != "hosts"}, schema, "", CLUSTER_FREE, extra)
+    host_schema = schema["hosts"]
     for raw in data.get("hosts") or []:
         if isinstance(raw, dict):
             unknown_keys(raw, host_schema, "hosts[{}]".format(raw.get("name", "?")), set(), extra)
@@ -252,12 +255,15 @@ def load_cluster(path, problems):
             problems.warn("network.lom.pin_routes is no longer used: replies from the LOM address are routed by "
                           "policy routing (network.lom.table)")
             continue
+        if key == "network.profile":
+            problems.error("network.profile is no longer used: the top-level 'platform' key selects the hardware")
+            continue
         problems.warn("{}: unknown key {}".format(os.path.basename(path), key))
 
     ssh = deep_merge(SSH_DEFAULTS, data.get("ssh") or {})
-    network = profiles.resolve(data.get("network"))
+    network = platforms.resolve(platform, data.get("network"))
     defaults = data.get("defaults") or {}
-    ib_count = dig(network, "expect.cx8.count", 4)
+    ib_count = platforms.rails(network)
     raw_hosts = data.get("hosts")
     if not isinstance(raw_hosts, list) or not raw_hosts:
         problems.error("{}: hosts must be a non-empty list".format(path))
@@ -267,7 +273,7 @@ def load_cluster(path, problems):
         host = _parse_host(raw, defaults, i, problems, ib_count)
         if host:
             hosts.append(host)
-    cluster = Cluster(path, ssh, network, hosts)
+    cluster = Cluster(path, ssh, network, hosts, platform or data.get("platform"))
     check_cluster(cluster, problems)
     return cluster
 
@@ -340,10 +346,8 @@ def check_cluster(cluster, problems):
                 problems.error("{}: {} {} is not in the same subnet as gateway {}".format(h.name, role, addr, gw))
 
     net = cluster.network or {}
-    if (net.get("profile") or profiles.DEFAULT) not in profiles.PROFILES:
-        problems.error("network.profile must be one of {}".format(", ".join(sorted(profiles.PROFILES))))
-    for role, kinds in sorted(profiles.DEVICES.items()):
-        if profiles.device(net, role) not in kinds:
+    for role, kinds in sorted(platforms.DEVICES.items()):
+        if platforms.device(net, role) not in kinds:
             problems.error("network.{}.device must be {}".format(role, " or ".join(kinds)))
     if net.get("match_by", "mac") not in ("mac", "name"):
         problems.error("network.match_by must be mac or name")
@@ -358,7 +362,7 @@ def check_cluster(cluster, problems):
 
         def lacks(h, role):
             # A plain NIC can only be found by its PCI address, whatever require_pci says.
-            kind = profiles.device(net, role)
+            kind = platforms.device(net, role)
             return getattr(h, role) is not None and kind != "lom" and not h.plan.get(role + "_pci") and \
                 (require or kind == "nic")
         need = [h.name for h in cluster.hosts if lacks(h, "mgmt") or lacks(h, "storage")
@@ -372,7 +376,7 @@ def check_cluster(cluster, problems):
         problems.error("network.rollback_seconds must be an integer >= 30")
     for key in ("mgmt", "storage"):
         port = dig(net, key + ".port")
-        if profiles.device(net, key) == "bf3" and port is not None and port not in (0, 1):
+        if platforms.device(net, key) == "bf3" and port is not None and port not in (0, 1):
             problems.error("network.{}.port must be 0 or 1 (BF3 port)".format(key))
     for key, low, high in (("table", 1, 4294967295), ("priority", 1, 32765)):
         value = dig(net, "lom." + key)
@@ -400,9 +404,10 @@ def check_cluster(cluster, problems):
 
 class Tests:
 
-    def __init__(self, path, data):
+    def __init__(self, path, data, platform=platforms.DEFAULT):
         self.path = path
         self.data = data
+        self.platform = platform
         self.base_dir = os.path.dirname(os.path.abspath(path))
         self.runtime = deep_merge(RUNTIME_DEFAULTS, data.get("runtime") or {})
         self.images = data.get("images") or {}
@@ -422,13 +427,18 @@ class Tests:
         return ref
 
 
-def load_tests_file(path, problems):
+def load_tests_file(path, problems, platform=None):
+    """Load tests.yaml; platform is the one of cluster.yaml, which tests.yaml must name too."""
     data = load_yaml(path)
+    own = platforms.check(data.get("platform"), os.path.basename(path), problems)
+    if own and platform and own != platform:
+        problems.error("{}: platform '{}' does not match cluster.yaml platform '{}'".format(
+            os.path.basename(path), own, platform))
     extra = []
-    unknown_keys(data, scaffold.tests_schema(), "", TESTS_FREE, extra)
+    unknown_keys(data, scaffold.tests_schema(own or platform or platforms.DEFAULT), "", TESTS_FREE, extra)
     for key in extra:
         problems.warn("{}: unknown key {}".format(os.path.basename(path), key))
-    return Tests(path, data)
+    return Tests(path, data, own or data.get("platform"))
 
 
 def load_both(cluster_path, tests_path, need_tests=True):
@@ -438,7 +448,7 @@ def load_both(cluster_path, tests_path, need_tests=True):
     tests = None
     if need_tests or os.path.isfile(tests_path):
         try:
-            tests = load_tests_file(tests_path, problems)
+            tests = load_tests_file(tests_path, problems, cluster.platform)
         except ConfigError as e:
             if need_tests:
                 raise

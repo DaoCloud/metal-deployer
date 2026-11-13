@@ -94,6 +94,7 @@ class NixlParseTest(unittest.TestCase):
 
 
 TESTS = """
+platform: gb300
 images: {nixl_benchmark: "nixl:1"}
 image_pull: skip
 runtime: {results_dir: ./runs, poll_interval: 0.01}

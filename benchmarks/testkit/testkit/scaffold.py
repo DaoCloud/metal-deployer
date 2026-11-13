@@ -4,29 +4,34 @@ import os
 
 import yaml
 
+from testkit import platforms
+
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 
 
-def _read(name):
-    with open(os.path.join(TEMPLATE_DIR, name), encoding="utf-8") as f:
+def _read(name, platform=None):
+    parts = [TEMPLATE_DIR] + ([platform] if platform else []) + [name]
+    with open(os.path.join(*parts), encoding="utf-8") as f:
         return f.read()
 
 
-def host_entry(rack_index, rack, tray, golden=False, examples=False):
+def host_entry(rack_index, rack, tray, golden=False, examples=False, platform=platforms.DEFAULT):
     """YAML text for one host; the address plan is only a placeholder to edit."""
     r, t = rack_index, tray
+    example = platforms.PLATFORMS[platform]["example"]
+    rails = len(example["ib_pci"])
     lines = [
-        "  - name: gb300-{}-t{:02d}".format(rack.lower(), t),
+        "  - name: {}-{}-t{:02d}".format(platform, rack.lower(), t),
         "    rack: {}".format(rack),
         "    tray: {}".format(t),
         '    serial: ""',
         "    ssh: 10.10.{}.{}".format(r, 10 + t),
         "    mgmt: 10.20.{}.{}/16".format(r, 10 + t),
         "    storage: 10.30.{}.{}/16".format(r, 10 + t),
-        "    ib: [{}]".format(", ".join("10.10{}.{}.{}/16".format(k, r, 10 + t) for k in range(4))),
-        '    mgmt_pci: "0009:01:00.0"',
-        '    storage_pci: "0009:01:00.1"',
-        '    ib_pci: ["0000:03:00.0", "0001:03:00.0", "0002:03:00.0", "0003:03:00.0"]',
+        "    ib: [{}]".format(", ".join("10.10{}.{}.{}/16".format(k, r, 10 + t) for k in range(rails))),
+        '    mgmt_pci: "{}"'.format(example["mgmt_pci"]),
+        '    storage_pci: "{}"'.format(example["storage_pci"]),
+        "    ib_pci: [{}]".format(", ".join('"{}"'.format(p) for p in example["ib_pci"])),
     ]
     if golden:
         lines.append("    tags: [golden]")
@@ -36,23 +41,23 @@ def host_entry(rack_index, rack, tray, golden=False, examples=False):
     return "\n".join(lines)
 
 
-def cluster_text(racks=1, trays=2):
+def cluster_text(racks=1, trays=2, platform=platforms.DEFAULT):
     entries = []
     for ri in range(racks):
         rack = "R{}".format(ri + 1)
         for t in range(1, trays + 1):
             first = ri == 0 and t == 1
             second = ri == 0 and t == 2
-            entries.append(host_entry(ri, rack, t, golden=first, examples=second))
-    return _read("cluster.yaml").replace("__HOSTS__", "\n".join(entries))
+            entries.append(host_entry(ri, rack, t, golden=first, examples=second, platform=platform))
+    return _read("cluster.yaml", platform).replace("__HOSTS__", "\n".join(entries))
 
 
-def tests_text():
-    return _read("tests.yaml")
+def tests_text(platform=platforms.DEFAULT):
+    return _read("tests.yaml", platform)
 
 
-def cluster_schema():
-    data = yaml.safe_load(cluster_text(1, 1))
+def cluster_schema(platform=platforms.DEFAULT):
+    data = yaml.safe_load(cluster_text(1, 1, platform))
     host = dict(data["hosts"][0])
     from testkit.config import PLAN_FIELDS
     host.update({"tags": [], "env": {}, "skip": [], "gpus": 4})
@@ -61,8 +66,8 @@ def cluster_schema():
     return data
 
 
-def tests_schema():
-    data = yaml.safe_load(tests_text())
+def tests_schema(platform=platforms.DEFAULT):
+    data = yaml.safe_load(tests_text(platform))
     # Keys every item section may carry even if the template does not show them.
     extra = {"enabled": True, "scope": "", "hosts": "", "groups": [], "env": {}, "args": [],
              "image": "", "cmd": [], "per_rank": {}, "benchmarks": {"include": [], "exclude": []}, "config": "", "timeout": 0,

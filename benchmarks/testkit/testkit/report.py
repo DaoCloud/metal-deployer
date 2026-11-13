@@ -21,7 +21,7 @@ import tarfile
 import time
 from datetime import datetime
 
-from testkit import __version__, scaffold
+from testkit import __version__, platforms, scaffold
 from testkit.items import ITEMS, matches
 from testkit.runs import list_runs
 from testkit.state import StateStore, load_nic, read_json
@@ -197,7 +197,8 @@ def build_data(cluster, tests, title=None):
     report_cfg = tests.data.get("report") or {}
     return {
         "meta": {
-            "title": title or report_cfg.get("title") or "GB300 测试报告",
+            "title": title or report_cfg.get("title") or "{} 测试报告".format((cluster.platform or "").upper()),
+            "platform": cluster.platform or "",
             "cluster": "{} 台 / {} rack".format(len(cluster.hosts), len(cluster.racks)),
             "golden": golden[0] if golden else "",
             "start": min(starts) if starts else "", "end": max(ends) if ends else "",
@@ -250,7 +251,7 @@ def build_rdma(cluster, results, group_state):
         for tid in tests:
             values[tid] = [[(p["tests"].get(tid, {}).get("values", {}).get(key, {}).get(str(rail),
                              p["tests"].get(tid, {}).get("values", {}).get(key, {}).get(rail, -1)))
-                            for p, key in keys] for rail in range(4)]
+                            for p, key in keys] for rail in range(platforms.rails(cluster.network))]
         order_ids = sorted(tests, key=lambda t: (t.startswith("lat"), t.startswith("bidir"), t))
         return {"hosts": order, "racks": racks, "pairs": pairs, "rounds": len({p[2] for p in pairs}),
                 "tests": [tests[t] for t in order_ids], "values": values, "run_id": run_id,

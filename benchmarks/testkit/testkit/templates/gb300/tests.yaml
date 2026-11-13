@@ -30,6 +30,7 @@
 # Environment layers, later ones win:
 #   common_env -> <section>.common.env -> <item>.env -> <section>.common.per_rank -> host env in cluster.yaml
 version: 1
+platform: gb300                   # hardware platform; must match "platform" in cluster.yaml
 
 images:                           # tag or tag@digest; the digest actually used is recorded in results
   dcgm: nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04   # same DCGM version as the ISO

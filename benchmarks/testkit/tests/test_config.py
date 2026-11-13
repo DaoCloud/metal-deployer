@@ -1,6 +1,6 @@
 import unittest
 
-from testkit.config import load_cluster, load_tests_file
+from testkit.config import load_both, load_cluster, load_tests_file
 from testkit.util import ConfigError, Problems
 from tests.helpers import Workspace
 
@@ -102,11 +102,10 @@ class ClusterTest(unittest.TestCase):
         self.ws.edit("cluster.yaml", "  rollback_seconds: 120", "  rollback_seconds: 5")
         self.ws.edit("cluster.yaml", "routes: [10.30.0.0/16]", "routes: [10.30.0.0/33]")
         self.ws.edit("cluster.yaml", "    table: 100", "    table: 254")
-        self.ws.edit("cluster.yaml", "  profile: gb300", "  profile: b200")
         self.ws.edit("cluster.yaml", "mgmt: {device: bf3", "mgmt: {device: dpu")
         _, problems = self.load()
         for frag in ("only the default partition", "match_by must be", "rollback_seconds must be",
-                     "'10.30.0.0/33' is not a valid subnet", "network.lom.table must be", "network.profile must be",
+                     "'10.30.0.0/33' is not a valid subnet", "network.lom.table must be",
                      "network.mgmt.device must be bf3 or nic or lom"):
             self.assertTrue(any(frag in e for e in problems.errors), frag)
 
@@ -120,6 +119,26 @@ class ClusterTest(unittest.TestCase):
         _, problems = self.load()
         self.assertIn("cluster.yaml: unknown key hosts[gb300-r1-t02].colour", problems.warnings)
         self.assertIn("cluster.yaml: unknown key ssh.prot", problems.warnings)
+
+    def test_platform(self):
+        cluster, _ = self.load()
+        self.assertEqual(cluster.platform, "gb300")
+        self.ws.edit("cluster.yaml", "platform: gb300\n", "")
+        self.ws.edit("cluster.yaml", "network:\n", "network:\n  profile: gb300\n")
+        _, problems = self.load()
+        self.assertTrue(any("platform is required" in e for e in problems.errors), problems.errors)
+        self.assertTrue(any("network.profile is no longer used" in e for e in problems.errors), problems.errors)
+        self.ws.edit("cluster.yaml", "network:\n", "platform: b300\nnetwork:\n")
+        _, problems = self.load()
+        self.assertTrue(any("platform 'b300' is not supported" in e for e in problems.errors), problems.errors)
+
+    def test_tests_platform_must_match(self):
+        self.ws.edit("tests.yaml", "platform: gb300 ", "platform: b300 ")
+        _, _, problems = load_both(self.ws.cluster, self.ws.tests)
+        self.assertTrue(any("tests.yaml: platform 'b300' is not supported" in e for e in problems.errors))
+        self.ws.edit("tests.yaml", "platform: b300 ", "")
+        _, _, problems = load_both(self.ws.cluster, self.ws.tests)
+        self.assertTrue(any("tests.yaml: platform is required" in e for e in problems.errors))
 
     def test_unreadable(self):
         self.ws.write("cluster.yaml", "hosts: [\n")

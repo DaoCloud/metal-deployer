@@ -10,7 +10,9 @@ GROUP_VARS = {"run_id", "group_id", "node_rank", "nnodes", "master_addr", "maste
               "np", "hostfile"}
 # Path of the MPI hostfile inside containers in mpi mode.
 HOSTFILE = "/testkit-ssh/hostfile"
-HOST_VARS = {"hostname", "rack", "tray", "gpus", "mgmt_ip", "storage_ip", "ib0_ip", "ib1_ip", "ib2_ip", "ib3_ip"}
+HOST_VARS = {"hostname", "rack", "tray", "gpus", "mgmt_ip", "storage_ip"}
+# IPoIB address of rail k: {ib<k>_ip}, k = 0 .. rails - 1 of the platform.
+IB_VAR_RE = re.compile(r"^ib[0-9]+_ip$")
 # Filled from "testkit nic discover" results; until then rendered as a visible placeholder.
 NIC_VARS = {"mgmt_if", "ib_hcas", "ib_ucx_devs"}
 KNOWN_VARS = GROUP_VARS | HOST_VARS | NIC_VARS
@@ -27,7 +29,7 @@ def unknown_vars(value):
     elif isinstance(value, dict):
         for v in value.values():
             found |= unknown_vars(v)
-    return found - KNOWN_VARS
+    return {v for v in found - KNOWN_VARS if not IB_VAR_RE.match(v)}
 
 
 def render(value, variables):
@@ -52,7 +54,7 @@ def nic_vars(nic):
     return out
 
 
-def node_vars(run_id, group, rank, host, master_port, nic=None):
+def node_vars(run_id, group, rank, host, master_port, nic=None, rails=4):
     master = group.master
     out = {
         "run_id": run_id,
@@ -72,7 +74,7 @@ def node_vars(run_id, group, rank, host, master_port, nic=None):
         "mgmt_ip": host.mgmt_ip,
         "storage_ip": str(host.storage.ip) if host.storage else "",
     }
-    for i in range(4):
+    for i in range(rails):
         out["ib{}_ip".format(i)] = str(host.ib[i].ip) if i < len(host.ib) and host.ib[i] else ""
     out.update(nic_vars(nic))
     return out

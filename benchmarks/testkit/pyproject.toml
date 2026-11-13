@@ -20,4 +20,4 @@ testkit = "testkit.cli:main"
 include = ["testkit*"]
 
 [tool.setuptools.package-data]
-testkit = ["templates/*", "node_scripts/*", "report/*"]
+testkit = ["templates/*", "templates/*/*", "node_scripts/*", "report/*"]

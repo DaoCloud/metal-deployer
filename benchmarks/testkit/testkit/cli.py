@@ -4,12 +4,13 @@ import argparse
 import os
 import sys
 
-from testkit import __version__
+from testkit import __version__, platforms
 
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="testkit",
-        description="Run GB300 acceptance tests on many nodes over SSH and build an HTML report.",
+        description="Run hardware acceptance tests (platforms: {}) on many nodes over SSH and build an HTML "
+                    "report.".format(platforms.names()),
     )
     parser.add_argument("--version", action="version", version="testkit " + __version__)
     parser.add_argument("-c", "--cluster", default="cluster.yaml",
@@ -22,12 +23,16 @@ def build_parser():
     init.add_argument("--dir", default=".", help="where to write the files (default: current directory)")
     init.add_argument("--racks", type=int, default=1, help="example racks in cluster.yaml (default: 1)")
     init.add_argument("--trays", type=int, default=2, help="example trays per rack (default: 2)")
+    init.add_argument("--platform", choices=sorted(platforms.PLATFORMS), default=platforms.DEFAULT,
+                      help="hardware platform of the hosts; selects the templates (default: %(default)s)")
     init.add_argument("--force", action="store_true", help="overwrite existing files")
 
     imp = sub.add_parser("import", help="read the IP plan (.xlsx or .csv) into the hosts of cluster.yaml (-c)")
     imp.add_argument("plan", help="IP plan file, e.g. gb300-nic-ip-plan.xlsx")
     imp.add_argument("--sheet", help="sheet name in .xlsx (default: hosts, else the first sheet)")
     imp.add_argument("--dry-run", action="store_true", help="check and summarize without writing cluster.yaml")
+    imp.add_argument("--platform", choices=sorted(platforms.PLATFORMS), default=platforms.DEFAULT,
+                     help="platform of a new cluster.yaml (an existing file keeps its own; default: %(default)s)")
 
     val = sub.add_parser("validate", help="check cluster.yaml and tests.yaml")
     val.add_argument("--ssh", action="store_true", help="also check that every host is reachable over SSH")
@@ -95,7 +100,8 @@ def cmd_init(args):
         print("error: --racks and --trays must be at least 1")
         return 2
     os.makedirs(args.dir, exist_ok=True)
-    files = {"cluster.yaml": scaffold.cluster_text(args.racks, args.trays), "tests.yaml": scaffold.tests_text()}
+    files = {"cluster.yaml": scaffold.cluster_text(args.racks, args.trays, args.platform),
+             "tests.yaml": scaffold.tests_text(args.platform)}
     exists = [n for n in files if os.path.exists(os.path.join(args.dir, n))]
     if exists and not args.force:
         print("error: {} already exists in {}; use --force to overwrite".format(", ".join(exists), args.dir))
@@ -104,6 +110,7 @@ def cmd_init(args):
         with open(os.path.join(args.dir, name), "w", encoding="utf-8") as f:
             f.write(text)
         print("wrote " + os.path.join(args.dir, name))
+    print("platform: " + args.platform)
     print("edit the host list and addresses, then run: testkit validate")
     return 0
 
@@ -121,8 +128,8 @@ def cmd_validate(args):
     cluster, tests, problems = _load(args)
     racks = ", ".join("{} {}".format(r, len(cluster.rack_hosts(r))) for r in cluster.racks)
     golden = [h.name for h in cluster.hosts if h.golden]
-    print("{}: {} hosts ({}), golden {}".format(args.cluster, len(cluster.hosts), racks or "-",
-                                                 golden[0] if golden else "-"))
+    print("{}: platform {}, {} hosts ({}), golden {}".format(args.cluster, cluster.platform or "-", len(cluster.hosts),
+                                                             racks or "-", golden[0] if golden else "-"))
     items = [item.id for item, _ in enabled_items(tests)]
     print("{}: {} items enabled: {}".format(args.tests, len(items), ", ".join(items) or "-"))
     if args.ssh and cluster.hosts:
@@ -251,7 +258,8 @@ def main(argv=None):
         return cmd_init(args)
     if args.command == "import":
         from testkit.plan_import import run_import
-        return run_import(args.plan, args.cluster, sheet=args.sheet, dry_run=args.dry_run)
+        return run_import(args.plan, args.cluster, sheet=args.sheet, dry_run=args.dry_run,
+                          platform=args.platform)
     if args.command == "doctor":
         from testkit import doctor
         return doctor.run()

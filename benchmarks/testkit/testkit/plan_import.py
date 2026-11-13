@@ -13,7 +13,7 @@ import re
 
 import yaml
 
-from testkit import scaffold
+from testkit import platforms, scaffold
 from testkit.config import load_cluster
 from testkit.util import ConfigError, Problems, load_yaml
 
@@ -36,7 +36,6 @@ ORDER = ("name", "rack", "tray", "serial", "ssh", "mgmt", "mgmt_gateway", "mgmt_
          "ib_mtu") + KEEP
 
 NEW_NETWORK = """network:
-  profile: gb300                  # gb300: BF3 port 0/1 = mgmt/storage, 4x CX8 on IB; custom: see testkit init
   ib_mode: {enforce: true, reboot: ask}      # reboot: ask / auto / never
   lom: {table: 100, priority: 100}           # policy routing table for replies from the LOM address
   # Gateways and storage routes come from the IP plan (per host). BF3 MTU is left unchanged.
@@ -147,7 +146,7 @@ def replace_hosts(text, block):
     return "".join(lines[:start]) + block + ("\n" + tail if tail else "")
 
 
-def run_import(plan_path, cluster_path, sheet=None, dry_run=False, out=print):
+def run_import(plan_path, cluster_path, sheet=None, dry_run=False, out=print, platform=None):
     if not os.path.isfile(plan_path):
         out("error: {} not found".format(plan_path))
         return 1
@@ -170,7 +169,7 @@ def run_import(plan_path, cluster_path, sheet=None, dry_run=False, out=print):
         with open(cluster_path, encoding="utf-8") as f:
             base = f.read()
     else:
-        base = scaffold.cluster_text(1, 1)
+        base = scaffold.cluster_text(1, 1, platform or platforms.DEFAULT)
         base = re.sub(r"(?ms)^network:.*?(?=^defaults:)", NEW_NETWORK, base)
     for h in hosts:
         old = existing.get(h["name"]) or {}

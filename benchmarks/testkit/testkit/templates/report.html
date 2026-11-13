@@ -142,7 +142,7 @@ function pageOverview() {
   }
   s += `</table></div>`;
   const m = D.meta;
-  s += `<div class="card small mut">集群：${esc(m.cluster)}；金样本：${esc(m.golden || "—")}；时间：${esc(m.start || "—")} → ${esc(m.end || "—")}；工具：${esc(m.tool)}；结果目录：${esc(m.results_dir)}。<br>
+  s += `<div class="card small mut">平台：${esc(m.platform || "—")}；集群：${esc(m.cluster)}；金样本：${esc(m.golden || "—")}；时间：${esc(m.start || "—")} → ${esc(m.end || "—")}；工具：${esc(m.tool)}；结果目录：${esc(m.results_dir)}。<br>
     判定：只判正确性（退出码、诊断结果、检查项）。性能指标不设门限，只展示数值；表格中按“偏离全部主机中位数”着色，仅作提示。
     组测试（mpi、委托）的失败计为组的结果，不算到单台主机上。</div>`;
   return s;

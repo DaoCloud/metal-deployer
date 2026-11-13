@@ -22,10 +22,16 @@
 | `cluster.yaml` | SSH 参数、网络统一参数、主机列表（rack、tray、LOM 地址、BF3/IPoIB 地址、tags、单机 env/skip） |
 | `tests.yaml` | 测哪些项、在哪些节点、怎么分组、参数 |
 
+**硬件平台**：cluster.yaml 和 tests.yaml 顶层都要写 `platform`，目前只支持 `gb300`。平台决定 `testkit init` 生成哪套模板（`testkit/templates/<platform>/`）、`network` 的默认值（网卡形态与数量），模板中的测试镜像与测试项也按该平台编写。缺少 `platform`、取值不支持、两个文件不一致，所有命令都会报错；`run.json` 和 HTML 报告记录所用平台。
+
+```bash
+testkit init --platform gb300 [--racks 2 --trays 18]   # --platform 默认 gb300
+```
+
 `testkit init` 生成带注释的模板，字段说明都写在模板注释里。`testkit validate` 检查：
 
-- cluster.yaml：主机名、rack+tray 唯一；地址格式（必须带前缀长度）；所有地址全局唯一；同一 rail 的 IPoIB 在同一子网；mgmt 与网关同网段；最多一台 `golden`；拼错或多余的字段给出警告。
-- tests.yaml：主机选择能解析；镜像已配置；模板变量拼写正确；`scope`、`runtime` 取值合法；依赖 MNNVL 的项未启用 imex 时给出警告。
+- cluster.yaml：`platform` 合法；主机名、rack+tray 唯一；地址格式（必须带前缀长度）；所有地址全局唯一；同一 rail 的 IPoIB 在同一子网；mgmt 与网关同网段；最多一台 `golden`；拼错或多余的字段给出警告。
+- tests.yaml：`platform` 与 cluster.yaml 一致；主机选择能解析；镜像已配置；模板变量拼写正确；`scope`、`runtime` 取值合法；依赖 MNNVL 的项未启用 imex 时给出警告。
 - `--ssh`：并发检查每台主机能否 SSH 登录。
 
 ### 主机选择与分组
@@ -45,7 +51,7 @@
 testkit import gb300-nic-ip-plan.xlsx [--sheet hosts] [--dry-run]   # 或 .csv
 ```
 
-把规划表读进 `cluster.yaml`（`-c` 指定）的 `hosts` 段：只替换 `hosts`，`ssh`、`network` 和注释保持不变；已有主机的 `tags`、`env`、`skip`、`gpus` 保留；原文件备份为 `cluster.yaml.bak`。`cluster.yaml` 不存在时新建，network 段只保留按规划表下发所需的设置（不改 BF3 MTU，网关和存储路由按主机取自规划表）。写入前先校验，有错误时不写。`.xlsx` 需要 openpyxl（`pip install './benchmarks/testkit[xlsx]'`），否则把 sheet 另存为 CSV。
+把规划表读进 `cluster.yaml`（`-c` 指定）的 `hosts` 段：只替换 `hosts`，`ssh`、`network` 和注释保持不变；已有主机的 `tags`、`env`、`skip`、`gpus` 保留；原文件备份为 `cluster.yaml.bak`。`cluster.yaml` 不存在时按 `--platform`（默认 `gb300`）新建，network 段只保留按规划表下发所需的设置（不改 BF3 MTU，网关和存储路由按主机取自规划表）。写入前先校验，有错误时不写。`.xlsx` 需要 openpyxl（`pip install './benchmarks/testkit[xlsx]'`），否则把 sheet 另存为 CSV。
 
 | 规划表列 | cluster.yaml 字段 |
 |---|---|
@@ -70,24 +76,13 @@ testkit net verify                        # 只验证，不修改
 
 主机上需要 python3（Ubuntu 自带）、netplan、systemd-run；读取固件设置需要 `mlxconfig`（没有时跳过 IB 模式与 BF3 模式检查）。
 
-**硬件 profile**（`network.profile`，默认 `gb300`）决定 `network.expect` 与 mgmt、storage 两个角色的默认值；cluster.yaml 中写出的键覆盖 profile：
+**平台默认值**：`platform` 决定 `network.expect` 与 mgmt、storage 两个角色的默认值；cluster.yaml 中 `network` 下写出的键覆盖平台默认值：
 
-| profile | mgmt | storage | rail（`expect.cx8`） |
+| platform | mgmt | storage | rail（`expect.cx8`） |
 |---|---|---|---|
 | `gb300` | BF3 port 0（`device: bf3`） | BF3 port 1 | 4 × CX8 `15b3:1023`，InfiniBand，800 Gb/s；另要求 4 GPU、BF3 两个口为 NIC 模式 |
-| `custom` | `device: nic`：按 `mgmt_pci` 找到的任意网卡；或 `device: lom`：mgmt 地址就是 LOM 地址，S4 不配置 mgmt、不移动默认路由 | `device: nic`，按 `storage_pci` 找 | 不预设，按现场在 `expect` 中写数量、`pci_id`、链路层、速率；没有 BF3 时不写 `expect.bf3` |
 
-`device: nic` 只能按 PCI 定位，与 `require_pci` 无关，规划表必须给出 PCI。示例（没有 DPU、mgmt 在普通网卡上的机型）：
-
-```yaml
-network:
-  profile: custom
-  expect:
-    gpus: 8
-    cx8: {count: 8, pci_id: "15b3:1023", link_layer: InfiniBand, rate_gbps: 800}
-  mgmt: {device: nic, default_route: true}
-  storage: {device: nic}
-```
+`network.profile` 已移除，写了会报错。mgmt/storage 的 `device` 仍可单独覆盖：`device: nic` 按 `mgmt_pci`/`storage_pci` 找到任意网卡（只能按 PCI 定位，与 `require_pci` 无关，规划表必须给出 PCI）；mgmt 的 `device: lom` 表示 mgmt 地址就是 LOM 地址，S4 不配置 mgmt、不移动默认路由。
 
 **S3 识别**（`node_scripts/nic_discover.py`，经 SSH 在主机上执行，只读）：
 

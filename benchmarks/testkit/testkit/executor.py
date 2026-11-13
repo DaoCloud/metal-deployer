@@ -80,7 +80,7 @@ class RunContext:
         self._lock = threading.Lock()
         self._keys = None
         self.record = {"run_id": run_id, "pid": os.getpid(), "status": "running", "started_at": now_iso(),
-                       "cluster": os.path.abspath(cluster.path), "tests": os.path.abspath(tests.path), "items": {}}
+                       "platform": cluster.platform, "cluster": os.path.abspath(cluster.path), "tests": os.path.abspath(tests.path), "items": {}}
 
     def log(self, msg):
         with self._lock:
@@ -793,7 +793,7 @@ def run_items(cluster, tests, selectors, only, exclude, ops, force=False, out=pr
     ctx = RunContext(cluster, tests, run_id, ops, out)
     os.makedirs(ctx.run_dir, exist_ok=True)
     ctx.save_record()
-    ctx.log("run {}  results: {}".format(run_id, ctx.run_dir))
+    ctx.log("run {}  platform: {}  results: {}".format(run_id, cluster.platform, ctx.run_dir))
     rt = tests.runtime
     overall = []
     started = start_from is None
