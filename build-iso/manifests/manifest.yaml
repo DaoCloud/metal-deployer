@@ -224,7 +224,7 @@ basic:
     - libtool
     - libtool-bin
     - default-jre
-    - libasound2
+    - libasound2t64
     - libwayland-server0
     - libxcb-cursor0
     - libxtst6

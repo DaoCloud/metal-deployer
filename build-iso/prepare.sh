@@ -316,26 +316,32 @@ manifest_target_arch() {
     '
 }
 
-# Cross-architecture builds (e.g. arm64 ISO on an amd64 host) must not resolve
-# against the host apt database. Build an isolated apt root that only knows the
-# target architecture and the Ubuntu ports archive, and route apt-cache /
-# apt-get through it via APT_OPTS.
+# The offline package set must not be resolved against the host apt database
+# (host packages, sources and holds differ from the target). Build an isolated
+# apt root that only knows the target architecture and the Ubuntu archive
+# (ports for non-x86), and route apt-cache / apt-get through it via APT_OPTS.
 APT_OPTS=()
 APT_CACHE_SUFFIX=""
 APT_ROOT=""
+APT_TARGET_ARCH=""
 setup_target_apt() {
     local target_arch host_arch apt_root mirror suite
     target_arch="$(manifest_target_arch)"
     host_arch="$(dpkg --print-architecture)"
-    if [ -z "$target_arch" ] || [ "$target_arch" = "$host_arch" ]; then
-        return 0
-    fi
+    [ -n "$target_arch" ] || target_arch="$host_arch"
+    APT_TARGET_ARCH="$target_arch"
 
-    mirror="${PORTS_MIRROR:-http://ports.ubuntu.com/ubuntu-ports}"
+    case "$target_arch" in
+        amd64|i386) mirror="${UBUNTU_MIRROR:-http://archive.ubuntu.com/ubuntu}" ;;
+        *) mirror="${PORTS_MIRROR:-http://ports.ubuntu.com/ubuntu-ports}" ;;
+    esac
     suite="${UBUNTU_SUITE:-noble}"
     apt_root="${CI_WORK_DIR}/apt-${target_arch}"
     APT_ROOT="$apt_root"
-    APT_CACHE_SUFFIX="-${target_arch}"
+    # Native builds share the existing base-packages cache.
+    if [ "$target_arch" != "$host_arch" ]; then
+        APT_CACHE_SUFFIX="-${target_arch}"
+    fi
     APT_OPTS=(
         -o "Dir=${apt_root}"
         -o "Dir::State::status=${apt_root}/var/lib/dpkg/status"
@@ -344,7 +350,7 @@ setup_target_apt() {
         -o "Acquire::Languages=none"
     )
 
-    echo "Cross-arch APT: host=${host_arch} target=${target_arch} mirror=${mirror} suite=${suite}"
+    echo "Target APT: host=${host_arch} target=${target_arch} mirror=${mirror} suite=${suite}"
     # The isolated apt root only lives under CI_WORK_DIR, so it is created and
     # refreshed even in --dry-run to make the dependency closure visible.
     mkdir -p "${apt_root}/etc/apt/apt.conf.d" "${apt_root}/etc/apt/preferences.d" \
@@ -381,6 +387,7 @@ seed_target_status() {
             cp "${tmp}/root/var/lib/dpkg/status" "${APT_ROOT}/var/lib/dpkg/status"
             count=$(grep -c '^Package:' "${APT_ROOT}/var/lib/dpkg/status")
             echo "Seeded target dpkg status from ${layer} (${count} installed packages)."
+            seed_target_kernel "$iso" "$tmp"
             break
         fi
     done
@@ -388,8 +395,58 @@ seed_target_status() {
     rm -rf "$tmp"
 }
 
-# Cross-architecture builds resolve one consistent installation with apt's
-# solver instead of collecting every dependency alternative: init_system.sh
+# Autoinstall installs the kernel (user-data kernel.package: linux-generic) from
+# the ISO pool, and init_system.sh holds it. Add that closure to the seeded
+# status, with the boot kernel packages held, so the solver keeps the ISO
+# kernel instead of pulling the archive's newer one (offline_debs would install
+# it as an upgrade). linux-tools-* stay unheld: platform kernel tools may
+# upgrade linux-tools-common (offline_debs uses --allow-change-held-packages).
+seed_target_kernel() {
+    local iso="$1" tmp="$2" suite comp pool="${2}/pool" count
+    local -a pool_opts
+    suite="${UBUNTU_SUITE:-noble}"
+    mkdir -p "${pool}/lists/partial" "${pool}/parts"
+    : > "${pool}/Packages"
+    for comp in main restricted; do
+        if xorriso -osirrox on -indev "$iso" -extract "/dists/${suite}/${comp}/binary-${APT_TARGET_ARCH}/Packages.gz" "${pool}/${comp}.gz" >/dev/null 2>&1; then
+            gzip -dc "${pool}/${comp}.gz" >> "${pool}/Packages"
+            echo >> "${pool}/Packages"
+        fi
+    done
+    if ! grep -q '^Package: linux-generic$' "${pool}/Packages"; then
+        echo "⚠️ linux-generic not found in the base ISO pool; resolving without the installed kernel."
+        return 0
+    fi
+    echo "deb [trusted=yes] file:${pool} ./" > "${pool}/sources.list"
+    pool_opts=("${APT_OPTS[@]}"
+        -o "Dir::Etc::SourceList=${pool}/sources.list"
+        -o "Dir::Etc::SourceParts=${pool}/parts"
+        -o "Dir::Etc::PreferencesParts=${pool}/parts"
+        -o "Dir::State::Lists=${pool}/lists")
+    apt-get "${pool_opts[@]}" update >/dev/null
+    # Same as curtin: Recommends included (linux-tools-<kernel>).
+    apt-get "${pool_opts[@]}" -s install linux-generic |
+        sed -nE 's/^Inst ([^ ]+) (\[[^]]*\] )?\(([^ ]+) .*/\1 \3/p' > "${pool}/inst"
+    {
+        echo
+        ruby -e '
+          want = File.readlines(ARGV[0]).map { |l| l.split }.to_h
+          File.read(ARGV[1]).split(/\n{2,}/).each do |stanza|
+            pkg = stanza[/^Package: (\S+)/, 1]
+            ver = stanza[/^Version: (\S+)/, 1]
+            next unless pkg && want[pkg] == ver
+            want.delete(pkg)
+            state = pkg =~ /\Alinux-(generic|image-|headers-|modules-)/ ? "hold" : "install"
+            puts stanza.sub(/^(Package: .*)$/, "\\1\nStatus: #{state} ok installed"), ""
+          end
+        ' "${pool}/inst" "${pool}/Packages"
+    } >> "${APT_ROOT}/var/lib/dpkg/status"
+    count=$(wc -l < "${pool}/inst")
+    echo "Seeded ${count} package(s) of the ISO kernel install: $(awk '/^linux-image-[0-9]/{print $1"="$2}' "${pool}/inst")"
+}
+
+# Resolve one consistent installation with apt's solver instead of collecting
+# every dependency alternative (apt-cache depends --recurse): init_system.sh
 # installs every offline deb in one transaction, so alternatives that conflict
 # (make/make-guile, busybox/busybox-static, signed/unsigned kernel images) or
 # missing dependencies of directly downloaded debs break first boot.
@@ -397,12 +454,26 @@ prepare_target_apt_solution() {
     local names="$1"
     local local_dir="${APT_ROOT}/local" inner_root="${APT_ROOT}/inner"
     local direct_list manifest_debs solution keep cache_dir deb pkg ver origin file pin_names repo_ver blocked
+    local driver_branch driver_version
     local -a direct_names=()
     direct_list="$(mktemp)"; manifest_debs="$(mktemp)"; solution="$(mktemp)"; keep="$(mktemp)"
     cache_dir="${CACHE_BASE_DIR}/base-packages${APT_CACHE_SUFFIX}"
+    read -r driver_branch driver_version < <(extract_manifest_json | ruby -rjson -e '
+      env = JSON.parse(STDIN.read)["install_environment"] || {}
+      puts [env["NVIDIA_DRIVER_BRANCH"].to_s, env["NVIDIA_DRIVER_VERSION"].to_s].map { |v| v.empty? ? "-" : v }.join(" ")
+    ')
+    [ "$driver_branch" != "-" ] || driver_branch=""
+    [ "$driver_version" != "-" ] || driver_version=""
 
     seed_target_status
 
+    # Held packages (the ISO kernel) stay as installed; requesting them by name
+    # would override the hold and pull the archive's newer kernel.
+    local held
+    held="$(awk '/^Package:/{p=$2} /^Status: hold /{print p}' "${APT_ROOT}/var/lib/dpkg/status" | sort -u)"
+    if [ -n "$held" ]; then
+        names="$(tr ' ' '\n' <<< "$names" | grep -vxF -f <(echo "$held") | tr '\n' ' ')"
+    fi
     # Directly downloaded debs become a pinned local repository; repository
     # bootstrap debs (CUDA local repo) contribute their inner index instead.
     rm -rf "$local_dir" "$inner_root"
@@ -436,10 +507,11 @@ prepare_target_apt_solution() {
                     tar -x -C "${inner_root}/${pkg}" --wildcards --no-anchored 'Packages' 2>/dev/null || true
                 find "${inner_root}/${pkg}" -name Packages -printf '%h\n' | while read -r dir; do
                     echo "deb [trusted=yes] file:${dir} ./" >> "${APT_ROOT}/etc/apt/sources.list.d/metal-deployer-local.list"
-                    # Its bundled driver (e.g. 580.126.20) must never be chosen.
+                    # Its bundled driver (e.g. 580.126.20) must never be chosen
+                    # unless it is the platform driver (x86 "default" branch).
                     # apt rejects "Package: *" with a version pin, so list names.
                     blocked=$(awk -v v="$repo_ver" '/^Package:/{p=$2} /^Version:/{sub(/^[0-9]+:/, "", $2); if (v != "" && index($2, v) == 1) print p}' "${dir}/Packages" | sort -u | tr '\n' ' ')
-                    if [ -n "$blocked" ]; then
+                    if [ -n "$blocked" ] && [ "$repo_ver" != "$driver_version" ]; then
                         printf 'Package: %s\nPin: version %s*\nPin-Priority: -1\n\n' "$blocked" "$repo_ver" >> "${APT_ROOT}/etc/apt/preferences.d/metal-deployer.pref"
                     fi
                     # The CUDA repo is registered only in the offline_debs stage;
@@ -462,6 +534,16 @@ prepare_target_apt_solution() {
     mapfile -t direct_names < <(cut -f1 "$direct_list" | sort -u)
     pin_names="${direct_names[*]}"
     printf 'Package: %s\nPin: origin ""\nPin-Priority: 1001\n' "$pin_names" >> "${APT_ROOT}/etc/apt/preferences.d/metal-deployer.pref"
+    # Mirror init_system.sh pin_nvidia_driver_branch: the "default" branch
+    # installs the CUDA local repo driver, never a newer Ubuntu archive build
+    # of the same branch (which would land in packages/ and be installed even
+    # on GPU-less hosts).
+    if [ "$driver_branch" = "default" ] && [ -n "$driver_version" ]; then
+        local branch="${driver_version%%.*}"
+        printf '\nPackage: cuda-drivers cuda-drivers-%s nvidia-driver-%s nvidia-dkms-%s nvidia-kernel-common-%s nvidia-kernel-source-%s nvidia-compute-utils-%s nvidia-utils-%s nvidia-settings libnvidia-*-%s xserver-xorg-video-nvidia-%s\nPin: version %s-*\nPin-Priority: 1001\n' \
+            "$branch" "$branch" "$branch" "$branch" "$branch" "$branch" "$branch" "$branch" "$branch" "$driver_version" \
+            >> "${APT_ROOT}/etc/apt/preferences.d/metal-deployer.pref"
+    fi
     apt-get "${APT_OPTS[@]}" update >/dev/null
 
     local cuda_toolkit
@@ -554,76 +636,11 @@ prepare_apt_package_closure() {
     ')
 
     [ -n "$packages" ] || return 0
-    require_tool apt-cache
+    require_tool dpkg-scanpackages
     require_tool apt-get
     setup_target_apt
 
-    if [ -n "$APT_ROOT" ]; then
-        prepare_target_apt_solution "$packages"
-        return
-    fi
-
-    echo "Resolve APT dependency closure for offline first-boot packages..."
-    # shellcheck disable=SC2086
-    apt-cache "${APT_OPTS[@]}" depends --recurse --no-recommends --no-suggests --no-conflicts \
-        --no-breaks --no-replaces --no-enhances $packages \
-        | awk '/^[[:alnum:]][[:alnum:].+:-]*$/ {print $1}' \
-        | sort -u \
-        | while read -r package; do
-            [ -n "$package" ] || continue
-            if ls "${PACKAGE_DIR}/${package}_"*.deb >/dev/null 2>&1; then
-                echo "Skip existing APT package: ${package}"
-                for deb in "${PACKAGE_DIR}/${package}_"*.deb; do
-                    [ -f "$deb" ] || continue
-                    cache_path="${CACHE_BASE_DIR}/base-packages${APT_CACHE_SUFFIX}/$(basename "$deb")"
-                    if [ -n "$CACHE_BASE_DIR" ] && [ ! -f "$cache_path" ]; then
-                        store_to_cache "$cache_path" "$deb"
-                    fi
-                done
-                continue
-            fi
-            cache_hit=false
-            cache_dirs=("base-packages${APT_CACHE_SUFFIX}")
-            if [ -n "${CUDA_PROFILE:-}" ]; then
-                cache_dirs+=("cuda${CUDA_PROFILE#cuda}")
-            fi
-            for cache_dir in "${cache_dirs[@]}"; do
-                if ls "${CACHE_BASE_DIR}/${cache_dir}/${package}_"*.deb >/dev/null 2>&1; then
-                    echo "Cache hit APT package: ${package}"
-                    cp "${CACHE_BASE_DIR}/${cache_dir}/${package}_"*.deb "$PACKAGE_DIR"/
-                    cache_hit=true
-                    break
-                fi
-            done
-            if [ "$cache_hit" = "true" ]; then
-                continue
-            fi
-            echo "Download APT package: ${package}"
-            if [ "$DRY_RUN" = "true" ]; then
-                echo "[dry-run] apt-get download ${package}"
-            else
-                before_files="$(find "$PACKAGE_DIR" -maxdepth 1 -name "${package}_*.deb" -printf '%f\n' 2>/dev/null || true)"
-                local success=false
-                for attempt in {1..3}; do
-                    if (cd "$PACKAGE_DIR" && apt-get "${APT_OPTS[@]}" -o Acquire::Retries=5 download "$package"); then
-                        success=true
-                        break
-                    fi
-                    echo "⚠️ Download ${package} failed (attempt ${attempt}/3). Retrying in 2s..."
-                    sleep 2
-                done
-                if [ "$success" = "false" ]; then
-                    echo "❌ Failed to download ${package} after 3 attempts."
-                    exit 1
-                fi
-                find "$PACKAGE_DIR" -maxdepth 1 -name "${package}_*.deb" -print | while read -r deb; do
-                    [ -n "$deb" ] || continue
-                    if ! grep -qxF "$(basename "$deb")" <<< "$before_files"; then
-                        store_to_cache "${CACHE_BASE_DIR}/base-packages${APT_CACHE_SUFFIX}/$(basename "$deb")" "$deb"
-                    fi
-                done
-            fi
-        done
+    prepare_target_apt_solution "$packages"
 }
 
 prepare_docker_images() {

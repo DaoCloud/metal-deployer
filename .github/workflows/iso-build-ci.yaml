@@ -167,7 +167,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            curl ruby xorriso mtools dosfstools \
+            curl ruby xorriso mtools dosfstools dpkg-dev squashfs-tools \
             qemu-system-x86 qemu-utils sshpass openssh-client pciutils
           if [ -e /dev/kvm ]; then
             sudo chmod 666 /dev/kvm
