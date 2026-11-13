@@ -13,28 +13,21 @@ def build_parser():
                     "report.".format(platforms.names()),
     )
     parser.add_argument("--version", action="version", version="testkit " + __version__)
-    parser.add_argument("-c", "--cluster", default="cluster.yaml",
-                        help="cluster file: ssh, network and hosts (default: %(default)s)")
+    parser.add_argument("-n", "--network", default="network.yaml",
+                        help="network file: hosts, racks, trays and addresses (default: %(default)s)")
     parser.add_argument("-t", "--tests", default="tests.yaml",
                         help="tests file: which tests to run and how (default: %(default)s)")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    init = sub.add_parser("init", help="write commented cluster.yaml and tests.yaml templates")
+    init = sub.add_parser("init", help="write commented network.yaml and tests.yaml templates")
     init.add_argument("--dir", default=".", help="where to write the files (default: current directory)")
-    init.add_argument("--racks", type=int, default=1, help="example racks in cluster.yaml (default: 1)")
+    init.add_argument("--racks", type=int, default=1, help="example racks in network.yaml (default: 1)")
     init.add_argument("--trays", type=int, default=2, help="example trays per rack (default: 2)")
     init.add_argument("--platform", choices=sorted(platforms.PLATFORMS), default=platforms.DEFAULT,
                       help="hardware platform of the hosts; selects the templates (default: %(default)s)")
     init.add_argument("--force", action="store_true", help="overwrite existing files")
 
-    imp = sub.add_parser("import", help="read the IP plan (.xlsx or .csv) into the hosts of cluster.yaml (-c)")
-    imp.add_argument("plan", help="IP plan file, e.g. gb300-nic-ip-plan.xlsx")
-    imp.add_argument("--sheet", help="sheet name in .xlsx (default: hosts, else the first sheet)")
-    imp.add_argument("--dry-run", action="store_true", help="check and summarize without writing cluster.yaml")
-    imp.add_argument("--platform", choices=sorted(platforms.PLATFORMS), default=platforms.DEFAULT,
-                     help="platform of a new cluster.yaml (an existing file keeps its own; default: %(default)s)")
-
-    val = sub.add_parser("validate", help="check cluster.yaml and tests.yaml")
+    val = sub.add_parser("validate", help="check network.yaml and tests.yaml")
     val.add_argument("--ssh", action="store_true", help="also check that every host is reachable over SSH")
 
     plan = sub.add_parser("plan", help="print groups, ranks and the rendered command for every node")
@@ -43,18 +36,19 @@ def build_parser():
 
     sub.add_parser("doctor", help="check local dependencies (python, PyYAML, ssh, rsync, sb)")
 
-    nic = sub.add_parser("nic", help="S3: discover NICs and compare with the golden host")
+    nic = sub.add_parser("nic", help="S3: discover GPUs and NICs (read only) and compare with the golden host")
     nic.add_argument("action", choices=["discover", "show"])
     nic.add_argument("host", nargs="?", help="host for 'show' (default: the golden host)")
     nic.add_argument("--hosts", help="hosts for 'discover' (default: all)")
     nic.add_argument("--exclude", help="hosts to leave out")
 
-    net = sub.add_parser("net", help="S4: configure mgmt, storage, IPoIB and LOM policy routing with netplan, then verify")
-    net.add_argument("action", choices=["apply", "verify"])
-    net.add_argument("--hosts", help="hosts to configure (default: all)")
-    net.add_argument("--exclude", help="hosts to leave out")
-    net.add_argument("--dry-run", action="store_true", help="show the planned changes and netplan diff only")
-    net.add_argument("--yes", action="store_true", help="allow reboots when ib_mode.reboot is ask")
+    nc = sub.add_parser("net-check", help="check addresses, MTU and routes of every host against network.yaml "
+                                          "(read only)")
+    nc.add_argument("--hosts", help="only these hosts: names or racks, comma-separated")
+    nc.add_argument("--exclude", help="hosts to leave out, same syntax as --hosts")
+    nc.add_argument("--no-ping", action="store_true", help="skip pings to gateways and peers")
+    nc.add_argument("--static", action="store_true", help="only check the file, do not log in to hosts")
+    nc.add_argument("--json", action="store_true", help="print host results as JSON")
 
     run = sub.add_parser("run", help="S5-S8: run enabled test items in the built-in order")
     _add_selection(run)
@@ -100,7 +94,7 @@ def cmd_init(args):
         print("error: --racks and --trays must be at least 1")
         return 2
     os.makedirs(args.dir, exist_ok=True)
-    files = {"cluster.yaml": scaffold.cluster_text(args.racks, args.trays, args.platform),
+    files = {"network.yaml": scaffold.network_text(args.racks, args.trays, args.platform),
              "tests.yaml": scaffold.tests_text(args.platform)}
     exists = [n for n in files if os.path.exists(os.path.join(args.dir, n))]
     if exists and not args.force:
@@ -111,14 +105,14 @@ def cmd_init(args):
             f.write(text)
         print("wrote " + os.path.join(args.dir, name))
     print("platform: " + args.platform)
-    print("edit the host list and addresses, then run: testkit validate")
+    print("edit the hosts and addresses in network.yaml, then run: testkit validate")
     return 0
 
 
 def _load(args):
     from testkit.checks import check_tests
     from testkit.config import load_both
-    cluster, tests, problems = load_both(args.cluster, args.tests)
+    cluster, tests, problems = load_both(args.network, args.tests)
     check_tests(tests, cluster, problems)
     return cluster, tests, problems
 
@@ -128,7 +122,7 @@ def cmd_validate(args):
     cluster, tests, problems = _load(args)
     racks = ", ".join("{} {}".format(r, len(cluster.rack_hosts(r))) for r in cluster.racks)
     golden = [h.name for h in cluster.hosts if h.golden]
-    print("{}: platform {}, {} hosts ({}), golden {}".format(args.cluster, cluster.platform or "-", len(cluster.hosts),
+    print("{}: platform {}, {} hosts ({}), golden {}".format(args.network, cluster.platform or "-", len(cluster.hosts),
                                                              racks or "-", golden[0] if golden else "-"))
     items = [item.id for item, _ in enabled_items(tests)]
     print("{}: {} items enabled: {}".format(args.tests, len(items), ", ".join(items) or "-"))
@@ -212,13 +206,13 @@ def _hosts(cluster, args):
     return hosts
 
 
-def cmd_nicnet(args, cluster, tests):
+def cmd_nic(args, cluster, tests):
+    from testkit import nic
     from testkit.selection import SelectionError
-    if args.command == "nic" and args.action == "show":
-        from testkit import nic
+    if args.action == "show":
         name = args.host or next((h.name for h in cluster.hosts if h.golden), None)
         if not name:
-            print("error: no host given and no golden host in cluster.yaml")
+            print("error: no host given and no golden host (tests.yaml golden)")
             return 1
         return nic.show(cluster, tests, name)
     try:
@@ -229,22 +223,15 @@ def cmd_nicnet(args, cluster, tests):
     if not hosts:
         print("no hosts selected")
         return 1
-    if args.command == "nic":
-        from testkit import nic
-        _, statuses = nic.discover(cluster, tests, hosts, out=lambda m: print(m, flush=True))
-        bad = sum(1 for s in statuses.values() if s != "pass")
-        print("{} hosts, {} with problems; details: testkit nic show <host>".format(len(statuses), bad))
-        return 0 if not bad else 1
-    from testkit import net
-    if args.action == "verify":
-        return net.verify_only(cluster, tests, hosts, out=lambda m: print(m, flush=True))
-    return net.NetRun(cluster, tests, hosts, out=lambda m: print(m, flush=True), dry_run=args.dry_run,
-                      assume_yes=args.yes).run()
+    _, statuses = nic.discover(cluster, tests, hosts, out=lambda m: print(m, flush=True))
+    bad = sum(1 for s in statuses.values() if s != "pass")
+    print("{} hosts, {} with problems; details: testkit nic show <host>".format(len(statuses), bad))
+    return 0 if not bad else 1
 
 
 def _load_quiet(args):
     from testkit.config import load_both
-    cluster, tests, _ = load_both(args.cluster, args.tests)
+    cluster, tests, _ = load_both(args.network, args.tests)
     return cluster, tests
 
 
@@ -256,15 +243,15 @@ def main(argv=None):
         return 0
     if args.command == "init":
         return cmd_init(args)
-    if args.command == "import":
-        from testkit.plan_import import run_import
-        return run_import(args.plan, args.cluster, sheet=args.sheet, dry_run=args.dry_run,
-                          platform=args.platform)
     if args.command == "doctor":
         from testkit import doctor
         return doctor.run()
     from testkit.util import ConfigError
     try:
+        if args.command == "net-check":
+            from testkit import netcheck
+            return netcheck.run(args.network, only=args.hosts, exclude=args.exclude, ping=not args.no_ping,
+                                static=args.static, as_json=args.json)
         if args.command == "validate":
             return cmd_validate(args)
         if args.command == "plan":
@@ -279,8 +266,8 @@ def main(argv=None):
             from testkit.docker import DockerOps
             ops = {"cluster": cluster, "docker": DockerOps(cluster.ssh)} if args.follow else None
             return runs.logs(tests, args.run_id, host=args.host, item=args.item, follow=args.follow, ops=ops)
-        if args.command in ("nic", "net"):
-            return cmd_nicnet(args, cluster, tests)
+        if args.command == "nic":
+            return cmd_nic(args, cluster, tests)
         if args.command == "report":
             from testkit.report import write_report
             data, written = write_report(cluster, tests, out_dir=args.out, title=args.title, archive=args.archive)

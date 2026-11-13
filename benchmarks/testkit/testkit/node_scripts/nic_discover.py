@@ -1,4 +1,4 @@
-"""Run on a host (python3, stdlib only): report GPUs, Mellanox NICs and the LOM port as JSON.
+"""Run on a host (python3, stdlib only): report GPUs, Mellanox NICs, the LOM port and the serial as JSON.
 
 testkit sends this file over ssh stdin. Arguments come in TESTKIT_ARGS (base64 JSON):
   cx8_ids, bf3_ids   PCI device IDs (hex, without vendor) of compute NICs and BlueField-3
@@ -153,7 +153,7 @@ def lom():
                     info["if"] = link["ifname"]
                     info["mac"] = link.get("address", "")
                     info["prefix"] = "{}/{}".format(server, a.get("prefixlen"))
-    # The default route via the LOM, or (after S4 moved it to the LOM policy table) any LOM route with a gateway.
+    # The default route via the LOM, or (when the LOM default route is in a policy table) any LOM route with a gateway.
     for cmd in (["ip", "-j", "route", "show", "default"],
                 ["ip", "-j", "route", "show", "table", "all", "dev", info["if"] or "lo"]):
         rc, out = run(cmd)
@@ -164,6 +164,15 @@ def lom():
                 info["gateway"] = r["gateway"]
                 return info
     return info
+
+
+def serial():
+    """System serial number from DMI (sysfs, else dmidecode); empty when unknown."""
+    value = read(os.path.join(ROOT, "class/dmi/id/product_serial"))
+    if not value and ROOT == "/sys" and shutil.which("dmidecode"):
+        rc, out = run(["dmidecode", "-s", "system-serial-number"])
+        value = out.strip() if rc == 0 else ""
+    return "" if value.lower() in ("", "not specified", "to be filled by o.e.m.", "default string") else value
 
 
 def configure(args):
@@ -203,7 +212,7 @@ def discover(args):
         bf3_info["mode"], bf3_info["mode_next"] = mlx_query(bf3[0]["pci"], "INTERNAL_CPU_OFFLOAD_ENGINE")
 
     return {"gpus": gpu_list, "rails": rails, "bf3": bf3_info, "nics": nics(args.get("nic_pcis") or []),
-            "lom": lom(), "mlxconfig": use_mlx, "hostname": os.uname()[1]}
+            "lom": lom(), "mlxconfig": use_mlx, "hostname": os.uname()[1], "serial": serial()}
 
 
 if __name__ == "__main__":

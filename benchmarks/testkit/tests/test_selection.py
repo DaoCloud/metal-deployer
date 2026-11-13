@@ -1,9 +1,8 @@
 import unittest
 
-from testkit.config import load_cluster
+from testkit.config import load_both
 from testkit.items import BY_ID
 from testkit.selection import SelectionError, build_groups, resolve
-from testkit.util import Problems
 from tests.helpers import Workspace
 
 
@@ -12,9 +11,10 @@ class SelectionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ws = Workspace()
-        cls.ws.edit("cluster.yaml", "tags: [golden]", "tags: [golden, batch1]")
-        cls.ws.edit("cluster.yaml", "    # skip: [moe]", "    skip: [moe]\n    tags: [batch1]")
-        cls.cluster = load_cluster(cls.ws.cluster, Problems())
+        cls.ws.edit("tests.yaml", "hosts: {}", "hosts:\n  gb300-r1-t01: {tags: [batch1]}\n"
+                                               "  gb300-r1-t02: {skip: [moe], tags: [batch1]}")
+        cls.cluster, _, problems = load_both(cls.ws.network, cls.ws.tests)
+        assert problems.ok, problems.errors
 
     @classmethod
     def tearDownClass(cls):

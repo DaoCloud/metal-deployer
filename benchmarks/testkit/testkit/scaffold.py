@@ -15,55 +15,42 @@ def _read(name, platform=None):
         return f.read()
 
 
-def host_entry(rack_index, rack, tray, golden=False, examples=False, platform=platforms.DEFAULT):
-    """YAML text for one host; the address plan is only a placeholder to edit."""
+def host_entry(rack_index, rack, tray, platform=platforms.DEFAULT):
+    """network.yaml text for one host; the addresses are only placeholders to edit."""
     r, t = rack_index, tray
     example = platforms.PLATFORMS[platform]["example"]
-    rails = len(example["ib_pci"])
     lines = [
-        "  - name: {}-{}-t{:02d}".format(platform, rack.lower(), t),
+        "  {}-{}-t{:02d}:".format(platform, rack.lower(), t),
         "    rack: {}".format(rack),
         "    tray: {}".format(t),
-        '    serial: ""',
-        "    ssh: 10.10.{}.{}".format(r, 10 + t),
-        "    mgmt: 10.20.{}.{}/16".format(r, 10 + t),
-        "    storage: 10.30.{}.{}/16".format(r, 10 + t),
-        "    ib: [{}]".format(", ".join("10.10{}.{}.{}/16".format(k, r, 10 + t) for k in range(rails))),
-        '    mgmt_pci: "{}"'.format(example["mgmt_pci"]),
-        '    storage_pci: "{}"'.format(example["storage_pci"]),
-        "    ib_pci: [{}]".format(", ".join('"{}"'.format(p) for p in example["ib_pci"])),
+        "    lom: {{ip: 10.10.{}.{}/16, gateway: 10.10.0.1, policy: {{table: 100, priority: 100}}}}".format(r, 10 + t),
+        '    mgmt: {{pci: "{}", ip: 10.20.{}.{}/16, gateway: 10.20.0.1, default_route: true, dns: [10.20.0.53]}}'
+        .format(example["mgmt_pci"], r, 10 + t),
+        "    storage:",
+        '      pci: "{}"'.format(example["storage_pci"]),
+        "      ip: 10.30.{}.{}/16".format(r, 10 + t),
+        "      mtu: 9000",
+        "      routes: [{to: 10.31.0.0/16, via: 10.30.0.1}]",
+        "    compute:",
+        "      link_layer: infiniband",
+        "      mtu: 4092",
+        '      pkey: "0x7fff"',
+        "      devices:",
     ]
-    if golden:
-        lines.append("    tags: [golden]")
-    if examples:
-        lines.append("    # env: {NCCL_DEBUG: INFO}")
-        lines.append("    # skip: [moe]")
+    for k, pci in enumerate(example["ib_pci"]):
+        lines.append('        - {{pci: "{}", ip: 10.10{}.{}.{}/16}}'.format(pci, k, r, 10 + t))
     return "\n".join(lines)
 
 
-def cluster_text(racks=1, trays=2, platform=platforms.DEFAULT):
-    entries = []
-    for ri in range(racks):
-        rack = "R{}".format(ri + 1)
-        for t in range(1, trays + 1):
-            first = ri == 0 and t == 1
-            second = ri == 0 and t == 2
-            entries.append(host_entry(ri, rack, t, golden=first, examples=second, platform=platform))
-    return _read("cluster.yaml", platform).replace("__HOSTS__", "\n".join(entries))
+def network_text(racks=1, trays=2, platform=platforms.DEFAULT):
+    entries = [host_entry(ri, "R{}".format(ri + 1), t, platform=platform)
+               for ri in range(racks) for t in range(1, trays + 1)]
+    return _read("network.yaml", platform).replace("__HOSTS__", "\n".join(entries))
 
 
 def tests_text(platform=platforms.DEFAULT):
     return _read("tests.yaml", platform)
 
-
-def cluster_schema(platform=platforms.DEFAULT):
-    data = yaml.safe_load(cluster_text(1, 1, platform))
-    host = dict(data["hosts"][0])
-    from testkit.config import PLAN_FIELDS
-    host.update({"tags": [], "env": {}, "skip": [], "gpus": 4})
-    host.update({k: None for k in PLAN_FIELDS})
-    data["hosts"] = host
-    return data
 
 
 def tests_schema(platform=platforms.DEFAULT):

@@ -269,7 +269,7 @@ def superbench_job(ctx, item, cfg, nodes, image, worker=None, parser=None):
     own = item.id in OWN_RESULTS
 
     def full_mapping():
-        # SuperBench names hosts by their short OS hostname (Ansible facts), which may differ from cluster.yaml.
+        # SuperBench names hosts by their short OS hostname (Ansible facts), which may differ from network.yaml.
         out = dict(mapping)
         out.update(_host_names(ctx, item.id, nodes))
         return out
@@ -561,7 +561,7 @@ def poll_detached(runner, host, unit, done_path, timeout):
 
 
 def _host_names(ctx, item_id, nodes):
-    """OS hostname / address -> testkit host name, from cluster.yaml and the hostname.txt of every host."""
+    """OS hostname / address -> testkit host name, from network.yaml and the hostname.txt of every host."""
     out = {}
     for n in nodes:
         name = n.host.name
@@ -590,7 +590,7 @@ def nvlink_job(ctx, item, cfg, nodes):
     master = nodes[0]
     head = master.host.mgmt_ip
     if not head or any(not n.host.mgmt_ip for n in nodes):
-        raise NotReady("nvlink needs the mgmt address of every host (cluster.yaml mgmt)")
+        raise NotReady("nvlink needs the mgmt address of every host (network.yaml mgmt)")
     tag = re.sub(r"[^A-Za-z0-9_.-]", "_", "{}-{}".format(item.id, master.group.id))
     share = "{}/{}/{}.testkit-{}".format(tests.runtime["node_results_dir"].rstrip("/"), run_id, item.id, tag)
     out_dir = node_dir(tests, run_id, item.id, master.host.name)

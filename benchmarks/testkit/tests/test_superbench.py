@@ -121,7 +121,7 @@ class DelegateTest(unittest.TestCase):
 
     def run_(self, single, rack, behave):
         self.ws.write("tests.yaml", TESTS % {"single": single, "rack": rack})
-        cluster, tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        cluster, tests, problems = load_both(self.ws.network, self.ws.tests)
         self.assertEqual(problems.errors, [])
         ops = FakeOps(behave)
         run_id, code = run_items(cluster, tests, [], None, None, ops, out=self.lines.append)

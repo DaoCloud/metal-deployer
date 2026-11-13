@@ -341,7 +341,7 @@ class FlowTest(unittest.TestCase):
     def load(self, gate="false", dcgm="false", links="false", sharp="false", counters="null", extra=""):
         self.ws.write("tests.yaml", FLOW % {"gate": gate, "dcgm": dcgm, "links": links, "sharp": sharp,
                                             "counters": counters} + extra)
-        cluster, tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        cluster, tests, problems = load_both(self.ws.network, self.ws.tests)
         self.assertEqual(problems.errors, [])
         return cluster, tests
 
@@ -425,7 +425,7 @@ class NvlinkFlowTest(unittest.TestCase):
     def setUp(self):
         self.ws = Workspace(racks=1, trays=3)
         self.ws.write("tests.yaml", NVLINK_FLOW)
-        self.cluster, self.tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        self.cluster, self.tests, problems = load_both(self.ws.network, self.ws.tests)
         self.assertEqual(problems.errors, [])
         self.lines = []
 
@@ -481,7 +481,7 @@ class NvlinkFlowTest(unittest.TestCase):
     def test_cancel_stops_unit_and_timeout(self):
         hosts = [h.name for h in self.cluster.hosts]
         self.ws.write("tests.yaml", NVLINK_FLOW.replace("hosts: all,", "hosts: all, timeout: 1,"))
-        cluster, tests, _ = load_both(self.ws.cluster, self.ws.tests)
+        cluster, tests, _ = load_both(self.ws.network, self.ws.tests)
         ops = FakeOps({hosts[0]: {"host_out": {"done.json": (0, "\nUNIT=active")}}})
         run_id, code = run_items(cluster, tests, ["nvlink"], None, None, ops, out=self.lines.append)
         rec = read_json(os.path.join(tests.results_dir, run_id, "run.json"))
@@ -572,7 +572,7 @@ class RdmaStageTest(unittest.TestCase):
     def setUp(self):
         self.ws = Workspace(racks=2, trays=2)
         self.ws.write("tests.yaml", SB_FLOW)
-        self.cluster, self.tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        self.cluster, self.tests, problems = load_both(self.ws.network, self.ws.tests)
         self.assertEqual(problems.errors, [])
         self.lines = []
 

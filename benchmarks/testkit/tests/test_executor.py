@@ -186,7 +186,7 @@ class ExecutorTest(unittest.TestCase):
     def setup(self, scope="node", mode="per-node", pull="skip", timeout=30, dcgm="false"):
         self.ws.write("tests.yaml", TESTS % {"scope": scope, "mode": mode, "pull": pull, "timeout": timeout,
                                              "dcgm": dcgm})
-        cluster, tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        cluster, tests, problems = load_both(self.ws.network, self.ws.tests)
         self.assertEqual(problems.errors, [])
         return cluster, tests
 

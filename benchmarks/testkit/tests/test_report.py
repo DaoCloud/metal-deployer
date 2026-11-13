@@ -93,7 +93,7 @@ class ReportTest(unittest.TestCase):
         from testkit.config import load_both
         ws = Workspace(1, 2)
         try:
-            cluster, tests, _ = load_both(ws.cluster, ws.tests)
+            cluster, tests, _ = load_both(ws.network, ws.tests)
             data = build_data(cluster, tests)
             self.assertEqual(data["items"], [])
             self.assertEqual([h["overall"] for h in data["hosts"]], ["none", "none"])

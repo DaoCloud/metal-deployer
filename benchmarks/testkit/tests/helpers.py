@@ -5,14 +5,14 @@ from testkit import scaffold
 
 
 class Workspace:
-    """Temporary directory with generated cluster.yaml / tests.yaml that tests can edit."""
+    """Temporary directory with generated network.yaml / tests.yaml that tests can edit."""
 
     def __init__(self, racks=2, trays=18):
         self.tmp = tempfile.TemporaryDirectory()
         self.dir = self.tmp.name
-        self.cluster = os.path.join(self.dir, "cluster.yaml")
+        self.network = os.path.join(self.dir, "network.yaml")
         self.tests = os.path.join(self.dir, "tests.yaml")
-        self.write("cluster.yaml", scaffold.cluster_text(racks, trays))
+        self.write("network.yaml", scaffold.network_text(racks, trays))
         self.write("tests.yaml", scaffold.tests_text())
 
     def write(self, name, text):

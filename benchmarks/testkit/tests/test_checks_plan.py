@@ -9,7 +9,7 @@ from tests.helpers import Workspace
 
 
 def load(ws):
-    cluster, tests, problems = load_both(ws.cluster, ws.tests)
+    cluster, tests, problems = load_both(ws.network, ws.tests)
     check_tests(tests, cluster, problems)
     return cluster, tests, problems
 
@@ -52,7 +52,7 @@ class ChecksTest(unittest.TestCase):
                      "  scale_out:                      # IB SHARP across racks; needs >= 2 racks and SHARP AM in UFM\n    enabled: true")
         cluster, tests, problems = load(self.ws)
         item, cfg = [x for x in enabled_items(tests) if x[0].id == "sharp.scale_out"][0]
-        self.assertEqual(tests.image_for(item, cfg), "registry.local/metal-deployer/testkit:latest")
+        self.assertEqual(tests.image_for(item, cfg), "registry.local/metal-deployer/sbcli:latest")
         self.assertEqual((cfg["config"], cfg["cases"]), ("config_gb300_sharp.yaml", ["O-A", "O-B", "O-C", "O-D"]))
         self.ws.edit("tests.yaml", "    cases: [O-A, O-B, O-C, O-D]", "    cases: [U-A, O-D]")
         self.ws.edit("tests.yaml", "    ops: [allreduce, reducescatter, allgather]", "    ops: [allreduce, alltoall]")
@@ -109,7 +109,7 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(r2[5].env["WORLD_SIZE"], "18")
         self.assertEqual(r2[5].env["MASTER_ADDR"], "10.20.1.11")
         self.assertEqual(r2[5].env["MASTER_PORT"], "29501")
-        self.assertEqual(r2[5].cmd, ["moe-bench", "--log-dir", "/results", "--suite", "hybrid-ep"])
+        self.assertEqual(r2[5].cmd, ["moe-bench", "--log-dir", "/results", "--suite", "nvlink-ep"])
         text = format_plan(plans, 29500)
         self.assertIn("group R2: 18 hosts, master gb300-r2-t01 10.20.1.11:29501", text)
         self.assertIn("differs per node: RANK", text)

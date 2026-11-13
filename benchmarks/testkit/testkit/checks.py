@@ -1,4 +1,4 @@
-"""Cross-checks of tests.yaml against cluster.yaml."""
+"""Cross-checks of tests.yaml against the hosts of network.yaml."""
 
 from testkit.items import ITEMS, NEEDS_IMEX, known_selector
 from testkit.render import unknown_vars

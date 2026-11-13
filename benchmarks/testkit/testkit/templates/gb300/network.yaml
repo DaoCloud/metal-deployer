@@ -1,0 +1,27 @@
+# testkit network file: the planned network of every host, keyed by the short hostname.
+# The host list of testkit: every command ("testkit -n network.yaml ...") takes its hosts, racks,
+# trays and addresses from here. "testkit net-check" checks the hosts against
+# it (read only); the site script that configures the hosts reads it too. Every host entry is
+# complete: nothing is inherited. testkit logs in to lom.ip as root (passwordless ssh set up
+# beforehand; TESTKIT_SSH_CONFIG may name an extra ssh config file, e.g. for a ProxyJump).
+#
+#   rack, tray  optional: rack groups hosts in the tests, rack + tray decide the rank order;
+#            without them all hosts are one rack ("all"), ordered by name
+#   lom      out-of-band port, required. testkit logs in to lom.ip. policy: replies from the
+#            LOM address use this routing table (LOM subnet + default via lom.gateway), so the
+#            LOM keeps working when the default route is on mgmt.
+#   mgmt     management port (BF3 port 0 on gb300); required by the tests: MASTER_ADDR, {mgmt_ip}
+#   storage  storage port (BF3 port 1 on gb300); optional; {storage_ip}
+#   compute  compute rails; devices in rail order, each with pci + ip (and mtu to override
+#            compute.mtu). Rail i of every host must be in the same subnet; {ib<i>_ip}. optional
+#   ip       address with prefix (CIDR)
+#   pci      quoted, e.g. "0000:03:00.0"; unquoted YAML reads it as a number
+#   mtu      checked when set
+#   link_layer  ethernet (default) | infiniband (IPoIB)
+#   x-*      free keys for the configuration script; testkit ignores them
+#   net-check warns about values that differ from most hosts (pci, mtu, gateway, ...) and pings
+#   the same rail of the next host in the same rack
+version: 1
+
+hosts:
+__HOSTS__

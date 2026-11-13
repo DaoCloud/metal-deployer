@@ -116,7 +116,7 @@ class NixlFlowTest(unittest.TestCase):
         self.ws.close()
 
     def load(self):
-        cluster, tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        cluster, tests, problems = load_both(self.ws.network, self.ws.tests)
         check_tests(tests, cluster, problems)
         return cluster, tests, problems
 

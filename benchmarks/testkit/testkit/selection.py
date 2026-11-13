@@ -89,7 +89,7 @@ def build_groups(cluster, item, cfg, only=None, exclude=None, drop=None):
         drop |= {h.name for h in resolve(cluster, exclude)}
     for h in allowed:
         if skipped(h, item.id):
-            notes.append("{} skips {} (cluster.yaml skip)".format(h.name, item.id))
+            notes.append("{} skips {} (tests.yaml hosts skip)".format(h.name, item.id))
             drop.add(h.name)
     allowed = [h for h in allowed if h.name not in drop]
 

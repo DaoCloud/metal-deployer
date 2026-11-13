@@ -1,8 +1,8 @@
-"""S3: discover NICs on hosts, check them against network.expect, compare with the golden host."""
+"""S3: discover GPUs and NICs on hosts (read only), check them against nic.expect of tests.yaml,
+find the ports of network.yaml by their PCI addresses, and compare with the golden host."""
 
 import os
 
-from testkit import platforms
 from testkit.executor import pmap
 from testkit.nodecmd import NodeError, run_script
 from testkit.ssh import Remote
@@ -18,24 +18,11 @@ def _ids(value, default):
     return sorted({str(v).lower().split(":")[-1] for v in vals})
 
 
-def summarize(raw, network):
-    """Turn the node report into the stored record: rails, BF3 ports, LOM, mgmt/storage netdevs.
-
-    mgmt/storage on a BF3 come from network.<role>.port here; on a plain NIC they are filled in by
-    apply_plan from the plan PCI; mgmt on the LOM is the LOM interface.
-    """
+def summarize(raw):
+    """Turn the node report into the stored record: rails, BF3 ports, LOM. The mgmt/storage
+    interfaces are filled in by apply_plan from the PCI addresses in network.yaml."""
     pfs = (raw.get("bf3") or {}).get("pfs") or []
     pf = lambda i: pfs[i] if i < len(pfs) else {}
-
-    def role_port(role, default):
-        kind = platforms.device(network, role)
-        if kind == "bf3":
-            return pf(int(dig(network, role + ".port", default) or default))
-        if kind == "lom":
-            lom = raw.get("lom") or {}
-            return {"netdev": lom.get("if", ""), "mac": lom.get("mac", "")}
-        return {}
-    mgmt, storage = role_port("mgmt", 0), role_port("storage", 1)
     rails = []
     for r in raw.get("rails", []):
         rails.append({"rail": r["rail"], "gpu": r.get("gpu"), "ibdev": r.get("ibdev", ""), "netdev": r.get("netdev", ""),
@@ -45,8 +32,7 @@ def summarize(raw, network):
                       "mac": r.get("mac", "")})
     bf3 = raw.get("bf3") or {}
     return {
-        "mgmt_if": mgmt.get("netdev", ""), "mgmt_mac": mgmt.get("mac", ""),
-        "storage_if": storage.get("netdev", ""), "storage_mac": storage.get("mac", ""),
+        "mgmt_if": "", "mgmt_mac": "", "storage_if": "", "storage_mac": "",
         "ib_devs": [r["ibdev"] for r in rails if r["ibdev"]],
         "ipoib_ifs": [r["netdev"] for r in rails],
         "rails": rails,
@@ -55,6 +41,7 @@ def summarize(raw, network):
                 "pf0_mac": pf(0).get("mac", ""), "pf1_mac": pf(1).get("mac", ""),
                 "pci": ",".join(p["pci"] for p in pfs)},
         "lom": raw.get("lom") or {},
+        "serial": raw.get("serial") or "",
         "gpus": len(raw.get("gpus") or []),
         "mlxconfig": bool(raw.get("mlxconfig")),
         "raw": raw,
@@ -126,49 +113,35 @@ def check(rec, network, golden=None):
     return out
 
 
-def apply_plan(rec, host, network=None):
-    """Use the PCI addresses of the IP plan: pick the mgmt/storage ports by PCI and check that every
-    planned PCI address exists. Returns the plan_pci check, or None when the plan has no PCI."""
-    plan = host.plan
+def apply_plan(rec, host):
+    """Find the mgmt/storage ports of network.yaml by PCI address and check that the compute
+    devices are the rails in GPU order. Returns the plan_pci check, or None without PCI addresses."""
+    pci = getattr(host, "pci", None) or {}
     raw = rec.get("raw") or {}
-    pools = {"bf3": {p["pci"]: p for p in (raw.get("bf3") or {}).get("pfs") or []},
-             "nic": {p["pci"]: p for p in raw.get("nics") or []}}
+    ports = {p["pci"]: p for p in (raw.get("bf3") or {}).get("pfs") or []}
+    ports.update({p["pci"]: p for p in raw.get("nics") or []})
     rails = {r["pci"]: r for r in rec["rails"]}
     problems = []
     used = False
     for role in ("mgmt", "storage"):
-        kind = platforms.device(network, role)
-        if kind == "lom":
-            continue
-        pci = plan.get(role + "_pci")
-        if not pci:
-            if kind == "nic" and getattr(host, role, None) is not None:
-                used = True
-                problems.append("{}_pci is empty (network.{}.device is nic)".format(role, role))
+        addr = pci.get(role)
+        if not addr:
             continue
         used = True
-        pool = pools[kind]
-        if pci in pool:
-            rec[role + "_if"] = pool[pci].get("netdev", "")
-            rec[role + "_mac"] = pool[pci].get("mac", "")
-        elif kind == "bf3":
-            problems.append("{}_pci {} not found (BF3: {})".format(role, pci, ", ".join(sorted(pool)) or "none"))
+        if addr in ports and ports[addr].get("netdev"):
+            rec[role + "_if"] = ports[addr]["netdev"]
+            rec[role + "_mac"] = ports[addr].get("mac", "")
         else:
-            problems.append("{}_pci {} not found".format(role, pci))
-    for i, pci in enumerate(plan.get("ib_pci") or []):
-        if not pci:
-            continue
+            problems.append("{} PCI {} has no network interface on this host".format(role, addr))
+    for i, addr in enumerate(pci.get("ib") or []):
         used = True
-        if pci not in rails:
-            problems.append("ib_pci[{}] {} not found".format(i, pci))
-        elif rails[pci]["rail"] != i:
-            problems.append("ib_pci[{}] {} is rail {} by GPU distance".format(i, pci, rails[pci]["rail"]))
+        if addr not in rails:
+            problems.append("compute device {} PCI {} is not a compute NIC".format(i, addr))
+        elif rails[addr]["rail"] != i:
+            problems.append("compute device {} PCI {} is rail {} by GPU distance".format(i, addr, rails[addr]["rail"]))
     if not used:
         return None
     return {"result": "fail" if problems else "pass", "reason": "; ".join(problems) or "all PCI addresses found"}
-
-
-STRUCTURAL = ("cx8_count", "bf3_ports", "lom", "gpu_rail_map", "golden_match")
 
 
 def discover(cluster, tests, hosts, out=print):
@@ -190,12 +163,12 @@ def discover(cluster, tests, hosts, out=print):
               "items": {ITEM: {"status": "running", "hosts": names, "groups": {}}}}
     write_json(os.path.join(run_dir, "run.json"), record)
     args = {"cx8_ids": _ids(dig(exp, "cx8.pci_id"), "1023"), "bf3_ids": _ids(dig(exp, "bf3.pci_id"), "a2dc")}
-    nic_roles = [r for r in ("mgmt", "storage") if platforms.device(network, r) == "nic"]
 
     def one(host):
-        host_args = dict(args, nic_pcis=[host.plan[r + "_pci"] for r in nic_roles if host.plan.get(r + "_pci")])
+        pci = getattr(host, "pci", None) or {}
+        host_args = dict(args, nic_pcis=[pci[r] for r in ("mgmt", "storage") if pci.get(r)])
         try:
-            return host, summarize(run_script(remote, host, "nic_discover.py", host_args), network), None
+            return host, summarize(run_script(remote, host, "nic_discover.py", host_args)), None
         except NodeError as e:
             return host, None, str(e)
 
@@ -218,7 +191,7 @@ def discover(cluster, tests, hosts, out=print):
             if not rec["lom"].get("gateway") and (old.get("lom") or {}).get("gateway"):
                 rec["lom"]["gateway"] = old["lom"]["gateway"]
             ref = golden if golden is not None and host.name != golden_host.name else None
-            plan_check = apply_plan(rec, host, network)
+            plan_check = apply_plan(rec, host)
             checks = check(rec, network, ref)
             if plan_check:
                 checks["plan_pci"] = plan_check
@@ -278,10 +251,4 @@ def show(cluster, tests, name, out=print):
     for k, v in (rec.get("checks") or {}).items():
         out("  {:<5} {:<16} {}".format(v["result"], k, v["reason"]))
     return 0
-
-
-def structural_problems(rec):
-    """Failed checks that make network configuration unsafe."""
-    return ["{}: {}".format(k, v["reason"]) for k, v in (rec.get("checks") or {}).items()
-            if k in STRUCTURAL and v["result"] == "fail"]
 

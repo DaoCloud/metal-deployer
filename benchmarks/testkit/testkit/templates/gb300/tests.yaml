@@ -28,13 +28,25 @@
 #   host:  {hostname} {rack} {tray} {gpus} {mgmt_ip} {storage_ip} {ib0_ip}..{ib3_ip}
 #   S3:    {mgmt_if} {ib_hcas} {ib_ucx_devs}   (filled from "testkit nic discover" results)
 # Environment layers, later ones win:
-#   common_env -> <section>.common.env -> <item>.env -> <section>.common.per_rank -> host env in cluster.yaml
+#   common_env -> <section>.common.env -> <item>.env -> <section>.common.per_rank -> hosts.<name>.env
 version: 1
-platform: gb300                   # hardware platform; must match "platform" in cluster.yaml
+platform: gb300                   # hardware platform of every host
+
+# Hosts, racks, trays and addresses come from network.yaml ("testkit -n network.yaml"). Optional:
+golden: gb300-r1-t01              # reference host: "testkit nic discover" compares the others with it
+hosts: {}                         # per host, keyed by its name in network.yaml, for example
+                                  #   gb300-r1-t02: {tags: [batch1], env: {NCCL_DEBUG: INFO}, skip: [moe]}
+                                  # tags select hosts as tag:<name>; skip lists items (or prefixes)
+nic:                              # S3 "testkit nic discover"; the platform defaults apply when omitted
+  expect:
+    gpus: 4
+    cx8: {count: 4, pci_id: "15b3:1023", link_layer: InfiniBand, rate_gbps: 800}   # compute NICs (rails)
+    bf3: {pf_count: 2, pci_id: "15b3:a2dc", mode: nic}
+    compare_golden: true          # compare the GPU <-> rail mapping with the golden host
 
 images:                           # tag or tag@digest; the digest actually used is recorded in results
   dcgm: nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04   # same DCGM version as the ISO
-  sbcli: registry.local/metal-deployer/testkit:latest
+  sbcli: registry.local/metal-deployer/sbcli:latest
   sb_worker: superbench/main:cuda13.0
   moe_bench: registry.local/metal-deployer/moe-bench:latest
   nixl_benchmark: registry.local/metal-deployer/nixl-benchmark:latest-cuda13-gb300
@@ -362,20 +374,20 @@ moe:
     cmd: [moe-bench, --log-dir, /results]
     per_rank: {}                  # per group rank, for example {"0": {env: {...}, args_append: [...]}}
 
-  single:                         # MoE level 1: one host, HybridEP + DeepGEMM
+  single:                         # MoE level 1: one host, all suites
     enabled: true
     scope: node
     hosts: all
     args: [--suite, all]
 
   rack:                           # MoE level 2: inside a rack over MNNVL; needs imex
-    enabled: true
+    enabled: true                 # nvlink-ep = vLLM flashinfer_nvlink_one_sided + deep_gemm_mega_moe
     scope: rack
     hosts: all
-    args: [--suite, hybrid-ep]
+    args: [--suite, nvlink-ep]
 
   cross_rack:                     # MoE level 3: NVLink inside a rack, IB across racks
-    enabled: false
+    enabled: false                # nvlink-ep does not apply here (NVLink domain only)
     scope: group
     groups: [[R1, R2]]
     args: [--suite, hybrid-ep]

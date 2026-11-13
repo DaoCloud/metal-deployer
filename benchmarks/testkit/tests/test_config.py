@@ -1,11 +1,12 @@
 import unittest
 
-from testkit.config import load_both, load_cluster, load_tests_file
+from testkit.config import load_both, load_tests_file
 from testkit.util import ConfigError, Problems
 from tests.helpers import Workspace
 
 
 class ClusterTest(unittest.TestCase):
+    """Hosts from network.yaml plus the host settings of tests.yaml."""
 
     def setUp(self):
         self.ws = Workspace()
@@ -14,8 +15,13 @@ class ClusterTest(unittest.TestCase):
         self.ws.close()
 
     def load(self):
-        problems = Problems()
-        return load_cluster(self.ws.cluster, problems), problems
+        cluster, _, problems = load_both(self.ws.network, self.ws.tests)
+        return cluster, problems
+
+    def assertError(self, fragment):
+        _, problems = self.load()
+        self.assertTrue(any(fragment in e for e in problems.errors),
+                        "no error containing {!r} in {}".format(fragment, problems.errors))
 
     def test_generated_cluster_is_valid(self):
         cluster, problems = self.load()
@@ -25,126 +31,94 @@ class ClusterTest(unittest.TestCase):
         self.assertEqual(cluster.racks, ["R1", "R2"])
         host = cluster.by_name["gb300-r1-t01"]
         self.assertTrue(host.golden)
-        self.assertEqual(host.mgmt_ip, "10.20.0.11")
-        self.assertEqual(len(host.ib), 4)
+        self.assertEqual((host.ssh, host.mgmt_ip, str(host.storage)), ("10.10.0.11", "10.20.0.11", "10.30.0.11/16"))
+        self.assertEqual([str(i) for i in host.ib][:2], ["10.100.0.11/16", "10.101.0.11/16"])
+        self.assertEqual(host.pci, {"mgmt": "0009:01:00.0", "storage": "0009:01:00.1",
+                                    "ib": ["0000:03:00.0", "0001:03:00.0", "0002:03:00.0", "0003:03:00.0"]})
         self.assertEqual(host.gpus, 4)
 
     def test_rank_order_is_rack_then_tray(self):
         ws = Workspace(racks=10, trays=2)
         try:
-            cluster = load_cluster(ws.cluster, Problems())
+            cluster, _, _ = load_both(ws.network, ws.tests)
             order = [(h.rack, h.tray) for h in cluster.hosts]
             self.assertEqual(order[:4], [("R1", 1), ("R1", 2), ("R2", 1), ("R2", 2)])
             self.assertEqual(order[-2:], [("R10", 1), ("R10", 2)])
         finally:
             ws.close()
 
-    def test_defaults_env_is_merged(self):
-        self.ws.edit("cluster.yaml", "  env: {}", "  env: {A: '1', B: '2'}")
-        self.ws.edit("cluster.yaml", "    # env: {NCCL_DEBUG: INFO}", "    env: {B: '3', N: 5}")
+    def test_without_rack_and_tray(self):
+        ws = Workspace(racks=1, trays=3)
+        try:
+            text = ws.read("network.yaml")
+            for t in (1, 2, 3):
+                text = text.replace("    rack: R1\n    tray: {}\n".format(t), "")
+            ws.write("network.yaml", text.replace("gb300-r1-t01:", "gb300-r1-t10:"))
+            ws.edit("tests.yaml", "golden: gb300-r1-t01", "golden: gb300-r1-t02")
+            cluster, _, problems = load_both(ws.network, ws.tests)
+            self.assertEqual((problems.errors, problems.warnings), ([], []))
+            self.assertEqual(cluster.racks, ["all"])
+            self.assertEqual([h.name for h in cluster.hosts], ["gb300-r1-t02", "gb300-r1-t03", "gb300-r1-t10"])
+        finally:
+            ws.close()
+
+    def test_host_settings_from_tests_yaml(self):
+        self.ws.edit("tests.yaml", "hosts: {}", "hosts:\n  gb300-r1-t02: {tags: [batch1], env: {B: '3', N: 5}, "
+                                               "skip: [moe], colour: red}")
         cluster, problems = self.load()
         self.assertEqual(problems.errors, [])
-        self.assertEqual(cluster.by_name["gb300-r1-t02"].env, {"A": "1", "B": "3", "N": "5"})
-        self.assertEqual(cluster.by_name["gb300-r1-t03"].env, {"A": "1", "B": "2"})
+        self.assertIn("tests.yaml: unknown key hosts.gb300-r1-t02.colour", problems.warnings)
+        h = cluster.by_name["gb300-r1-t02"]
+        self.assertEqual((h.tags, h.env, h.skip), (["batch1"], {"B": "3", "N": "5"}, ["moe"]))
+        self.assertEqual(cluster.by_name["gb300-r1-t03"].env, {})
 
-    def assertError(self, fragment):
+    def test_unknown_hosts_in_tests_yaml(self):
+        self.ws.edit("tests.yaml", "hosts: {}", "hosts: {gb300-r9-t01: {skip: [moe]}}")
+        self.ws.edit("tests.yaml", "golden: gb300-r1-t01", "golden: gb300-r9-t02")
         _, problems = self.load()
-        self.assertTrue(any(fragment in e for e in problems.errors),
-                        "no error containing {!r} in {}".format(fragment, problems.errors))
+        self.assertIn("tests.yaml: hosts.gb300-r9-t01 is not a host of network.yaml", problems.errors)
+        self.assertIn("tests.yaml: golden gb300-r9-t02 is not a host of network.yaml", problems.errors)
 
-    def test_duplicate_name(self):
-        self.ws.edit("cluster.yaml", "name: gb300-r1-t02", "name: gb300-r1-t01")
-        self.assertError("duplicate host name")
-
-    def test_duplicate_slot(self):
-        self.ws.edit("cluster.yaml", "    tray: 2\n", "    tray: 1\n")
-        self.assertError("both are R1 tray 1")
-
-    def test_duplicate_address(self):
-        self.ws.edit("cluster.yaml", "ssh: 10.10.0.12", "ssh: 10.10.0.11")
-        self.assertError("address 10.10.0.11 is used by")
-
-    def test_missing_mgmt(self):
-        self.ws.edit("cluster.yaml", "    mgmt: 10.20.0.12/16\n", "")
-        self.assertError("mgmt is required")
-
-    def test_address_without_prefix(self):
-        self.ws.edit("cluster.yaml", "mgmt: 10.20.0.12/16", "mgmt: 10.20.0.12")
-        self.assertError("needs a prefix length")
-
-    def test_bad_address(self):
-        self.ws.edit("cluster.yaml", "storage: 10.30.0.12/16", "storage: 10.30.0.312/16")
-        self.assertError("is not a valid address")
-
-    def test_ib_count(self):
-        self.ws.edit("cluster.yaml", ", 10.103.0.12/16]", "]")
-        self.assertError("ib has 3 addresses, expected 4")
-
-    def test_rail_subnet(self):
-        self.ws.edit("cluster.yaml", "10.101.1.15/16", "10.111.1.15/16")
-        self.assertError("rail 1: IPoIB addresses are in different subnets")
-
-    def test_gateway_subnet(self):
-        self.ws.edit("cluster.yaml", "mgmt: 10.20.1.18/16", "mgmt: 10.21.1.18/16")
-        self.assertError("not in the same subnet as gateway")
+    def test_no_golden_warns(self):
+        self.ws.edit("tests.yaml", "golden: gb300-r1-t01", "")
+        cluster, problems = self.load()
+        self.assertEqual(problems.errors, [])
+        self.assertFalse(any(h.golden for h in cluster.hosts))
+        self.assertTrue(any("no golden host" in w for w in problems.warnings))
 
     def test_two_golden(self):
-        self.ws.edit("cluster.yaml", "    # skip: [moe]", "    tags: [golden]")
+        self.ws.edit("tests.yaml", "hosts: {}", "hosts: {gb300-r1-t02: {tags: [golden]}}")
         self.assertError("more than one golden host")
 
-    def test_bad_tray(self):
-        self.ws.edit("cluster.yaml", "    tray: 2\n", "    tray: two\n")
-        self.assertError("tray must be a positive integer")
+    def test_missing_mgmt(self):
+        self.ws.edit("network.yaml", '    mgmt: {pci: "0009:01:00.0", ip: 10.20.0.12/16', "    x-mgmt: {ip: 10.20.0.12/16")
+        self.assertError("gb300-r1-t02: mgmt is required")
 
-    def test_network_options(self):
-        self.ws.edit("cluster.yaml", "  ipoib: {mtu: 4092, pkey: \"0x7fff\"}", "  ipoib: {mtu: 4092, pkey: \"0x8001\"}")
-        self.ws.edit("cluster.yaml", "  match_by: mac ", "  match_by: pci ")
-        self.ws.edit("cluster.yaml", "  rollback_seconds: 120", "  rollback_seconds: 5")
-        self.ws.edit("cluster.yaml", "routes: [10.30.0.0/16]", "routes: [10.30.0.0/33]")
-        self.ws.edit("cluster.yaml", "    table: 100", "    table: 254")
-        self.ws.edit("cluster.yaml", "mgmt: {device: bf3", "mgmt: {device: dpu")
-        _, problems = self.load()
-        for frag in ("only the default partition", "match_by must be", "rollback_seconds must be",
-                     "'10.30.0.0/33' is not a valid subnet", "network.lom.table must be",
-                     "network.mgmt.device must be bf3 or nic or lom"):
-            self.assertTrue(any(frag in e for e in problems.errors), frag)
+    def test_ib_count(self):
+        self.ws.edit("tests.yaml", "cx8: {count: 4,", "cx8: {count: 8,")
+        self.assertError("gb300-r1-t01: 4 compute devices, expected 8")
 
-    def test_unquoted_pci(self):
-        self.ws.edit("cluster.yaml", 'mgmt_pci: "0009:01:00.0"', "mgmt_pci: 0009:01:00.0")
-        self.assertError("must be quoted in YAML")
-
-    def test_unknown_key_warns(self):
-        self.ws.edit("cluster.yaml", "    # skip: [moe]", "    colour: red")
-        self.ws.edit("cluster.yaml", "  port: 22", "  port: 22\n  prot: 22")
-        _, problems = self.load()
-        self.assertIn("cluster.yaml: unknown key hosts[gb300-r1-t02].colour", problems.warnings)
-        self.assertIn("cluster.yaml: unknown key ssh.prot", problems.warnings)
+    def test_network_file_errors_are_reported(self):
+        self.ws.edit("network.yaml", "lom: {ip: 10.10.0.12/16", "lom: {ip: 10.10.0.11/16")
+        self.ws.edit("network.yaml", "tray: 2", "tray: 1")
+        self.assertError("network.yaml: address 10.10.0.11 is used by gb300-r1-t01.lom, gb300-r1-t02.lom")
+        self.assertError("network.yaml: hosts.gb300-r1-t01 and hosts.gb300-r1-t02: both are rack R1 tray 1")
 
     def test_platform(self):
         cluster, _ = self.load()
         self.assertEqual(cluster.platform, "gb300")
-        self.ws.edit("cluster.yaml", "platform: gb300\n", "")
-        self.ws.edit("cluster.yaml", "network:\n", "network:\n  profile: gb300\n")
-        _, problems = self.load()
-        self.assertTrue(any("platform is required" in e for e in problems.errors), problems.errors)
-        self.assertTrue(any("network.profile is no longer used" in e for e in problems.errors), problems.errors)
-        self.ws.edit("cluster.yaml", "network:\n", "platform: b300\nnetwork:\n")
-        _, problems = self.load()
-        self.assertTrue(any("platform 'b300' is not supported" in e for e in problems.errors), problems.errors)
-
-    def test_tests_platform_must_match(self):
         self.ws.edit("tests.yaml", "platform: gb300 ", "platform: b300 ")
-        _, _, problems = load_both(self.ws.cluster, self.ws.tests)
+        _, problems = self.load()
         self.assertTrue(any("tests.yaml: platform 'b300' is not supported" in e for e in problems.errors))
         self.ws.edit("tests.yaml", "platform: b300 ", "")
-        _, _, problems = load_both(self.ws.cluster, self.ws.tests)
+        _, problems = self.load()
         self.assertTrue(any("tests.yaml: platform is required" in e for e in problems.errors))
 
     def test_unreadable(self):
-        self.ws.write("cluster.yaml", "hosts: [\n")
+        self.ws.write("network.yaml", "hosts: [\n")
         with self.assertRaises(ConfigError):
             self.load()
-        self.ws.write("cluster.yaml", "- a\n")
+        self.ws.write("network.yaml", "- a\n")
         with self.assertRaises(ConfigError):
             self.load()
 

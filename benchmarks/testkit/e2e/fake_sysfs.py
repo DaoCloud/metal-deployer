@@ -1,4 +1,4 @@
-"""Build a fake /sys tree inside an e2e host so nic_discover sees BF3 and CX8 devices.
+"""Build a fake /sys tree inside an e2e host so nic_discover and net_check see BF3 and CX8 devices.
 
 The real interfaces are docker veths; they are found by their IPv4 subnet:
   172.28.20.x -> BF3 port 0, 172.28.30.x -> BF3 port 1, 172.28.4K.x -> CX8 rail K (InfiniBand, ACTIVE, 800G).
@@ -7,6 +7,7 @@ Usage: python3 fake_sysfs.py /fake-sys
 
 import json
 import os
+import socket
 import subprocess
 import sys
 
@@ -48,4 +49,5 @@ device("0009:01:00.1", "pci0009:00", "a2dc", 0, by_net["172.28.30"], "mlx5_5", "
 for k in range(4):
     device("000{}:03:00.0".format(k), "pci000{}:00/000{}:00:00.0".format(k, k), "1023", k // 2,
            by_net["172.28.4{}".format(k)], "mlx5_{}".format(k), "InfiniBand")
+w(os.path.join(root, "class/dmi/id/product_serial"), "SN-" + socket.gethostname())
 print("fake sysfs ready:", json.dumps(by_net))

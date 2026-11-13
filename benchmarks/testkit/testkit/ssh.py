@@ -10,6 +10,15 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 
+# testkit has no ssh settings in its files: passwordless login as root is set up beforehand.
+# TESTKIT_SSH_CONFIG names an extra ssh config file ("ssh -F"), e.g. for a key or a ProxyJump.
+DEFAULTS = {"user": "root", "port": 22, "parallel": 24, "connect_timeout": 10}
+
+
+def settings():
+    return dict(DEFAULTS, config=os.environ.get("TESTKIT_SSH_CONFIG") or None)
+
+
 class Result:
 
     def __init__(self, rc, out="", err=""):
@@ -36,7 +45,8 @@ class Remote:
 
     def options(self):
         cfg = self.cfg
-        args = ["-o", "BatchMode=yes", "-o", "ConnectTimeout={}".format(cfg.get("connect_timeout", 10)),
+        args = ["-F", os.path.expanduser(cfg["config"])] if cfg.get("config") else []
+        args += ["-o", "BatchMode=yes", "-o", "ConnectTimeout={}".format(cfg.get("connect_timeout", 10)),
                 "-o", "StrictHostKeyChecking=accept-new", "-o", "ServerAliveInterval=15",
                 "-o", "ControlMaster=auto", "-o", "ControlPath={}/%C".format(self.ctl_dir),
                 "-o", "ControlPersist=120", "-p", str(cfg.get("port", 22))]

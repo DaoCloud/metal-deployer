@@ -1,13 +1,14 @@
 #!/bin/bash
-# End-to-end test of S3 (testkit nic) and S4 (testkit net) without GPU hosts.
+# End-to-end test of S3 (testkit nic discover) and testkit net-check without GPU hosts.
 #
 # Starts three hosts as systemd containers (netplan, systemd-networkd, sshd) on seven
-# docker networks: LOM (ssh; a static netplan file with a default route, as delivered
-# before testkit takes over), mgmt, storage and four "rails". A fake /sys inside each
-# host maps the veth interfaces to BlueField-3 and ConnectX-8 PCI devices. testkit then
-# discovers NICs, previews, applies and verifies netplan over real ssh (the LOM default
-# route moves into a policy table), and a bad gateway checks that the automatic rollback
-# restores the previous configuration.
+# docker networks: LOM (ssh), mgmt, storage and four "rails". Each host's network is
+# configured with netplan the way the site script does it (default route via mgmt, LOM
+# policy routing, storage route, IPoIB MTU); testkit itself never changes it. A fake /sys
+# inside each host maps the veth interfaces to BlueField-3 and ConnectX-8 PCI devices.
+# testkit then reads the hosts from network.yaml over real ssh: validate, nic discover
+# (ports found by PCI, rails, golden compare, serial), net-check (pass, and a wrong MTU
+# and PCI address that must fail) and the report.
 #
 # Usage: benchmarks/testkit/e2e/run-net-e2e.sh [--keep]
 # Env:   UBUNTU_IMAGE (default ubuntu:24.04; e.g. docker.m.daocloud.io/library/ubuntu:24.04)
@@ -40,40 +41,69 @@ cleanup() {
     for n in "${NETS[@]}"; do docker network rm "testkit-net-${n%%:*}" >/dev/null 2>&1 || true; done
     rm -rf "$ROOT"
 }
-testkit() {
-    local cfg=$1
+testkit() {   # testkit NETWORK_FILE ARGS...
+    local net=$1
     shift
-    TESTKIT_NODE_SYSFS=/fake-sys PYTHONPATH="$TESTKIT" python3 -m testkit -c "$ROOT/$cfg" -t "$ROOT/tests.yaml" "$@"
+    TESTKIT_SSH_CONFIG="$ROOT/ssh_config" TESTKIT_NODE_SYSFS=/fake-sys PYTHONPATH="$TESTKIT" \
+        python3 -m testkit -n "$ROOT/$net" -t "$ROOT/tests.yaml" "$@"
 }
 on() { docker exec "$1" sh -c "$2"; }
 json() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
-state() { json "$ROOT/runs/state.json" "d['hosts']['$1']['$2']['status']"; }
 
-cluster() {   # cluster FILE [BAD_GW_HOST] [BAD_PCI_HOST]: base file + "testkit import" of a CSV IP plan
-    cat > "$ROOT/$1" <<EOF
-platform: gb300
-ssh: {user: root, key: $ROOT/id_ed25519, connect_timeout: 5, parallel: 8}
+netplan_of() {   # netplan_of N: the site configuration of host .N
+    local n=$1
+    cat <<EOF
 network:
-  expect: {gpus: 0, cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}
-  ib_mode: {enforce: true, reboot: never}
-  lom: {table: 100, priority: 100}
-  mgmt: {port: 0, default_route: true}
-  storage: {port: 1}
-  ipoib: {pkey: "0x7fff"}
-  require_pci: true
-  match_by: name
-  rollback_seconds: 60
-  verify: {ping_gateway: true, ping_peer_in_rack: true}
+  version: 2
+  ethernets:
+    lom:
+      match: {name: eth0}
+      addresses: [$P.10.$n/24]
+      routes:
+        - {to: $P.10.0/24, scope: link, table: 100}
+        - {to: default, via: $P.10.1, table: 100}
+      routing-policy:
+        - {from: $P.10.$n/32, table: 100, priority: 100}
+    mgmt:
+      match: {name: eth1}
+      addresses: [$P.20.$n/24]
+      routes: [{to: default, via: $P.20.1}]
+    storage:
+      match: {name: eth2}
+      addresses: [$P.30.$n/24]
+      routes: [{to: 10.98.0.0/16, via: $P.30.1}]
 EOF
-    local plan="$ROOT/${1%.yaml}.csv"
-    echo "rack,tray,hostname,lom_ip,bf3_mgt_ip,bf3_mgt_gateway,bf3_mgt_pci,bf3_storage_ip,bf3_storage_gateway,bf3_storage_routes,bf3_storage_pci,ib_rail1_pci,ib_rail2_pci,ib_rail3_pci,ib_rail4_pci,ib_rail1_ip,ib_rail2_ip,ib_rail3_ip,ib_rail4_ip,ib_mtu" > "$plan"
-    for i in 0 1 2; do
-        local n=$((11 + i)) h=${HOSTS[$i]} gw=$P.20.1 mpci=0009:01:00.0
-        [ "$h" = "${2:-}" ] && gw=$P.20.254
-        [ "$h" = "${3:-}" ] && mpci=0009:01:00.7
-        echo "${RACKS[$i]#R},${TRAYS[$i]},$h,$P.10.$n,$P.20.$n/24,$gw,$mpci,$P.30.$n/24,$P.30.1,10.98.0.0/16,0009:01:00.1,0000:03:00.0,0001:03:00.0,0002:03:00.0,0003:03:00.0,$P.40.$n/24,$P.41.$n/24,$P.42.$n/24,$P.43.$n/24,1300" >> "$plan"
+    for k in 0 1 2 3; do
+        printf '    rail%s:\n      match: {name: eth%s}\n      addresses: [%s]\n      mtu: 1300\n' \
+            "$k" "$((3 + k))" "$P.4$k.$n/24"
     done
-    testkit "$1" import "$plan" >/dev/null
+}
+
+network() {   # network FILE [COMPUTE_MTU_ON_T02] [STORAGE_PCI_ON_T02]
+    {
+        echo "version: 1"
+        echo "hosts:"
+        for i in 0 1 2; do
+            local n=$((11 + i)) h=${HOSTS[$i]} mtu=1300 spci=0009:01:00.1
+            [ "$h" = gb300-r1-t02 ] && mtu=${2:-1300} && spci=${3:-0009:01:00.1}
+            cat <<EOF
+  $h:
+    rack: ${RACKS[$i]}
+    tray: ${TRAYS[$i]}
+    lom: {ip: $P.10.$n/24, gateway: $P.10.1, policy: {table: 100, priority: 100}}
+    mgmt: {pci: "0009:01:00.0", ip: $P.20.$n/24, mtu: 1500, gateway: $P.20.1, default_route: true}
+    storage:
+      pci: "$spci"
+      ip: $P.30.$n/24
+      routes: [{to: 10.98.0.0/16, via: $P.30.1}]
+    compute:
+      link_layer: infiniband
+      mtu: $mtu
+      devices:
+EOF
+            for k in 0 1 2 3; do echo "        - {pci: \"000$k:03:00.0\", ip: $P.4$k.$n/24}"; done
+        done
+    } > "$ROOT/$1"
 }
 
 setup() {
@@ -82,6 +112,9 @@ setup() {
     cleanup
     mkdir -p "$ROOT"
     ssh-keygen -q -t ed25519 -N "" -f "$ROOT/id_ed25519"
+    # testkit has no ssh settings of its own; the key comes from an extra ssh config file.
+    printf 'Host *\n  IdentityFile %s\n  UserKnownHostsFile %s\n  ConnectTimeout 5\n' \
+        "$ROOT/id_ed25519" "$ROOT/known_hosts" > "$ROOT/ssh_config"
     for n in "${NETS[@]}"; do docker network create --subnet "$P.${n#*:}.0/24" "testkit-net-${n%%:*}" >/dev/null; done
     for i in 0 1 2; do
         local h=${HOSTS[$i]} n=$((11 + i))
@@ -94,111 +127,79 @@ setup() {
         docker cp "$ROOT/id_ed25519.pub" "$h:/root/.ssh/authorized_keys"
         docker cp "$HERE/fake_sysfs.py" "$h:/root/fake_sysfs.py"
         on "$h" "chown root:root /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
-        # The delivered system: a static LOM with its default route, managed by networkd.
-        on "$h" "printf 'network:\n  version: 2\n  ethernets:\n    lom:\n      match: {name: eth0}\n      addresses: [$P.10.$n/24]\n      routes:\n        - {to: default, via: $P.10.1}\n' > /etc/netplan/50-lom.yaml && chmod 600 /etc/netplan/50-lom.yaml"
+        netplan_of "$n" > "$ROOT/netplan-$h.yaml"
+        docker cp "$ROOT/netplan-$h.yaml" "$h:/etc/netplan/60-site.yaml"
+        on "$h" "chmod 600 /etc/netplan/60-site.yaml"
     done
     sleep 3
     for h in "${HOSTS[@]}"; do
         # Docker's own default route was added before networkd ran; a booted host would not have it.
-        on "$h" "ip route show default | while read -r r; do ip route del \$r; done; netplan apply 2>/dev/null; for _ in \$(seq 30); do ip route show default proto static | grep -q . && break; sleep 1; done"
+        on "$h" "ip route show default | while read -r r; do ip route del \$r; done; netplan apply 2>/dev/null; for _ in \$(seq 30); do ip route show default proto static | grep -q . && ip rule show | grep -q 'lookup 100' && break; sleep 1; done"
+        on "$h" "sed -i 's/172\.28\./$P./g' /root/fake_sysfs.py && python3 /root/fake_sysfs.py /fake-sys" >/dev/null
     done
-    for h in "${HOSTS[@]}"; do on "$h" "sed -i 's/172\.28\./$P./g' /root/fake_sysfs.py && python3 /root/fake_sysfs.py /fake-sys" >/dev/null; done
-    printf 'platform: gb300\nimages: {sb_worker: "x"}\nruntime: {results_dir: ./runs}\n' > "$ROOT/tests.yaml"
-    cluster cluster.yaml
-    cluster bad-gw.yaml gb300-r2-t01
-    cluster bad-pci.yaml "" gb300-r1-t02
+    cat > "$ROOT/tests.yaml" <<EOF
+platform: gb300
+golden: gb300-r1-t01
+nic:
+  expect: {gpus: 0, cx8: {count: 4, link_layer: InfiniBand, rate_gbps: 800}, bf3: {pf_count: 2, mode: nic}, compare_golden: true}
+images: {sb_worker: "x"}
+runtime: {results_dir: ./runs}
+EOF
+    network network.yaml
+    network bad-network.yaml 4092 0009:01:00.7
 }
 
 trap cleanup EXIT
 setup
 
-log "0. testkit import"
-check "import kept the network section" grep -q "match_by: name" "$ROOT/cluster.yaml"
-check "plan PCI imported" [ "$(grep -c 'mgmt_pci:' "$ROOT/cluster.yaml")" = 3 ]
-out=$(testkit cluster.yaml validate 2>&1) || true
-check "validate passes" grep -q "result: 0 error(s)" <<<"$out"
+log "0. validate"
+out=$(testkit network.yaml validate --ssh 2>&1) && rc=0 || rc=$?
+check "validate exits 0" [ "$rc" = 0 ]
+check "hosts, racks and golden from network.yaml + tests.yaml" grep -q "3 hosts (R1 2, R2 1), golden gb300-r1-t01" <<<"$out"
+check "all hosts reachable with TESTKIT_SSH_CONFIG" grep -q "ssh: 3/3 hosts reachable" <<<"$out"
 
 log "1. nic discover"
-out=$(testkit cluster.yaml nic discover 2>&1) && rc=0 || rc=$?
+out=$(testkit network.yaml nic discover 2>&1) && rc=0 || rc=$?
 check "discover exits 0" [ "$rc" = 0 ]
-check "mgmt port found" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "d['mgmt_if']")" = eth1 ]
+check "mgmt port found by its PCI address" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "d['mgmt_if']")" = eth1 ]
+check "storage port found by its PCI address" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "d['storage_if']")" = eth2 ]
 check "4 rails in PCI order" [ "$(json "$ROOT/runs/nic/gb300-r1-t02.json" "','.join(d['ib_devs'])")" = mlx5_0,mlx5_1,mlx5_2,mlx5_3 ]
-check "LOM gateway found" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
+check "LOM gateway found in the policy table" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
 check "golden match" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['golden_match']['result']")" = pass ]
-check "plan PCI found on host" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['plan_pci']['result']")" = pass ]
-out=$(testkit cluster.yaml nic show)
+check "network.yaml PCI found on host" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['checks']['plan_pci']['result']")" = pass ]
+check "serial read from the host" [ "$(json "$ROOT/runs/nic/gb300-r2-t01.json" "d['serial']")" = SN-gb300-r2-t01 ]
+out=$(testkit network.yaml nic show)
 check "nic show prints rails" grep -q "mlx5_3" <<<"$out"
+out=$(testkit bad-network.yaml nic discover --hosts gb300-r1-t02 2>&1) && rc=0 || rc=$?
+check "discover fails on a PCI address that is not on the host" [ "$rc" = 1 ]
+check "reason names the PCI" grep -q "storage PCI 0009:01:00.7 has no network interface" <<<"$out"
+testkit network.yaml nic discover --hosts gb300-r1-t02 >/dev/null 2>&1 || true
 
-log "2. net apply --dry-run"
-out=$(testkit cluster.yaml net apply --dry-run 2>&1) && rc=0 || rc=$?
-check "dry-run exits 0" [ "$rc" = 0 ]
-check "dry-run shows the netplan diff" grep -q "+    testkit-mgmt:" <<<"$out"
-check "dry-run changes nothing" on gb300-r1-t01 "! ls /etc/netplan/90-static-* 2>/dev/null && ! grep -q table /etc/netplan/50-lom.yaml"
-check "dry-run shows the LOM file change" grep -q "^+++ b/50-lom.yaml" <<<"$out"
+log "2. net-check"
+out=$(testkit network.yaml net-check 2>&1) && rc=0 || rc=$?
+echo "$out" | tail -1 | sed 's/^/     /'
+check "net-check exits 0 on the configured network" [ "$rc" = 0 ]
+check "default route via mgmt" grep -q "gb300-r1-t02 .*default_route .*PASS" <<<"$out"
+check "LOM policy routing" grep -q "gb300-r1-t01 .*lom_policy .*PASS" <<<"$out"
+check "replies from the LOM address leave via the LOM" grep -q "gb300-r1-t01 .*lom_reply .*PASS" <<<"$out"
+check "storage route" grep -q "gb300-r2-t01 .*route:storage 10.98.0.0/16 .*PASS" <<<"$out"
+check "IPoIB MTU" grep -q "gb300-r2-t01 .*rail3 .*mtu 1300" <<<"$out"
+check "same rail of the rack peer pinged" grep -q "gb300-r1-t01 .*ping:rail3-peer .*PASS" <<<"$out"
+out=$(testkit bad-network.yaml net-check 2>&1) && rc=0 || rc=$?
+check "net-check exits 1 on a mismatch" [ "$rc" = 1 ]
+check "reports the wrong MTU" grep -q "gb300-r1-t02 .*rail0 .*mtu 1300 (expected 4092)" <<<"$out"
+check "reports the missing PCI" grep -q "gb300-r1-t02 .*storage .*PCI 0009:01:00.7 not found" <<<"$out"
+check "differences from most hosts are warnings" grep -q "warning: compute.mtu: gb300-r1-t02 4092 differs" <<<"$out"
+check "nothing was changed on the hosts" [ "$(on gb300-r1-t02 "cat /sys/class/net/eth3/mtu; ls /etc/netplan")" = "1300
+60-site.yaml" ]
 
-log "3. net apply"
-testkit cluster.yaml net apply >"$ROOT/apply.log" 2>&1 && rc=0 || rc=$?
-cat "$ROOT/apply.log" | sed 's/^/     /' | tail -4
-check "apply exits 0" [ "$rc" = 0 ]
-check "every host passed" [ "$(state gb300-r1-t01 network)$(state gb300-r1-t02 network)$(state gb300-r2-t01 network)" = passpasspass ]
-check "default route via mgmt only" [ "$(on gb300-r1-t02 "ip route show default")" = "default via $P.20.1 dev eth1 proto static " ]
-check "mgmt+storage and compute files" [ "$(on gb300-r1-t01 "cd /etc/netplan && echo 90-*")" = \
-    "90-static-compute.yaml 90-static-mgmt-storage.yaml" ]
-check "LOM default route moved into table 100 in its own file" on gb300-r1-t02 "grep -q 'table: 100' /etc/netplan/50-lom.yaml"
-check "LOM address kept" on gb300-r1-t02 "ip -4 addr show eth0 | grep -q 'inet $P.10.12/24'"
-check "policy rule for the LOM address" on gb300-r1-t02 "ip rule show | grep -q 'from $P.10.12 lookup 100'"
-check "LOM table has its default route" on gb300-r1-t02 "ip route show table 100 | grep -q 'default via $P.10.1 dev eth0'"
-check "any network answered from the LOM address leaves via the LOM" \
-    [ "$(on gb300-r1-t02 "ip -j route get 10.99.1.1 from $P.10.12" | json /dev/stdin "d[0]['dev']")" = eth0 ]
-check "other traffic follows the mgmt default route" \
-    [ "$(on gb300-r1-t02 "ip -j route get 10.99.1.1" | json /dev/stdin "d[0]['dev']")" = eth1 ]
-check "BF3 MTU unchanged, IB MTU from plan" [ "$(on gb300-r2-t01 "cat /sys/class/net/eth1/mtu /sys/class/net/eth2/mtu /sys/class/net/eth6/mtu" | tr '\n' ' ')" = "1500 1500 1300 " ]
-check "storage route from plan" on gb300-r2-t01 "ip route show 10.98.0.0/16 | grep -q 'via $P.30.1 dev eth2'"
-check "rollback timer stopped" on gb300-r1-t01 "! systemctl is-active --quiet testkit-net-rollback.timer"
-check "peer pings recorded" grep -q '"ping:ib3-peer"' "$ROOT/runs/$(ls "$ROOT/runs" | grep -E '^[0-9]{8}-' | sort | tail -1)/gb300-r1-t01/network/summary.json"
-
-log "4. nic discover + net apply again (idempotent)"
-testkit cluster.yaml nic discover >/dev/null 2>&1 || true
-check "LOM gateway still known after S4 moved it to the LOM policy table" \
-    [ "$(json "$ROOT/runs/nic/gb300-r1-t01.json" "d['lom']['gateway']")" = "$P.10.1" ]
-out=$(testkit cluster.yaml net apply 2>&1) && rc=0 || rc=$?
-check "second apply exits 0" [ "$rc" = 0 ]
-check "reports no change" [ "$(grep -c 'no change' <<<"$out")" = 3 ]
-
-log "5. bad gateway -> automatic rollback"
-before=$(on gb300-r2-t01 "cat /etc/netplan/*.yaml | md5sum")
-start=$(date +%s)
-testkit bad-gw.yaml net apply --hosts gb300-r2-t01 >"$ROOT/rollback.log" 2>&1 && rc=0 || rc=$?
-took=$(( $(date +%s) - start ))
-check "apply exits 1" [ "$rc" = 1 ]
-check "status is fail with rollback reason" grep -q "rolled back" "$ROOT/rollback.log"
-check "old configuration restored" grep -q "old configuration restored" "$ROOT/rollback.log"
-check "file content restored" [ "$(on gb300-r2-t01 "cat /etc/netplan/*.yaml | md5sum")" = "$before" ]
-check "default route back to the good gateway" [ "$(on gb300-r2-t01 "ip route show default")" = "default via $P.20.1 dev eth1 proto static " ]
-check "finished within rollback window (${took}s < 120s)" [ "$took" -lt 120 ]
-
-log "6. net verify"
-out=$(testkit cluster.yaml net verify 2>&1) && rc=0 || rc=$?
-check "verify exits 0 after rollback" [ "$rc" = 0 ]
-
-log "7. PCI in the plan not found on the host"
-out=$(testkit bad-pci.yaml net apply --hosts gb300-r1-t02 2>&1) && rc=0 || rc=$?
-check "apply refused" [ "$rc" = 1 ]
-check "reason names the PCI" grep -q "mgmt_pci 0009:01:00.7 is not a BF3 port" <<<"$out"
-
-log "8. conflicting netplan entry is refused"
-on gb300-r1-t02 "printf 'network:\n  version: 2\n  ethernets:\n    other:\n      match: {name: eth1}\n      dhcp4: true\n' > /etc/netplan/55-other.yaml && chmod 600 /etc/netplan/55-other.yaml"
-out=$(testkit cluster.yaml net apply --hosts gb300-r1-t02 2>&1) && rc=0 || rc=$?
-check "apply refused" [ "$rc" = 1 ]
-check "reason names the file" grep -q "55-other.yaml: ethernets.other" <<<"$out"
-on gb300-r1-t02 "rm -f /etc/netplan/55-other.yaml"
-
-log "9. report"
-testkit cluster.yaml report >/dev/null
-check "report has S3 and S4" python3 -c "
+log "3. report"
+testkit network.yaml report >/dev/null
+check "report has S3 and the serial" python3 -c "
 import json,re,sys; s=open('$ROOT/runs/report/report.html').read()
 d=json.loads(re.search(r'const D = (.*);\n', s).group(1).replace('<\\\\/', '</'))
-sys.exit(0 if {'nic','network'} <= {i['id'] for i in d['items']} else 1)"
+ok = 'nic' in {i['id'] for i in d['items']} and {h['serial'] for h in d['hosts']} == {'SN-' + h['name'] for h in d['hosts']}
+sys.exit(0 if ok else 1)"
 
 echo
 log "passed $PASSED, failed $FAILED"

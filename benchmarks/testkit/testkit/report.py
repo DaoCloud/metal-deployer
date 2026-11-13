@@ -114,7 +114,7 @@ def build_data(cluster, tests, title=None):
             e = host_state.get(h.name, {}).get(item.id)
             if e is None:
                 if item.id in ran and any(matches(item.id, s) for s in h.skip):
-                    entries[item.id] = {"status": "skip", "reason": "cluster.yaml skip", "group_result": True}
+                    entries[item.id] = {"status": "skip", "reason": "tests.yaml hosts skip", "group_result": True}
                 continue
             base = os.path.join(results, e.get("run_id", ""), h.name, item.id)
             summary = read_json(os.path.join(base, "summary.json")) or {}
@@ -143,7 +143,7 @@ def build_data(cluster, tests, title=None):
                 versions.update({str(k): str(v) for k, v in env.items() if not isinstance(v, (dict, list))})
         nic = load_nic(results, h.name) or {}
         hosts.append({
-            "name": h.name, "rack": h.rack, "tray": h.tray, "serial": h.serial, "ssh": h.ssh,
+            "name": h.name, "rack": h.rack, "tray": h.tray, "serial": h.serial or nic.get("serial") or "", "ssh": h.ssh,
             "mgmt": str(h.mgmt) if h.mgmt else "", "storage": str(h.storage) if h.storage else "",
             "ib": [str(i) for i in h.ib if i], "tags": h.tags, "golden": h.golden,
             "items": entries, "metrics": metrics, "logs": logs, "versions": versions,

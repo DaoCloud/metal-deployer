@@ -20,8 +20,8 @@ def _summary(ws_results, host, item, status, metrics=None, checks=None, rank=0, 
 
 def make_results(racks=2, trays=4):
     ws = Workspace(racks, trays)
-    ws.edit("cluster.yaml", "    # skip: [moe]", "    skip: [moe]")
-    cluster, tests, _ = load_both(ws.cluster, ws.tests)
+    ws.edit("tests.yaml", "hosts: {}", "hosts: {gb300-r1-t02: {skip: [moe]}}")
+    cluster, tests, _ = load_both(ws.network, ws.tests)
     res = tests.results_dir
     store = StateStore(res)
     names = [h.name for h in cluster.hosts]

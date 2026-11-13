@@ -1,15 +1,16 @@
 # testkit：GB300 批量测试与验收工具
 
-> 状态：开发中。已可用 `init`、`import`、`validate`、`plan`、`doctor`、`nic`、`net`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`links`、`dcgm`、`superbench.*`、`imex`、`nvlink.*`、`sharp.scale_out`、`nvshmem.*`、`nixl.*`；其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`net-check`、`nic`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`links`、`dcgm`、`superbench.*`、`imex`、`nvlink.*`、`sharp.scale_out`、`nvshmem.*`、`nixl.*`；其余测试项按 [实施计划](#实施进度) 逐步实现。
 
-`testkit` 在一台控制机上经 SSH 管理一批 GB300 节点：识别网卡、下发网络配置，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
+`testkit` 在一台控制机上经 SSH 管理一批 GB300 节点：检查网络是否已按规划配好、识别网卡，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
 ## 运行方式
 
-两种方式使用同一份代码：
+三种方式使用同一份代码：
 
 | 方式 | 依赖 | 说明 |
 |---|---|---|
+| 单文件二进制 | `ssh`；可选 `ssh-keygen`、`rsync` | `make build-testkit-bin`（即 `benchmarks/testkit/build-binary.sh`）用 docker buildx 生成 `dist/testkit-<版本>-linux-{amd64,arm64}` 与 `SHA256SUMS`，拷到控制机即可运行，不需要 Python；基于 glibc 2.31 构建，Ubuntu 20.04 及以上可用。离线环境推荐 |
 | 直接运行 | Python ≥ 3.8、PyYAML、`ssh`；可选 `ssh-keygen`（mpi 模式）、`rsync`、`sb` | `pip install ./benchmarks/testkit` 后使用 `testkit`；开发时也可 `cd benchmarks/testkit && python3 -m testkit` |
 | 容器 | 能运行容器即可 | testkit 镜像内含 testkit、`sb` 与 GB300 配置（P9 提供） |
 
@@ -17,130 +18,78 @@
 
 ## 配置文件
 
-| 文件 | 内容 |
-|---|---|
-| `cluster.yaml` | SSH 参数、网络统一参数、主机列表（rack、tray、LOM 地址、BF3/IPoIB 地址、tags、单机 env/skip） |
-| `tests.yaml` | 测哪些项、在哪些节点、怎么分组、参数 |
-
-**硬件平台**：cluster.yaml 和 tests.yaml 顶层都要写 `platform`，目前只支持 `gb300`。平台决定 `testkit init` 生成哪套模板（`testkit/templates/<platform>/`）、`network` 的默认值（网卡形态与数量），模板中的测试镜像与测试项也按该平台编写。缺少 `platform`、取值不支持、两个文件不一致，所有命令都会报错；`run.json` 和 HTML 报告记录所用平台。
+| 文件 | 内容 | 来源 |
+|---|---|---|
+| `network.yaml` | 主机清单与网络规划：每台主机一段，以短主机名为 key；可选 `rack`、`tray`；`lom`、`mgmt`、`storage`、`compute` 的 PCI、地址、MTU、网关、路由、LOM 策略路由 | 由 IP 规划表经 AI 或人工转换；现场配置脚本按它下发网络 |
+| `tests.yaml` | 平台、测哪些项、在哪些节点、怎么分组、参数；可选金样本 `golden`、单机设置 `hosts`、网卡期望 `nic.expect` | testkit 模板 |
 
 ```bash
-testkit init --platform gb300 [--racks 2 --trays 18]   # --platform 默认 gb300
+testkit init --platform gb300 [--racks 2 --trays 18]   # 生成两个带注释的模板，--platform 默认 gb300
+testkit -n network.yaml -t tests.yaml <命令>            # 两个文件默认就是当前目录下的这两个
 ```
 
-`testkit init` 生成带注释的模板，字段说明都写在模板注释里。`testkit validate` 检查：
+所有命令都从 network.yaml 读主机、rack、tray 与地址。字段说明写在模板注释里，要点：
 
-- cluster.yaml：`platform` 合法；主机名、rack+tray 唯一；地址格式（必须带前缀长度）；所有地址全局唯一；同一 rail 的 IPoIB 在同一子网；mgmt 与网关同网段；最多一台 `golden`；拼错或多余的字段给出警告。
-- tests.yaml：`platform` 与 cluster.yaml 一致；主机选择能解析；镜像已配置；模板变量拼写正确；`scope`、`runtime` 取值合法；依赖 MNNVL 的项未启用 imex 时给出警告。
+- `lom.ip` 为 SSH 地址；`mgmt` 必填（`MASTER_ADDR`、`{mgmt_ip}`）；`storage`、`compute` 可选；`compute.devices` 按 rail 顺序，`devices[k].ip` 即 `{ib<k>_ip}`，个数须等于平台的 rail 数。
+- 没写 `rack`、`tray` 时所有主机算一个 rack（`all`），按主机名排序。
+- `x-*` 字段留给配置脚本，testkit 忽略。
+
+testkit 本身没有 SSH 配置：以 root 登录 `lom.ip`，控制机到各主机的免密事先做好。需要额外的密钥、跳板机等时，用环境变量 `TESTKIT_SSH_CONFIG` 指定一个 ssh 配置文件（`ssh -F`）。
+
+tests.yaml 中与主机相关的可选设置：
+
+```yaml
+golden: gb300-r1-t01        # 金样本：nic discover 把其他主机与它比对
+hosts:                      # 单机设置，以 network.yaml 中的主机名为 key
+  gb300-r1-t02: {tags: [batch1], env: {NCCL_DEBUG: INFO}, skip: [moe]}
+nic:
+  expect: {gpus: 4, cx8: {count: 4, rate_gbps: 800}}   # 覆盖平台默认值
+```
+
+**硬件平台**：tests.yaml 顶层写 `platform`，目前只支持 `gb300`。平台决定 `testkit init` 生成哪套模板（`testkit/templates/<platform>/`）、`nic.expect` 的默认值（4 × CX8 `15b3:1023`、InfiniBand、800 Gb/s，4 GPU，BF3 两个口为 NIC 模式），模板中的测试镜像与测试项也按该平台编写。`run.json` 和 HTML 报告记录所用平台。
+
+`testkit validate` 检查：
+
+- network.yaml：与 `net-check --static` 相同的文件检查（见下节），以及 `mgmt` 已填、compute 个数等于 rail 数。
+- tests.yaml：`platform` 合法；`golden`、`hosts` 中的主机都在 network.yaml 中；主机选择能解析；镜像已配置；模板变量拼写正确；`scope`、`runtime` 取值合法；依赖 MNNVL 的项未启用 imex 时给出警告。
 - `--ssh`：并发检查每台主机能否 SSH 登录。
 
 ### 主机选择与分组
 
-- `hosts` / `groups` 写法：`all`、rack 名（`R1`）、主机名、`tag:<名称>`，可写成列表或逗号分隔。
+- `hosts` / `groups` 写法：`all`、rack 名（`R1`）、主机名、`tag:<名称>`（tags 在 tests.yaml `hosts` 中设置），可写成列表或逗号分隔。
 - `scope`：`node` 每台一组；`rack` 每个 rack 一组；`group` 选中的主机合成一组，或用 `groups` 列出多组。
 - 组内 rank 按 rack、tray 排序，rank 0 的 mgmt 地址为 `MASTER_ADDR`，`MASTER_PORT` = `master_port_base` + 组序号。
 - 主机的 `skip` 可写测试项或前缀（`moe` 跳过全部 moe 项）。命令行 `--hosts`、`--exclude` 只能在配置基础上缩小范围。
 
 ### 变量与环境
 
-`env`、`cmd`、`args` 中的 `{变量}` 按节点渲染，可用变量见 tests.yaml 开头注释。`{mgmt_if}`、`{ib_hcas}`、`{ib_ucx_devs}` 来自 S3 网卡识别结果，识别前在 `testkit plan` 中显示为 `<S3:...>`。环境变量按以下顺序合并，后者覆盖前者：`common_env` → `<段>.common.env` → `<项>.env` → `per_rank` → cluster.yaml 中该主机的 `env`。
+`env`、`cmd`、`args` 中的 `{变量}` 按节点渲染，可用变量见 tests.yaml 开头注释。`{mgmt_if}`、`{ib_hcas}`、`{ib_ucx_devs}` 来自 S3 网卡识别结果，识别前在 `testkit plan` 中显示为 `<S3:...>`。环境变量按以下顺序合并，后者覆盖前者：`common_env` → `<段>.common.env` → `<项>.env` → `per_rank` → tests.yaml `hosts.<主机>.env`。
 
-## 导入 IP 规划表
+## 测试前检查网络（net-check）
+
+网络（地址、MTU、路由、策略路由）由现场脚本按 network.yaml 下发，不在本项目。`testkit net-check` 只读，逐台检查主机网络是否已就绪，不修改任何配置，只需要 network.yaml：
 
 ```bash
-testkit import gb300-nic-ip-plan.xlsx [--sheet hosts] [--dry-run]   # 或 .csv
+testkit net-check --static                          # 只检查文件，不登录主机
+testkit net-check [--hosts R1] [--exclude h1] [--no-ping] [--json]
 ```
 
-把规划表读进 `cluster.yaml`（`-c` 指定）的 `hosts` 段：只替换 `hosts`，`ssh`、`network` 和注释保持不变；已有主机的 `tags`、`env`、`skip`、`gpus` 保留；原文件备份为 `cluster.yaml.bak`。`cluster.yaml` 不存在时按 `--platform`（默认 `gb300`）新建，network 段只保留按规划表下发所需的设置（不改 BF3 MTU，网关和存储路由按主机取自规划表）。写入前先校验，有错误时不写。`.xlsx` 需要 openpyxl（`pip install './benchmarks/testkit[xlsx]'`），否则把 sheet 另存为 CSV。
+- 文件检查（有错误时退出码 2，不登录主机）：地址必须是 CIDR；PCI 必须加引号（不加引号 YAML 会读成数字）；网关和路由 `via` 在本网段；地址全局唯一；同一 rail 所有主机同一子网；同一主机 PCI 不重复；最多一个网络 `default_route`；rack + tray 不重复。与多数主机不一致的字段（pci、mtu、网关、路由等）给出警告；未知字段警告。
+- 主机检查（经 LOM 地址 SSH，并发）：hostname 与 key 一致（不一致为警告）；每个 PCI 存在且对应网卡、link layer、链路 up、IB 端口 ACTIVE；地址在该网卡上（不在时指出在哪块网卡）；MTU；IPoIB pkey；默认路由只经 mgmt 网关；存储路由；LOM 策略路由规则与路由表、从 LOM 地址回包走 LOM；DNS（需 `resolvectl`）；ping 各网关和同 rack 下一台主机的同一 rail。任何一项 FAIL 退出码为 1。
 
-| 规划表列 | cluster.yaml 字段 |
-|---|---|
-| `hostname`、`rack`（数字转为 `R<n>`）、`tray`、`sn` | `name`、`rack`、`tray`、`serial` |
-| `lom_ip`、`lom_gateway` | `ssh`、`lom_gateway` |
-| `bf3_mgt_ip`（或 `mgmt_ip`）、`bf3_mgt_gateway`、`bf3_mgt_pci`、`bf3_mgt_mac` | `mgmt`、`mgmt_gateway`、`mgmt_pci`、`mgmt_mac` |
-| `bf3_storage_ip`（或 `storage_ip`）、`_gateway`、`_routes`、`_pci`、`_mac` | `storage`、`storage_gateway`、`storage_routes`、`storage_pci`、`storage_mac` |
-| `ib_rail<N>_pci`、`ib_rail<N>_guid`、`ib_rail<N>_ip`（可选；也可写 `rail<N>_*`） | `ib_pci`、`ib_guid`、`ib`（rail N 对应列表第 N 项） |
-| `ib_mtu`（需在表中新增此列） | `ib_mtu` |
-
-表头按 GB300 的 IP 规划表命名；没有 BF3 的机型可用括号中与硬件无关的列名（`bf3_*` 前缀去掉、`mgmt_ip`、`storage_ip`、`rail<N>_*`），两种写法等价。其余列（`bmc_*`、`bf3_oob_ip` 等）忽略。导入后会列出各主机缺少的 PCI 与 `ib_mtu`。
-
-## 网卡识别与网络配置（S3、S4）
+## 网卡识别（S3）
 
 ```bash
-testkit nic discover [--hosts R1]         # S3：识别网卡，与 network.expect、金样本比对
+testkit nic discover [--hosts R1]         # S3：识别 GPU 与网卡，与 nic.expect、金样本比对
 testkit nic show [host]                   # 查看一台主机（默认金样本）的映射与检查结果
-testkit net apply --dry-run               # S4：只显示每台主机的动作和 netplan diff
-testkit net apply [--hosts R1] [--yes]    # 下发并验证
-testkit net verify                        # 只验证，不修改
 ```
 
-主机上需要 python3（Ubuntu 自带）、netplan、systemd-run；读取固件设置需要 `mlxconfig`（没有时跳过 IB 模式与 BF3 模式检查）。
+`node_scripts/nic_discover.py` 经 SSH 在主机上执行，只读，主机上只需要 python3；读取固件设置需要 `mlxconfig`（没有时跳过 BF3 模式检查）：
 
-**平台默认值**：`platform` 决定 `network.expect` 与 mgmt、storage 两个角色的默认值；cluster.yaml 中 `network` 下写出的键覆盖平台默认值：
-
-| platform | mgmt | storage | rail（`expect.cx8`） |
-|---|---|---|---|
-| `gb300` | BF3 port 0（`device: bf3`） | BF3 port 1 | 4 × CX8 `15b3:1023`，InfiniBand，800 Gb/s；另要求 4 GPU、BF3 两个口为 NIC 模式 |
-
-`network.profile` 已移除，写了会报错。mgmt/storage 的 `device` 仍可单独覆盖：`device: nic` 按 `mgmt_pci`/`storage_pci` 找到任意网卡（只能按 PCI 定位，与 `require_pci` 无关，规划表必须给出 PCI）；mgmt 的 `device: lom` 表示 mgmt 地址就是 LOM 地址，S4 不配置 mgmt、不移动默认路由。
-
-**S3 识别**（`node_scripts/nic_discover.py`，经 SSH 在主机上执行，只读）：
-
-- 按 PCI ID 找出 ConnectX-8（默认 `15b3:1023`）与 BlueField-3（`15b3:a2dc`）；其他 `15b3` 功能（PCIe 交换、DDI、BF3 SoC 管理口）忽略。mgmt/storage 为 `device: nic` 时，另按规划表中的 PCI 读取该网卡（任意厂商）的接口名与 MAC。
+- 按 PCI ID 找出 ConnectX-8（默认 `15b3:1023`）与 BlueField-3（`15b3:a2dc`）；其他 `15b3` 功能（PCIe 交换、DDI、BF3 SoC 管理口）忽略。mgmt、storage 按 network.yaml 中的 PCI 找到网卡（BF3 口或任意厂商的网卡），记录接口名与 MAC。
 - rail N = PCI 树上离 GPU N 最近的 CX8（没有 GPU 时按 PCI 地址排序）；记录 RDMA 设备、IPoIB 接口、NUMA、端口状态与速率、`LINK_TYPE_P1`。
-- BF3 两个口按 PCI function 排序，`mgmt.port`、`storage.port` 选择哪个口；BF3 模式取 `INTERNAL_CPU_OFFLOAD_ENGINE`（`DISABLED(1)` 为 NIC 模式）。
-- LOM = 承载本次 SSH 会话的接口，同时记录它的地址与前缀、网关（S4 之后从策略路由表中取）以及控制机地址。
-- 检查：GPU、CX8、BF3 口数量，链路层、端口 ACTIVE、速率，BF3 模式，与金样本的 rail↔GPU↔RDMA 设备↔NUMA 映射一致。结果写入 `runs/nic/<主机>.json`，测试项中的 `{mgmt_if}`、`{ib_hcas}` 由此填充。
-
-**S4 下发**：每个口按规划表中的 PCI 地址（`mgmt_pci`、`storage_pci`、`ib_pci`）在主机上找到对应网卡，写两个文件：
-
-| 文件 | 内容 |
-|---|---|
-| `/etc/netplan/90-static-mgmt-storage.yaml` | 管理口（`mgmt_pci`）：`mgmt` 地址、默认路由（`mgmt_gateway`，否则 `network.mgmt.gateway`）、DNS；存储口（`storage_pci`）：`storage` 地址、`storage_routes`（经 `storage_gateway`，没有网关时直连），不设默认路由；`network.<mgmt|storage>.mtu` 设置时才改 MTU。默认路由移到 mgmt 时还包含 LOM 策略路由（见下） |
-| `/etc/netplan/90-static-compute.yaml` | 算力网卡 IPoIB（`ib_pci`）：MTU 取 `ib_mtu`（否则 `network.ipoib.mtu`）；有 `ib` 地址时配地址，没有时只设 MTU |
-
-- testkit 只写、只删这两个文件；此外只会按下方规则改写 LOM 所在的 netplan 文件。没有内容的文件不写。
-- `network.require_pci: true`（默认）：缺少 PCI、PCI 在主机上找不到或类型不对（BF3 口 / 普通网卡 / CX8）、规划表的 MAC 或 GUID 与主机不一致时，拒绝下发该主机。`false` 时没有 PCI 的 BF3 口与 rail 按 S3 推断（BF3 .0 = 业务、.1 = 存储，rail 按 GPU 顺序）。
-- netplan 按永久 MAC 匹配管理口、存储口（`match_by: mac`，MAC 由 PCI 查到）；虚拟机等没有永久 MAC 的环境用 `match_by: name`。
-
-**LOM 策略路由**：LOM 在 testkit 接入前已由 netplan 静态配置（地址、通常还有默认路由）。默认路由移到 mgmt 后，从 LOM 进来的连接（控制机 SSH，以及任何经 LOM 访问主机的网段）的回包若按主路由表走 mgmt，会因路径不对称被丢弃。S4 因此：
-
-1. 先建策略路由：在 `90-static-mgmt-storage.yaml` 中，用 LOM **已有**条目的 id（另起一个匹配同一网卡的 id 会被 networkd 忽略）合并：
-
-   ```yaml
-   eno1:                                   # LOM 原有条目的 id
-     routes:
-       - {to: 10.10.0.0/24, scope: link, table: 100}
-       - {to: default, via: 10.10.0.1, table: 100}   # 仅当 LOM 文件里没有默认路由；网关取 lom_gateway，否则 S3
-     routing-policy:
-       - {from: 10.10.0.11/32, table: 100, priority: 100}
-   ```
-
-2. 再从 main 表删掉 LOM 默认路由：netplan 合并时列表只追加，别的文件删不掉它，所以 S4 改写 LOM 所在的文件，把该条目的 `gateway4` 或主表 `to: default` 路由改为 `table: 100`（等于搬进策略表），其余内容不变（文件中的 YAML 注释不保留，文件头加一行说明）。改写前整个 `/etc/netplan` 已备份，回滚时一起恢复；下发时若该文件已被他人改动则拒绝。再次执行时路由已在表 100 中，不再改写。
-
-- 源地址为 LOM 地址的流量查表 `network.lom.table`（默认 100），从 LOM 出去；其他流量按主表走 mgmt 默认路由。旧的 `lom.pin_routes` 不再使用（写了会提示）。
-- 拒绝下发的情况：LOM 不由 netplan 管理；LOM 条目为 DHCP（testkit 要求静态）；LOM 条目不含 SSH 所用地址；需要由 testkit 加表默认路由时网关未知或不在 LOM 网段。
-- `mgmt.default_route: false`、mgmt 没有网关或 `mgmt.device: lom` 时默认路由留在 LOM，LOM 不做任何改动。
-- S3 也会使用规划表的 PCI：`{mgmt_if}` 取 `mgmt_pci` 对应的网卡；检查项 `plan_pci` 列出找不到的 PCI，以及 `ib_pci` 顺序与按 GPU 距离得到的 rail 顺序不一致的情况。
-
-每台主机的流程：
-
-1. 预检：S3 结构性检查通过（数量、映射、LOM）；没有其他 netplan 条目已经匹配 BF3 口或 IPoIB 接口；没有未确认的上一次修改。内容与现有文件相同则不做修改，只验证。
-2. CX8 不是 IB 模式时用 `mlxconfig` 设置 `LINK_TYPE_P1=IB`，需要重启：`ib_mode.reboot` 为 `never` 时标记失败，`ask` 时询问（或 `--yes`），`auto` 时重启并等待主机回来。
-3. 备份 `/etc/netplan`，写入新文件（删除不再需要的 testkit 文件），`netplan generate` 失败则恢复；启动 `systemd-run` 定时器，`rollback_seconds` 秒后恢复备份并重新 apply；后台执行 `netplan apply`。
-4. 经 LOM 重新连接，执行关键检查：以 LOM 地址为源到控制机的路由走 LOM（`ip route get <控制机> from <LOM 地址>`，策略路由生效）、只有一条经 mgmt 的默认路由、mgmt 地址与 MTU、能 ping 通 mgmt 网关。全部通过才停止回滚定时器；否则等待自动回滚并确认已恢复，记为 fail。
-5. 全部主机完成后做完整检查：storage、IPoIB 地址与 MTU，IB 端口 ACTIVE 与速率，经 mgmt、storage、每个 rail ping 同 rack 的下一台主机（rack 内只有一台时选其他主机）。完整检查失败记为 fail，但保留配置。
-
-`--dry-run` 只做第 1、2 步的判断并打印每个文件的 netplan diff。只支持默认分区 `pkey 0x7fff`。
-
-### bond（设计，尚未实现）
-
-需要组 bond 时（例如 BF3 两个口做 LACP 承载 mgmt），作为 S4 之后单独执行的一步，复用 S4 的引擎，不另写脚本：
-
-- 命令：`testkit net bond apply|verify [--dry-run]`。与交换机侧 LACP 配置要协同，执行时机与 S4 不同，所以单独成命令；但备份、`systemd-run` 定时回滚、关键检查、冲突检测与主机锁全部复用 S4，bond 改动 mgmt 时最容易把主机配失联，正需要这套保护。
-- 配置：`network.bonds.<名字>: {members: [mgmt, storage] 或 PCI 列表, mode: 802.3ad, lacp_rate, mii_monitor_interval, transmit_hash_policy, mtu}`；角色可改为引用 bond，例如 `mgmt: {bond: bond0}`，地址与路由随之写到 bond 上。
-- 文件：`90-static-bond.yaml`。`90-static-mgmt-storage.yaml` 中成员口的条目改为只做匹配、不配地址，同一次下发中一起更新。
-- 验证：`/proc/net/bonding/<bond>` 中所有成员 `MII Status: up`、LACP partner MAC 非全零且各成员一致、bond 速率与 MTU 符合预期，再加 S4 原有的地址、路由与 ping 检查。
+- BF3 模式取 `INTERNAL_CPU_OFFLOAD_ENGINE`（`DISABLED(1)` 为 NIC 模式）；LOM = 承载本次 SSH 会话的接口，记录地址、网关与控制机地址；serial 取自 DMI（`/sys/class/dmi/id/product_serial`，否则 `dmidecode`），报告中显示。
+- 检查：GPU、CX8、BF3 口数量，链路层、端口 ACTIVE、速率，BF3 模式，与金样本的 rail↔GPU↔RDMA 设备↔NUMA 映射一致；`plan_pci` 列出 network.yaml 中在主机上找不到的 PCI，以及 compute 顺序与按 GPU 距离得到的 rail 顺序不一致的情况。结果写入 `runs/nic/<主机>.json`，测试项中的 `{mgmt_if}`、`{ib_hcas}` 由此填充。S3 不通过不会把主机排除在后续测试之外。
 
 ## 执行测试
 
@@ -261,7 +210,7 @@ testkit report [--out DIR] [--title T] [--archive]
 
 | 采集 | 判定 |
 |---|---|
-| `nvidia-smi --query-gpu` | GPU 数量等于 `cluster.yaml` 中的 `gpus` |
+| `nvidia-smi --query-gpu` | GPU 数量等于 `nic.expect.gpus`（平台默认 4） |
 | `nvidia-smi nvlink -s` | 每张 GPU 至少 `nvlink_per_gpu`（默认 18）条链路 up，列出掉线链路编号；各链路速率一致 |
 | `nvidia-smi topo -p2p n` | 节点内 GPU 两两 `OK`（`p2p: false` 关闭） |
 | `/sys/class/infiniband/*/ports/*` | IB link layer 的端口数等于 `ib_ports`（默认 4）、全部 ACTIVE、速率不低于 `ib_rate_gbps` |
@@ -284,7 +233,7 @@ testkit report [--out DIR] [--title T] [--archive]
 | `nvlink.pairs`（L2） | `pairs`：`mnnvbandwidth.gpuPairs=all`，每对 GPU 1 MiB 读（文本输出，含 Pairs Planned/Passed/Failed）；`bandwidth`：正常模式，默认 `targetNumPairs=-1` 测全部有向对的 CE 读、写（`--json`） | Planned = N(N−1)/2 且 Failed = 0；错误中出现的主机记为失败；nvbandwidth 矩阵中每张 GPU（作为源的行、作为目的的列）的中位数与 rack 中位数比较，离群 GPU 所在主机失败；低于 `baseline` 的 GPU 对失败 |
 | `nvlink.fabric`（L3） | 每个 NVLoom suite 一步：`gpu-to-rack`、`pairwise`、`all-to-one`、`multicast`、`latency`、`fabric-stress`（`time_to_run` 按 suite 设置，`rich_output` 的 suite 输出每个 GPU 对） | 每个 suite 的 DCGM 结果为 Pass；JSON 中失败的 GPU 记到对应主机；nvloom_cli 输出的每个测试用例按行（GPU）比较中位数，离群 GPU 所在主机失败；延迟类（ns）以高为差 |
 
-DCGM 的 Pass 只表示传输完成，不检查带宽；带宽和延迟由 testkit 从 workload 日志解析（nvbandwidth 的 `rank N (host), device D` 与矩阵；nvloom_cli 的 `Process` 行、矩阵与 `Min/Med/Max`）。主机名经各主机的 `hostname` 与 `cluster.yaml` 地址映射到 testkit 主机名。组卡片显示步骤、测试用例汇总（最小、中位数、最大、离群 GPU 数）、离群 GPU、离群 GPU 对和错误；每台主机的指标为其最差 GPU 的中位数。
+DCGM 的 Pass 只表示传输完成，不检查带宽；带宽和延迟由 testkit 从 workload 日志解析（nvbandwidth 的 `rank N (host), device D` 与矩阵；nvloom_cli 的 `Process` 行、矩阵与 `Min/Med/Max`）。主机名经各主机的 `hostname` 与 network.yaml 地址映射到 testkit 主机名。组卡片显示步骤、测试用例汇总（最小、中位数、最大、离群 GPU 数）、离群 GPU、离群 GPU 对和错误；每台主机的指标为其最差 GPU 的中位数。
 
 实机待确认：nv-hostengine 改监听地址后其他依赖 127.0.0.1:5555 的服务（如 dcgm-exporter）在测试期间连不上；`targetNumPairs=-1` 在 72 GPU 上的耗时（据此调 `time_to_run`）；workload 日志的实际文件名与位置。
 
@@ -309,10 +258,10 @@ mpi 模式，镜像 `images.nixl_benchmark`（[`benchmarks/nixl-benchmark`](../n
 每组在 rank 0 主机上启动 sbcli 镜像（`images.sbcli`，需与主机同为 arm64），由它对组内所有主机执行 `sb deploy` / `sb run`（脚本 `node_scripts/sb_run.sh`）。worker 镜像 `images.sb_worker` 须已在每台主机上（ISO 预置），预检会逐台检查。
 
 - inventory：名称为主机的 mgmt 地址（MPI 走业务网），`ansible_host` 为 LOM 地址（SSH）。
-- SSH 密钥：本次运行生成的密钥在预检时加入每台主机的 `authorized_keys`，结束后（包括失败、取消）删除，rank 0 主机上的私钥同时删除；不会把 `cluster.yaml` 中的密钥拷到主机。
+- SSH 密钥：本次运行生成的密钥在预检时加入每台主机的 `authorized_keys`，结束后（包括失败、取消）删除，rank 0 主机上的私钥同时删除；不会把控制机的密钥拷到主机。
 - `benchmarks.include` / `exclude` 改写配置的 `superbench.enable`。
 - `timeout`（默认 14400 秒）覆盖 `runtime.run_timeout`。
-- 主机名：SuperBench 用各主机的短 OS 主机名（Ansible facts）命名节点和 ib-traffic 指标，testkit 预检时读每台主机的 `hostname`，结果映射回 `cluster.yaml` 中的主机，即使 OS 主机名与 `cluster.yaml` 不同也能对上。
+- 主机名：SuperBench 用各主机的短 OS 主机名（Ansible facts）命名节点和 ib-traffic 指标，testkit 预检时读每台主机的 `hostname`，结果映射回 network.yaml 中的主机，即使 OS 主机名与 network.yaml 不同也能对上。
 - RDMA 配对（`ib_pairs`）：`rack_adjacent`（`superbench.rack` 默认：每个 rack 内 tray 1-2、3-4……，所有 rack 同一轮；奇数台时最后一台在第二轮与第一台配对）、`rack_half`（tray i 与 i+n/2）、`cross_rack`（`superbench.cross_rack` 默认：rack A 第 i 台与 rack B 第 i 台；多于 2 个 rack 时每种 rack 组合一轮，`cross_rack_rounds: first` 只跑第一轮）、`round_robin`（SuperBench 原生 one-to-one，所有节点对，n−1 轮）。前三种由 testkit 生成 ib-traffic 配对文件：先按 SuperBench hostfile 的顺序（OS 主机名不区分大小写排序）换算行号，写到每台主机的 `/mnt/testkit/<run>/<项>-<组>/ib-pairs.txt`（worker 容器挂载 `/mnt`），用 `--config-override ...ib-traffic*.parameters.config=` 传给 `ib-traffic`，结束后删除；配对表保存在 `raw/ib-pairs-hosts.tsv`。每对的 4 个 rail 同时打流（rail k ↔ rail k）。
 
 | 测试项 | 配置 | 结果 |
@@ -351,7 +300,7 @@ NCCL 网卡校验（`superbench.common.hca_check`，默认 `fail`）：从 Super
 
 ### smoke：检查节点能否运行测试容器
 
-`smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在某台主机的 `env` 中设置 `TESTKIT_SMOKE_EXIT: "1"` 可让它单独失败。
+`smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在 tests.yaml `hosts.<主机>.env` 中设置 `TESTKIT_SMOKE_EXIT: "1"` 可让它单独失败。
 
 ## 快速体验（不需要真实节点）
 
@@ -372,8 +321,8 @@ PYTHONPATH=$OLDPWD python3 -m testkit doctor
 
 ```bash
 testkit init | validate | plan | doctor
-testkit nic discover | nic golden <host>      # S3
-testkit net apply [--dry-run]                 # S4
+testkit net-check [--static]                  # 测试前只读检查网络
+testkit nic discover | nic show [host]        # S3
 testkit run [item ...] [--hosts R1] [--exclude h1,h2] [--from item] [--force] [--no-gate]   # L0–L4
 testkit status | logs <run-id> | cancel <run-id>
 testkit report                                # S9
@@ -384,12 +333,12 @@ testkit report                                # S9
 ```bash
 make test-testkit       # 或 cd benchmarks/testkit && python3 -m unittest discover -s tests -v
 benchmarks/testkit/e2e/run-e2e.sh [--keep]       # 执行器端到端测试，约 3 分钟
-benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3/S4 端到端测试，约 4 分钟
+benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3 与 net-check 端到端测试，约 2 分钟
 ```
 
 端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `testkit`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`testkit cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错），和用 sb 替身镜像跑 `superbench`（替身经真实 SSH 用本次运行的密钥连每台主机并检查 worker 镜像，输出 SuperBench 格式结果；验证 include/exclude、按主机拆分、ib-traffic 节点对、运行后密钥删除、报告 RDMA 矩阵），以及 `imex`（主机上放替身 IMEX 脚本与 `nvidia-imex-ctl`；验证节点列表一致、等待 domain、矩阵解析，T1 经 mpirun 在各容器编译，无 CUDA 时报告编译失败，T2 跳过）、`superbench.nvl_domain`、`superbench.all`（小消息时延、NCCL 网卡使用表）与 `sharp.scale_out`（O-B/O-A 对比与 NCCL 日志提取），以及 imex 关卡停止与 `--no-gate`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
-S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），LOM 由 netplan 静态配置（含默认路由，模拟 testkit 接入前已下发的状态），另有 mgmt、storage 和 4 个 rail 网络；容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。主机由 `testkit import` 导入 CSV 规划表（含 PCI、网关、存储路由、`ib_mtu`）。覆盖：导入、识别与金样本比对、dry-run、按 PCI 下发（默认路由、LOM 策略路由与 LOM 默认路由移入策略表、BF3 MTU 不变、IB MTU、存储路由、跨 rail ping）、重新识别后重复执行无变更、错误网关触发自动回滚并恢复、`net verify`、规划表 PCI 在主机上不存在时拒绝、冲突条目拒绝下发、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。
+S3 与 net-check 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），有 LOM、mgmt、storage 和 4 个 rail 网络；网络在启动时用 netplan 配好（模拟现场脚本：默认路由经 mgmt、LOM 策略路由、存储路由、IPoIB MTU），容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。覆盖：`validate --ssh`（`TESTKIT_SSH_CONFIG` 指定密钥）、`nic discover`（按 PCI 找到 mgmt/storage 口、rail 顺序、策略表中的 LOM 网关、金样本比对、serial、PCI 不存在时失败）、`net-check`（全部通过；MTU 错误、PCI 不存在时 FAIL 并给出与多数主机不一致的警告；不改动主机）、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。两个 e2e 使用同名容器，不能同时运行。
 
 只用标准库和 PyYAML，语法保持兼容 Python 3.8。
 
@@ -401,7 +350,7 @@ S3/S4 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、
 | P1 | 配置加载与校验、主机选择、分组与 rank、`init/validate/plan/doctor` | 完成 |
 | P2 | 执行器：SSH、远程 Docker、三种启动模式、结果拉回、`run/status/logs/cancel` | 完成 |
 | P6 | HTML 报告 | 完成 |
-| P3 | S3 网卡识别、S4 网络配置 | 完成（实机待确认） |
+| P3 | S3 网卡识别、`net-check` 网络检查（S4 下发由现场脚本完成） | 完成（实机待确认） |
 | P4 | S5 DCGM | 完成（实机待确认） |
 | P5 | S6 SuperBench（含 RDMA 打流） | 完成（实机待确认） |
 | P7 | S7 IMEX、S7a SHARP | 完成（实机待确认） |

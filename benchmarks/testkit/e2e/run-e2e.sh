@@ -54,15 +54,16 @@ cleanup() {
 testkit() {
     local dir=$1
     shift
-    PYTHONPATH="$TESTKIT" python3 -m testkit -c "$E2E_ROOT/$dir/cluster.yaml" -t "$E2E_ROOT/$dir/tests.yaml" "$@"
+    TESTKIT_SSH_CONFIG="$E2E_ROOT/ssh_config" PYTHONPATH="$TESTKIT" \
+        python3 -m testkit -n "$E2E_ROOT/$dir/network.yaml" -t "$E2E_ROOT/$dir/tests.yaml" "$@"
 }
 
 # testkit_bg DIR ARGS...: start testkit in the background; $! is the python process itself.
 testkit_bg() {
     local dir=$1
     shift
-    (PYTHONPATH="$TESTKIT" exec python3 -m testkit -c "$E2E_ROOT/$dir/cluster.yaml" \
-        -t "$E2E_ROOT/$dir/tests.yaml" "$@") &
+    (TESTKIT_SSH_CONFIG="$E2E_ROOT/ssh_config" PYTHONPATH="$TESTKIT" exec python3 -m testkit \
+        -n "$E2E_ROOT/$dir/network.yaml" -t "$E2E_ROOT/$dir/tests.yaml" "$@") &
 }
 
 # json FILE EXPR: print a value from a JSON file, EXPR is Python on variable d.
@@ -81,18 +82,18 @@ scenario() {
     local dir=$1 scope=$2 mode=$3 sleep=$4 timeout=$5 fail_host=${6:-} extra=${7:-}
     mkdir -p "$E2E_ROOT/$dir"
     {
-        echo "platform: gb300"
-        echo "ssh: {user: root, key: $E2E_ROOT/id_ed25519, port: 22, parallel: 8, connect_timeout: 5}"
+        echo "version: 1"
         echo "hosts:"
         local i=1
         for h in "${HOSTS[@]}"; do
-            echo "  - {name: $h, rack: R1, tray: $i, ssh: $SSH_NET.1$i, mgmt: $MGMT_NET.1$i/24$( \
-                [ "$h" = "$fail_host" ] && echo ", env: {TESTKIT_SMOKE_EXIT: '1'}")}"
+            echo "  $h: {rack: R1, tray: $i, lom: {ip: $SSH_NET.1$i/24}, mgmt: {pci: \"0009:01:00.0\", ip: $MGMT_NET.1$i/24}}"
             i=$((i + 1))
         done
-    } > "$E2E_ROOT/$dir/cluster.yaml"
+    } > "$E2E_ROOT/$dir/network.yaml"
     cat > "$E2E_ROOT/$dir/tests.yaml" <<EOF
 platform: gb300
+golden: ${HOSTS[0]}
+hosts: {$([ -n "$fail_host" ] && echo "$fail_host: {env: {TESTKIT_SMOKE_EXIT: '1'}}")}
 images: {sb_worker: $WORKER_IMAGE, dcgm: $DCGM_IMAGE, sbcli: $SBCLI_IMAGE}
 image_pull: skip
 runtime:
@@ -115,6 +116,9 @@ setup() {
     cleanup
     mkdir -p "$E2E_ROOT/noderes"
     ssh-keygen -q -t ed25519 -N "" -f "$E2E_ROOT/id_ed25519"
+    # testkit has no ssh settings of its own; the key comes from an extra ssh config file.
+    printf 'Host *\n  IdentityFile %s\n  UserKnownHostsFile %s\n  ConnectTimeout 5\n' \
+        "$E2E_ROOT/id_ed25519" "$E2E_ROOT/known_hosts" > "$E2E_ROOT/ssh_config"
     cp "$E2E_ROOT/id_ed25519.pub" "$E2E_ROOT/authorized_keys"
     chmod 600 "$E2E_ROOT/authorized_keys"
     docker network create --subnet "$SSH_NET.0/24" testkit-e2e-ssh >/dev/null

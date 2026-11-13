@@ -122,7 +122,7 @@ def excluded_hosts(state, item_id):
     order = [i.id for i in ITEMS]
     before = set(order[:order.index(item_id)])
     out = {}
-    # S3 results only guide "testkit net apply"; S4 (network) is what later items depend on.
+    # S3 (nic) only describes the hosts; a mismatch there does not keep a host out of the tests.
     before.discard("nic")
     for host, items in state.get("hosts", {}).items():
         for other, entry in items.items():

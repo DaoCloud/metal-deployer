@@ -180,7 +180,7 @@ class FlowTest(unittest.TestCase):
     def setUp(self):
         self.ws = Workspace(racks=1, trays=3)
         self.ws.write("tests.yaml", TESTS)
-        self.cluster, self.tests, problems = load_both(self.ws.cluster, self.ws.tests)
+        self.cluster, self.tests, problems = load_both(self.ws.network, self.ws.tests)
         self.assertEqual(problems.errors, [])
         self.lines = []
 

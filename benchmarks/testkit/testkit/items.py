@@ -8,7 +8,7 @@ class Item:
     mode is how containers start: per-node (same entrypoint on every node, joined by RANK),
     mpi (sshd containers, mpirun from rank 0), delegate (one control container that
     fans out by itself, such as SuperBench), or host (no container: commands run on the
-    hosts over ssh). cli items are run by their own command ("testkit nic", "testkit net").
+    hosts over ssh). cli items are run by their own command ("testkit nic").
     batch means one invocation covers every group, as sb does for single-node configs.
     layer is the acceptance layer (L0 link state ... L4 NCCL, L5 MoE); gate is the
     default of tests.yaml "gate": a gated item that does not pass stops the run.
@@ -44,9 +44,8 @@ class Item:
 
 
 ITEMS = [
-    # S3/S4 run through "testkit nic" and "testkit net", not "testkit run"; listed for state and report.
+    # S3 runs through "testkit nic", not "testkit run"; listed for state and report.
     Item("nic", "nic", None, "cli", "", "P3", "S3 网卡识别"),
-    Item("network", "network", None, "cli", "", "P3", "S4 网络配置"),
     Item("smoke", "smoke", None, "per-node", "sb_worker", "P2", "冒烟测试（smoke）"),
     # L0: static link state and error counters of every NVLink and IB port, read-only.
     Item("links", "links", None, "host", "", "P11", "L0 链路状态与错误计数", layer="L0", gate=True),

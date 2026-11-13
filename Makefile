@@ -120,6 +120,10 @@ test-sbcli-interactive: ## Open a shell in the local sbcli image
 test-testkit: ## Run testkit unit tests (benchmarks/testkit)
 	cd benchmarks/testkit && python3 -m unittest discover -s tests -v
 
+.PHONY: build-testkit-bin
+build-testkit-bin: ## Build single-file testkit binaries for amd64 and arm64 (benchmarks/testkit/dist)
+	benchmarks/testkit/build-binary.sh
+
 .PHONY: clean
 clean: ## Remove locally built sbcli images
 	-docker rmi $(SBCLI_IMAGE_NAME):$(SBCLI_IMAGE_TAG) $(SBCLI_IMAGE_NAME):$(SBCLI_IMAGE_TAG)-arm64 2>/dev/null

@@ -3,7 +3,7 @@
 ib-traffic reads a pairing file (--config): one line per round, "i,j;k,l" pairs that run at the same
 time, where i is the line of the host in SuperBench's hostfile. SuperBench writes that hostfile from
 the hosts' short OS hostnames (Ansible "ansible_hostname"), sorted case-insensitively, so the indexes
-are computed from the hostnames read on the hosts, not from cluster.yaml order.
+are computed from the hostnames read on the hosts, not from network.yaml order.
 
 Pairings (nodes in testkit rank order: rack, then tray):
   rack_adjacent  inside each rack: tray 1-2, 3-4, ...; all racks in the same round
