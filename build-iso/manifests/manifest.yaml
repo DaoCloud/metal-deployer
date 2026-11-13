@@ -143,6 +143,15 @@ basic:
     required: false
     filename: gdrcopy-2.5.1-ubuntu2404.deb
     install_method: apt
+  - name: yq
+    description: mikefarah/yq v4.54.3 静态二进制（amd64）,首次启动装到 /usr/local/bin/yq
+    url: https://github.com/mikefarah/yq/releases/download/v4.54.3/yq_linux_amd64
+    version: 4.54.3
+    sha256: 129534601871538efe0ba4c5e62a34fb1d5f469bcb975c4fddeb467d82974973
+    required: false
+    filename: yq_linux_amd64
+    install_method: copy
+    install_path: /usr/local/bin/yq
   - name: datacenter-gpu-manager
     description: NVIDIA DCGM 4.x（Ubuntu 24.04,GPU 监控管理）
     url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/datacenter-gpu-manager-4-proprietary_4.4.2-1_amd64.deb

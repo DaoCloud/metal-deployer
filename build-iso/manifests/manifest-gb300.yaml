@@ -26,6 +26,7 @@
 #   Container Toolkit 1.20.0                 1.20.0                   exact
 #   Docker Engine    29.6.2                  29.6.2 (DGX repo build)  exact
 #   GDRCopy          2.6                     2.6-1 (DGX repo arm64)   exact
+#   yq               (not in DGX OS)         4.54.3 (mikefarah, static) /usr/local/bin/yq
 #   GDS              1.15 (CUDA 13.0)        nvidia-fs signed module + libcufile (via cuda-toolkit) + gds-tools 1.15.1.6
 #   NVSM / NVVCT     26.06.03 / 1.0.00-1     not shipped              DGX-only repo component, not publicly downloadable
 #   MIG manager      0.15.0                  0.15.0                   exact (optional)
@@ -103,7 +104,7 @@ basic:
   # ---------------------------------------------------------------------------
   - name: linux-nvidia-64k-hwe-24.04
     description: Canonical NVIDIA 64K-page HWE kernel metapackage（GB200/GB300 官方推荐内核）
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 2a363316c85fff5fdcd08d80af0f0225a17104f2e9fd68c976a338ebb3f6466e
     required: true
@@ -112,7 +113,7 @@ basic:
     group: kernel
   - name: linux-image-nvidia-64k-hwe-24.04
     description: NVIDIA 64K kernel image metapackage
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-image-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-image-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: f6acb13f8ecd68039ea6480159a86759100b3263f7b954a7dcf8a8d0acfe6124
     required: true
@@ -121,7 +122,7 @@ basic:
     group: kernel
   - name: linux-headers-nvidia-64k-hwe-24.04
     description: NVIDIA 64K kernel headers metapackage
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-headers-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-headers-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: dc1125e10a2bed245d1e8a3f4caaad7a64cc678262c804f070cfdbd7bcee9173
     required: true
@@ -130,7 +131,7 @@ basic:
     group: kernel
   - name: linux-tools-nvidia-64k-hwe-24.04
     description: NVIDIA 64K kernel tools metapackage（perf 等）
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-meta-nvidia-7.0/linux-tools-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-tools-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 8a1c54a4155933257c90dfe484de15149b01650394027f7230fec61e5d53c33d
     required: false
@@ -139,7 +140,7 @@ basic:
     group: kernel
   - name: linux-image-7.0.0-1024-nvidia-64k
     description: Signed kernel image 7.0.0-1024-nvidia-64k（Secure Boot 可用）
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-signed-nvidia-7.0/linux-image-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-image-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 4028203bd005dab33fa718667564ec3c61d29c9c8892b16ed87e2f945862c400
     required: true
@@ -148,7 +149,7 @@ basic:
     group: kernel
   - name: linux-modules-7.0.0-1024-nvidia-64k
     description: Kernel modules for 7.0.0-1024-nvidia-64k
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-modules-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-modules-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 4cf0e1de80ab6e9186b843127f3fa78aeb1ad877cfd1667f1aadd6f8b85dd1e2
     required: true
@@ -157,7 +158,7 @@ basic:
     group: kernel
   - name: linux-headers-7.0.0-1024-nvidia-64k
     description: Kernel headers for 7.0.0-1024-nvidia-64k（DKMS 必需）
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-headers-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-headers-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 7fbffbd6653664434525c1d1d72ec207be744b161060752b75fa572b6f5b3efd
     required: true
@@ -166,7 +167,7 @@ basic:
     group: kernel
   - name: linux-nvidia-7.0-headers-7.0.0-1024
     description: Common kernel headers for linux-nvidia-7.0（DKMS 必需,arch all）
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-nvidia-7.0-headers-7.0.0-1024_7.0.0-1024.25~24.04.1_all.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-nvidia-7.0-headers-7.0.0-1024_7.0.0-1024.25~24.04.1_all.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 668f99e3dfa538b483a90d05d6061e4cecd00faeb8ab14dd0d27bf35d253b151
     required: true
@@ -175,7 +176,7 @@ basic:
     group: kernel
   - name: linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k
     description: Prebuilt signed nvidia-fs (GPUDirect Storage) module for 7.0.0-1024-nvidia-64k
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-modules-nvidia-fs-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: e03d84c7f8438d21eb34632790f94c2b8be390f710f8d007acb1741ecd1975a6
     required: false
@@ -184,7 +185,7 @@ basic:
     group: kernel
   - name: linux-tools-7.0.0-1024-nvidia-64k
     description: Kernel tools for 7.0.0-1024-nvidia-64k
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-tools-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-tools-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: 362dac8adeec6ac41cbecb218ce0710461131ed9ccb6ca6f127da0820c2b3dbb
     required: false
@@ -193,7 +194,7 @@ basic:
     group: kernel
   - name: linux-nvidia-7.0-tools-7.0.0-1024
     description: Common kernel tools for linux-nvidia-7.0
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-nvidia-7.0/linux-nvidia-7.0-tools-7.0.0-1024_7.0.0-1024.25~24.04.1_arm64.deb
+    url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-nvidia-7.0-tools-7.0.0-1024_7.0.0-1024.25~24.04.1_arm64.deb
     version: 7.0.0-1024.25~24.04.1
     sha256: dbfd5cede3731a3fa5807d6afe9a9b0bffe95476f85ca07d796cee9dfd7070fa
     required: false
@@ -382,6 +383,15 @@ basic:
     required: false
     filename: gdrcopy-2.6.tar.gz
     install_method: build
+  - name: yq
+    description: mikefarah/yq v4.54.3 静态二进制（arm64）,首次启动装到 /usr/local/bin/yq
+    url: https://github.com/mikefarah/yq/releases/download/v4.54.3/yq_linux_arm64
+    version: 4.54.3
+    sha256: 89f69310b61b68d1245065a1241d1fc843f7a36cd6103ffd77ad987613bd1b67
+    required: false
+    filename: yq_linux_arm64
+    install_method: copy
+    install_path: /usr/local/bin/yq
 
   # ---------------------------------------------------------------------------
   # DCGM 4.7.1 — sbsa. Keep all split packages at 1:4.7.1-2.
@@ -1208,7 +1218,7 @@ cuda:
         group: gpu-driver
       - name: linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04
         description: 签名 NVIDIA 580 open 内核模块元包（跟随 linux-nvidia-64k-hwe-24.04 内核）
-        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/l/linux-restricted-modules-nvidia-7.0/linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
+        url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04_7.0.0-1024.25~24.04.1_arm64.deb
         version: 7.0.0-1024.25~24.04.1
         required: true
         filename: linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04_7.0.0-1024.25_arm64.deb
@@ -1216,7 +1226,7 @@ cuda:
         group: gpu-driver
       - name: linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k
         description: 签名 NVIDIA 580 open 内核模块（nvidia.ko/nvidia-uvm/peermem,7.0.0-1024-nvidia-64k）
-        url: http://ports.ubuntu.com/ubuntu-ports/pool/restricted/l/linux-restricted-signatures-nvidia-7.0/linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
+        url: https://launchpad.net/ubuntu/+archive/primary/+files/linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k_7.0.0-1024.25~24.04.1_arm64.deb
         version: 7.0.0-1024.25~24.04.1
         required: true
         filename: linux-modules-nvidia-580-server-open-7.0.0-1024-nvidia-64k_7.0.0-1024.25_arm64.deb

@@ -465,6 +465,23 @@ prepare_target_apt_solution() {
     [ "$driver_branch" != "-" ] || driver_branch=""
     [ "$driver_version" != "-" ] || driver_version=""
 
+    # The solve needs the manifest debs (CUDA local repo, pinned driver and
+    # kernel); --dry-run does not download them.
+    local missing
+    missing=$(extract_manifest_json | ruby -rjson -e '
+      m = JSON.parse(STDIN.read)
+      Array(m["packages"]).each do |p|
+        next if p["download"] == false
+        next unless p["url"] && p["filename"].to_s.end_with?(".deb")
+        puts p["filename"] unless File.file?(File.join(ARGV[0], p["filename"]))
+      end
+    ' "$PACKAGE_DIR" | wc -l)
+    if [ "$DRY_RUN" = "true" ] && [ "$missing" -gt 0 ]; then
+        echo "[dry-run] ${missing} manifest deb(s) not downloaded; skip the offline package solve."
+        rm -f "$direct_list" "$manifest_debs" "$solution" "$keep"
+        return 0
+    fi
+
     seed_target_status
 
     # Held packages (the ISO kernel) stay as installed; requesting them by name
@@ -533,7 +550,9 @@ prepare_target_apt_solution() {
     echo "deb [trusted=yes] file:${local_dir} ./" >> "${APT_ROOT}/etc/apt/sources.list.d/metal-deployer-local.list"
     mapfile -t direct_names < <(cut -f1 "$direct_list" | sort -u)
     pin_names="${direct_names[*]}"
-    printf 'Package: %s\nPin: origin ""\nPin-Priority: 1001\n' "$pin_names" >> "${APT_ROOT}/etc/apt/preferences.d/metal-deployer.pref"
+    if [ -n "$pin_names" ]; then
+        printf 'Package: %s\nPin: origin ""\nPin-Priority: 1001\n' "$pin_names" >> "${APT_ROOT}/etc/apt/preferences.d/metal-deployer.pref"
+    fi
     # Mirror init_system.sh pin_nvidia_driver_branch: the "default" branch
     # installs the CUDA local repo driver, never a newer Ubuntu archive build
     # of the same branch (which would land in packages/ and be installed even

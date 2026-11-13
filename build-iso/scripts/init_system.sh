@@ -505,6 +505,16 @@ install_cpu_performance_service() {
     systemctl start cpu-performance.service || true
 }
 
+install_yq() {
+    local bin="${PACKAGE_DIR}/yq_linux_$(dpkg --print-architecture)"
+    if [ ! -f "$bin" ]; then
+        log "Skip yq install: ${bin} not found."
+        return 0
+    fi
+    install -m 0755 "$bin" /usr/local/bin/yq
+    /usr/local/bin/yq --version
+}
+
 run_optional_script() {
     local script="$1"
     shift || true
@@ -551,6 +561,7 @@ main() {
     disable_automatic_kernel_updates
     run_stage nouveau disable_nouveau
     run_stage offline_debs install_offline_debs
+    run_stage yq_install install_yq
 
     run_stage doca_install run_optional_script install_doca.sh
     run_stage gpu_debs install_gpu_debs
