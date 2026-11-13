@@ -3,8 +3,12 @@ import os
 import tarfile
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
-from testkit.ssh import safe_extract
+from testkit.runners import inventory
+from testkit.ssh import Remote, safe_extract, settings
+from testkit.util import ConfigError
 
 
 def archive(entries):
@@ -60,3 +64,24 @@ class SafeExtractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SshPortTest(unittest.TestCase):
+
+    def test_default_port(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(settings()["port"], 22)
+
+    def test_port_from_env_reaches_ssh_and_inventory(self):
+        host = SimpleNamespace(name="h1", ssh="10.0.0.1", mgmt_ip="10.1.0.1")
+        with mock.patch.dict(os.environ, {"TESTKIT_SSH_PORT": "2022"}, clear=True):
+            cfg = settings()
+        argv = Remote(cfg).argv(host, "true")
+        self.assertEqual(argv[argv.index("-p") + 1], "2022")
+        self.assertIn("ansible_port=2022", inventory([SimpleNamespace(host=host)], cfg, "/k"))
+
+    def test_invalid_port(self):
+        for value in ("abc", "0", "70000", "-1"):
+            with mock.patch.dict(os.environ, {"TESTKIT_SSH_PORT": value}, clear=True):
+                with self.assertRaises(ConfigError, msg=value):
+                    settings()
