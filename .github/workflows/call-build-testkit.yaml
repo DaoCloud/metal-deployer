@@ -77,7 +77,7 @@ jobs:
 
       - name: Smoke test binary
         run: |
-          bin=$(ls benchmarks/testkit/dist/testkit-*-linux-${{ matrix.arch }})
+          bin=$(realpath benchmarks/testkit/dist/testkit-*-linux-${{ matrix.arch }})
           "$bin" --version
           cd "$(mktemp -d)" && "$bin" init && "$bin" validate
 

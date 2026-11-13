@@ -39,6 +39,9 @@ cleanup() {
     if [ "$KEEP" = 1 ]; then log "kept hosts and $ROOT"; return; fi
     docker rm -f "${HOSTS[@]}" >/dev/null 2>&1 || true
     for n in "${NETS[@]}"; do docker network rm "testkit-net-${n%%:*}" >/dev/null 2>&1 || true; done
+    # Containers may write root-owned files here; a non-root runner removes them through a container.
+    rm -rf "$ROOT" 2>/dev/null ||
+        docker run --rm -v "$ROOT:/r" "$IMAGE" sh -c 'rm -rf /r/* /r/.[!.]*' >/dev/null 2>&1 || true
     rm -rf "$ROOT"
 }
 testkit() {   # testkit NETWORK_FILE ARGS...

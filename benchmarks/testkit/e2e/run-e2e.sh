@@ -48,6 +48,9 @@ cleanup() {
     docker ps -aq --filter label=testkit.run | xargs -r docker rm -f >/dev/null 2>&1 || true
     docker rm -f "${HOSTS[@]}" >/dev/null 2>&1 || true
     docker network rm testkit-e2e-ssh testkit-e2e-mgmt >/dev/null 2>&1 || true
+    # Containers write root-owned files here; a non-root runner removes them through a container.
+    rm -rf "$E2E_ROOT" 2>/dev/null ||
+        docker run --rm -v "$E2E_ROOT:/r" "$WORKER_IMAGE" sh -c 'rm -rf /r/* /r/.[!.]*' >/dev/null 2>&1 || true
     rm -rf "$E2E_ROOT"
 }
 
