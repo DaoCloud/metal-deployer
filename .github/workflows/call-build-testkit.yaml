@@ -1,0 +1,191 @@
+name: Call Build testkit
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release tag; when set, binaries are named with it and uploaded to the GitHub release
+        required: false
+        type: string
+        default: ''
+      e2e:
+        description: Run the Docker-based end-to-end tests
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: testkit unit tests (Python 3.8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+
+      # testkit must keep running on Python 3.8 control machines.
+      - name: Run unit tests
+        working-directory: benchmarks/testkit
+        run: uv run --no-project --python 3.8 --with 'PyYAML>=5.1' python -m unittest discover -s tests -v
+
+  e2e:
+    name: testkit e2e
+    if: ${{ inputs.e2e }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: python3 -c 'import yaml' || (sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml)
+
+      # Both scripts use the same container names: run them one after the other.
+      - name: Executor e2e (run-e2e.sh)
+        run: benchmarks/testkit/e2e/run-e2e.sh
+
+      - name: NIC and net-check e2e (run-net-e2e.sh)
+        run: benchmarks/testkit/e2e/run-net-e2e.sh
+
+  build:
+    name: Build testkit binary (${{ matrix.arch }})
+    needs: [test]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build binary
+        env:
+          TESTKIT_VERSION: ${{ inputs.version }}
+        run: benchmarks/testkit/build-binary.sh ${{ matrix.arch }}
+
+      - name: Smoke test binary
+        run: |
+          bin=$(ls benchmarks/testkit/dist/testkit-*-linux-${{ matrix.arch }})
+          "$bin" --version
+          cd "$(mktemp -d)" && "$bin" init && "$bin" validate
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: testkit-linux-${{ matrix.arch }}
+          path: benchmarks/testkit/dist/testkit-*-linux-${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Upload testkit to GitHub release
+    needs: [build, e2e]
+    if: ${{ !cancelled() && inputs.version != '' && needs.build.result == 'success' && contains(fromJSON('["success", "skipped"]'), needs.e2e.result) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: testkit-linux-*
+          path: dist
+          merge-multiple: true
+
+      - name: Write checksums
+        working-directory: dist
+        run: |
+          chmod 755 testkit-*
+          sha256sum testkit-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload assets and update release notes
+        uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ inputs.version }}
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const marker = 'release-testkit';
+
+            async function getOrCreateRelease() {
+              try {
+                return (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+              } catch (error) {
+                if (error.status !== 404) throw error;
+              }
+              try {
+                return (await github.rest.repos.createRelease({
+                  owner, repo, tag_name: tag, name: tag, body: '', draft: false, prerelease: false
+                })).data;
+              } catch (error) {
+                // Another release job created it in the meantime.
+                if (error.status !== 422) throw error;
+                return (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data;
+              }
+            }
+
+            const release = await getOrCreateRelease();
+            const files = fs.readdirSync('dist').sort();
+            const existing = await github.paginate(github.rest.repos.listReleaseAssets, {
+              owner, repo, release_id: release.id, per_page: 100
+            });
+            for (const name of files) {
+              const old = existing.find(a => a.name === name);
+              if (old) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: old.id });
+              }
+              const data = fs.readFileSync(path.join('dist', name));
+              await github.rest.repos.uploadReleaseAsset({
+                owner, repo, release_id: release.id, name, data,
+                headers: { 'content-type': 'application/octet-stream', 'content-length': data.length }
+              });
+              core.info(`uploaded ${name}`);
+            }
+
+            const start = `<!-- ${marker}:start -->`;
+            const end = `<!-- ${marker}:end -->`;
+            const escape = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const sectionPattern = new RegExp(`\\n*${escape(start)}[\\s\\S]*?${escape(end)}\\n*`, 'g');
+            const current = (await github.rest.repos.getRelease({ owner, repo, release_id: release.id })).data;
+            const previousBody = (current.body || '').replace(sectionPattern, '\n').trimEnd();
+            const base = `https://github.com/${owner}/${repo}/releases/download/${tag}`;
+            const lines = [
+              start,
+              '## testkit Download',
+              '',
+              'Single-file binaries for the control machine (no Python needed; glibc 2.31+, Ubuntu 20.04 or later).',
+              '',
+              '| Platform | File |',
+              '| --- | --- |'
+            ];
+            for (const name of files.filter(f => f.startsWith('testkit-'))) {
+              const arch = name.replace(/^.*-linux-/, '');
+              lines.push(`| linux/${arch} | [\`${name}\`](${base}/${name}) |`);
+            }
+            lines.push('');
+            lines.push('```bash');
+            lines.push(`curl -fLO ${base}/testkit-${tag}-linux-$(dpkg --print-architecture)`);
+            lines.push(`curl -fLO ${base}/SHA256SUMS && sha256sum --ignore-missing -c SHA256SUMS`);
+            lines.push('```');
+            lines.push(end);
+
+            await github.rest.repos.updateRelease({
+              owner, repo, release_id: release.id,
+              body: [previousBody, lines.join('\n')].filter(Boolean).join('\n\n')
+            });

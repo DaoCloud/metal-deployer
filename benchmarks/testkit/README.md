@@ -10,7 +10,7 @@
 
 | 方式 | 依赖 | 说明 |
 |---|---|---|
-| 单文件二进制 | `ssh`；可选 `ssh-keygen`、`rsync` | `make build-testkit-bin`（即 `benchmarks/testkit/build-binary.sh`）用 docker buildx 生成 `dist/testkit-<版本>-linux-{amd64,arm64}` 与 `SHA256SUMS`，拷到控制机即可运行，不需要 Python；基于 glibc 2.31 构建，Ubuntu 20.04 及以上可用。离线环境推荐 |
+| 单文件二进制 | `ssh`；可选 `ssh-keygen`、`rsync` | 发版时 CI 构建 `testkit-<版本>-linux-{amd64,arm64}` 与 `SHA256SUMS` 并上传到对应 GitHub Release；本地用 `make build-testkit-bin`（即 `benchmarks/testkit/build-binary.sh`）经 docker buildx 生成到 `dist/`。拷到控制机即可运行，不需要 Python；基于 glibc 2.31 构建，Ubuntu 20.04 及以上可用。离线环境推荐 |
 | 直接运行 | Python ≥ 3.8、PyYAML、`ssh`；可选 `ssh-keygen`（mpi 模式）、`rsync`、`sb` | `pip install ./benchmarks/testkit` 后使用 `testkit`；开发时也可 `cd benchmarks/testkit && python3 -m testkit` |
 | 容器 | 能运行容器即可 | testkit 镜像内含 testkit、`sb` 与 GB300 配置（P9 提供） |
 
@@ -341,6 +341,8 @@ benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3 与 net-check 端到端测
 S3 与 net-check 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），有 LOM、mgmt、storage 和 4 个 rail 网络；网络在启动时用 netplan 配好（模拟现场脚本：默认路由经 mgmt、LOM 策略路由、存储路由、IPoIB MTU），容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。覆盖：`validate --ssh`（`TESTKIT_SSH_CONFIG` 指定密钥）、`nic discover`（按 PCI 找到 mgmt/storage 口、rail 顺序、策略表中的 LOM 网关、金样本比对、serial、PCI 不存在时失败）、`net-check`（全部通过；MTU 错误、PCI 不存在时 FAIL 并给出与多数主机不一致的警告；不改动主机）、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。两个 e2e 使用同名容器，不能同时运行。
 
 只用标准库和 PyYAML，语法保持兼容 Python 3.8。
+
+CI（`.github/workflows/testkit-ci.yaml`，改动 `benchmarks/testkit/**` 时触发）用 Python 3.8 跑单元测试，依次跑上面两个端到端测试，并在 amd64、arm64 runner 上各构建一个二进制（Actions artifact）。`release.yaml` 发版时同样构建，文件名用 release tag，上传到 GitHub Release 并在说明中加入下载表。
 
 ## 实施进度
 

@@ -10,6 +10,8 @@
 #        PIP_INDEX_URL passed to pip in the build
 #        BUILDER       buildx builder (default: the current one)
 #        OUT           output directory (default benchmarks/testkit/dist)
+#        TESTKIT_VERSION  version in the file name (default __version__ in testkit/__init__.py;
+#                         the release workflow passes the release tag)
 # Output: $OUT/testkit-<version>-linux-<arch>, $OUT/SHA256SUMS
 set -euo pipefail
 
@@ -18,7 +20,7 @@ OUT=${OUT:-$HERE/dist}
 IMAGE=${PYTHON_IMAGE:-python:3.11-slim-bullseye}
 ARCHS=("$@")
 [ ${#ARCHS[@]} -eq 0 ] && ARCHS=(amd64 arm64)
-VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$HERE/testkit/__init__.py")
+VERSION=${TESTKIT_VERSION:-$(sed -n 's/^__version__ = "\(.*\)"/\1/p' "$HERE/testkit/__init__.py")}
 mkdir -p "$OUT"
 
 DOCKERFILE=$(cat <<'EOF'
