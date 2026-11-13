@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#1f2328;--mut:#656d76;--bd:#d0d7de;--pass:#1a7f37;--passbg:#dafbe1;--fail:#cf222e;--failbg:#ffebe9;
+--skip:#6e7781;--skipbg:#eaeef2;--blk:#9a6700;--blkbg:#fff8c5;--acc:#0969da}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--fg)}
+header{background:#24292f;color:#fff;padding:10px 20px;display:flex;align-items:center;gap:16px;position:sticky;top:0;z-index:5}
+header h1{font-size:16px;margin:0;font-weight:600}header .meta{color:#c9d1d9;font-size:12px}
+.wrap{display:flex;min-height:calc(100vh - 44px)}
+nav{width:230px;background:#fff;border-right:1px solid var(--bd);padding:12px 0;flex-shrink:0;position:sticky;top:44px;height:calc(100vh - 44px);overflow:auto}
+nav a{display:block;padding:5px 18px;color:var(--fg);text-decoration:none;font-size:13px}
+nav a:hover{background:#f3f4f6}nav a.on{background:#ddf4ff;border-left:3px solid var(--acc);padding-left:15px;font-weight:600}
+nav .sec{padding:10px 18px 4px;color:var(--mut);font-size:12px;font-weight:600}
+nav .cnt{float:right;font-size:11px;color:var(--mut)}nav .cnt b{color:var(--fail)}
+main{flex:1;padding:18px 24px;min-width:0}
+h2{font-size:20px;margin:4px 0 14px}h3{font-size:15px;margin:18px 0 8px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px 16px;margin-bottom:14px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:14px}
+.kpi{background:#fff;border:1px solid var(--bd);border-radius:8px;padding:12px 14px}.kpi .v{font-size:24px;font-weight:600}.kpi .l{color:var(--mut);font-size:12px}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{border-bottom:1px solid #eaeef2;padding:5px 8px;text-align:left;white-space:nowrap}
+th{background:#f6f8fa;position:sticky;top:0;font-weight:600;cursor:default}th.sort{cursor:pointer}th.sort:hover{background:#eaeef2}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+.tblwrap{overflow:auto;max-height:70vh;border:1px solid var(--bd);border-radius:6px}
+tr.foot td{background:#f6f8fa;color:var(--mut);font-size:12px}
+.st{display:inline-block;padding:0 7px;border-radius:10px;font-size:12px;font-weight:600}
+.st.pass{background:var(--passbg);color:var(--pass)}.st.fail{background:var(--failbg);color:var(--fail)}
+.st.skip,.st.stopped,.st.cancelled{background:var(--skipbg);color:var(--skip)}.st.blocked,.st.incomplete,.st.warn{background:var(--blkbg);color:var(--blk)}
+.st.error,.st.timeout{background:var(--failbg);color:var(--fail)}.st.none{color:var(--mut)}
+.d0{}.dlo1{background:#fff8c5}.dlo2{background:#ffd8b5}.dlo3{background:#ffcecb;font-weight:600}.dhi1{background:#ddf4ff}
+.matrix{display:grid;gap:3px}.mcell{border-radius:4px;padding:6px 2px;text-align:center;font-size:11px;cursor:pointer;border:1px solid transparent;min-width:44px}
+.mcell:hover{border-color:#24292f}.mcell .t{font-weight:600}.mcell .dots{font-size:9px;letter-spacing:-1px}
+.mhead{color:var(--mut);font-size:11px;text-align:center;align-self:center}
+.legend span{margin-right:12px;font-size:12px}.legend i{display:inline-block;width:12px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.btn{border:1px solid var(--bd);background:#fff;border-radius:6px;padding:3px 10px;cursor:pointer;font-size:12px}.btn.on{background:#24292f;color:#fff;border-color:#24292f}
+select,input{border:1px solid var(--bd);border-radius:6px;padding:4px 8px;font-size:13px}
+pre{background:#161b22;color:#e6edf3;padding:10px 12px;border-radius:6px;overflow:auto;font-size:12px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(460px,1fr));gap:14px}
+.mut{color:var(--mut)}.small{font-size:12px}a{color:var(--acc)}
+.imx{display:grid;gap:1px;font-size:10px}.imx div{width:22px;height:20px;display:flex;align-items:center;justify-content:center}
+.imx .c{background:#2da44e;color:#fff}.imx .x{background:#eaeef2;color:#8c959f}.imx .h{color:var(--mut)}
+.issue{display:flex;gap:10px;padding:6px 0;border-bottom:1px solid #eaeef2}.issue:last-child{border:0}
+.tip{border-bottom:1px dotted var(--mut);cursor:help}
+svg text{font-size:11px;fill:#57606a}
+.rmat{display:grid;gap:0;font-size:10px;width:max-content}
+.rc{width:14px;height:14px;cursor:pointer;background:#cfe8d5;border-right:1px solid #fff;border-bottom:1px solid #fff}
+.rc:hover{outline:2px solid #24292f;position:relative;z-index:2}
+.rc.dlo1{background:#f5e27a}.rc.dlo2{background:#f5a35c}.rc.dlo3{background:#e5534b}.rc.dhi1{background:#80ccff}
+.rc.dfail{background:#24292f}.rc.rdiag{background:#f6f8fa;cursor:default}.rc.sel{outline:2px solid #0969da;z-index:3;position:relative}
+.rc.rsep,.rl.rsep{border-left:2px solid #57606a}.rc.rsept,.rl.rsept{border-top:2px solid #57606a}
+.rl{color:var(--mut);display:flex;align-items:center;justify-content:flex-end;padding-right:4px;white-space:nowrap}
+.rt{color:var(--mut);text-align:center;font-size:9px}
+.dfailtxt{background:#24292f;color:#fff}
+</style></head><body>
+<header><h1>__TITLE__</h1><span class="meta" id="hmeta"></span></header>
+<div class="wrap"><nav id="nav"></nav><main id="main"></main></div>
+<script>
+const D = __DATA__;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const ST = {pass:"通过", fail:"失败", error:"错误", timeout:"超时", stopped:"被停止", blocked:"阻断", cancelled:"已取消",
+            skip:"跳过", warn:"告警", incomplete:"未完成", none:"—", running:"运行中", aborted:"中断", empty:"未执行"};
+const BAD = ["fail", "error", "timeout"];
+const st = s => `<span class="st ${esc(s || 'none')}">${ST[s || 'none'] || esc(s)}</span>`;
+const fmt = (v, u) => v == null || v === "" ? "—" : (typeof v === "number" ? v.toLocaleString("en-US", {maximumFractionDigits: Math.abs(v) < 100 ? 2 : 0}) : esc(v)) + (u ? ` <span class="mut small">${esc(u)}</span>` : "");
+const median = a => { a = a.filter(x => typeof x === "number").sort((x, y) => x - y); if (!a.length) return null; const m = a.length >> 1; return a.length % 2 ? a[m] : (a[m-1] + a[m]) / 2; };
+const hostItem = (h, it) => (h.items[it] || {}).status;
+const ownBad = (h, it) => { const e = h.items[it]; return !!e && BAD.includes(e.status) && !e.group_result; };
+const itemById = Object.fromEntries(D.items.map(i => [i.id, i]));
+const hostByName = Object.fromEntries(D.hosts.map(h => [h.name, h]));
+const fmtBytes = b => b >= 2**30 ? (b/2**30)+"G" : b >= 2**20 ? (b/2**20)+"M" : b >= 2**10 ? (b/2**10)+"K" : b+"";
+const shortTitle = t => t.replace(/^S\d+a? /, "");
+let rackFilter = "all", colorOn = true, sortState = {};
+
+function itemCounts(id) {
+  const c = {pass: 0, bad: 0, other: 0};
+  const add = s => { if (s === "pass") c.pass++; else if (BAD.includes(s)) c.bad++; else if (s) c.other++; };
+  if (itemById[id].kind === "group") D.groups.filter(g => g.item === id).forEach(g => add(g.status));
+  else D.hosts.forEach(h => add(hostItem(h, id)));
+  return c;
+}
+function devClass(v, med, col) {
+  if (!colorOn || typeof v !== "number" || !med) return ["d0", ""];
+  let d = (v - med) / med; if (col.lower_better) d = -d;
+  const t = `偏离中位数 ${(100*(v-med)/med).toFixed(1)}%（中位数 ${med.toLocaleString("en-US",{maximumFractionDigits:2})}）`;
+  if (d <= -0.10) return ["dlo3", t]; if (d <= -0.05) return ["dlo2", t]; if (d <= -0.03) return ["dlo1", t];
+  if (d >= 0.05) return ["dhi1", t]; return ["d0", t];
+}
+
+function renderNav() {
+  const r = location.hash || "#overview";
+  const a = (h, t, extra="") => `<a href="${h}" class="${r === h ? 'on' : ''}">${t}${extra}</a>`;
+  let s = `<div class="sec">报告</div>` + a("#overview", "总览") + a("#issues", "问题与离群值");
+  s += `<div class="sec">测试项</div>`;
+  for (const it of D.items) {
+    const c = itemCounts(it.id);
+    s += a(`#item/${it.id}`, esc(it.title), `<span class="cnt">${c.bad ? `<b>${c.bad}✘</b> ` : ""}${c.pass}✔</span>`);
+  }
+  if (!D.items.length) s += `<div class="small mut" style="padding:4px 18px">暂无结果</div>`;
+  s += `<div class="sec">其他</div>` + a("#hosts", "主机列表") + a("#versions", "版本一致性") + a("#runs", "执行记录与原始数据");
+  $("#nav").innerHTML = s;
+}
+
+function pageOverview() {
+  const hs = D.hosts, n = k => hs.filter(h => h.overall === k).length;
+  const multi = D.groups.filter(g => itemById[g.item] && itemById[g.item].kind === "group");
+  const gbad = multi.filter(g => BAD.includes(g.status)).length;
+  let s = `<h2>总览</h2><div class="cards">
+    <div class="kpi"><div class="v">${hs.length}</div><div class="l">主机（${D.racks.map(esc).join(" / ")}）</div></div>
+    <div class="kpi"><div class="v" style="color:var(--pass)">${n("pass")}</div><div class="l">全部通过</div></div>
+    <div class="kpi"><div class="v" style="color:var(--fail)">${n("fail")}</div><div class="l">有自身失败项</div></div>
+    <div class="kpi"><div class="v" style="color:var(--blk)">${n("incomplete")}</div><div class="l">未完成（被停止/取消/占用）</div></div>
+    <div class="kpi"><div class="v" style="color:var(--mut)">${n("none")}</div><div class="l">暂无结果</div></div>
+    <div class="kpi"><div class="v">${multi.length}<span class="mut small"> / ${gbad} 失败</span></div><div class="l">多节点测试组</div></div></div>`;
+  const dotColor = (h, it) => { const e = h.items[it.id]; if (!e) return "#d0d7de";
+    if (e.status === "pass") return "#2da44e"; if (BAD.includes(e.status)) return e.group_result ? "#fb8f44" : "#cf222e";
+    if (e.status === "blocked") return "#d4a72c"; return "#8c959f"; };
+  s += `<div class="card"><h3 style="margin-top:0">rack × tray</h3>
+    <div class="legend small" style="margin-bottom:8px"><span><i style="background:var(--passbg)"></i>全部通过</span><span><i style="background:var(--failbg)"></i>有自身失败项</span><span><i style="background:var(--blkbg)"></i>未完成</span><span><i style="background:#f6f8fa"></i>暂无结果</span>
+    <span class="mut">小圆点依次为：${D.items.map(i => esc(shortTitle(i.title))).join(" · ") || "—"}（橙色 = 所在组失败）</span></div>`;
+  s += `<div class="matrix" style="grid-template-columns:40px repeat(${D.trays},1fr)"><div></div>`;
+  for (let t = 1; t <= D.trays; t++) s += `<div class="mhead">t${String(t).padStart(2,"0")}</div>`;
+  for (const r of D.racks) {
+    s += `<div class="mhead"><b>${esc(r)}</b></div>`;
+    for (let t = 1; t <= D.trays; t++) {
+      const h = hs.find(x => x.rack === r && x.tray === t);
+      if (!h) { s += `<div></div>`; continue; }
+      const bg = {pass: "var(--passbg)", fail: "var(--failbg)", incomplete: "var(--blkbg)"}[h.overall] || "#f6f8fa";
+      const dots = D.items.map(i => `<span style="color:${dotColor(h, i)}">●</span>`).join("");
+      const tip = D.items.map(i => `${i.title}: ${ST[hostItem(h, i.id) || "none"] || hostItem(h, i.id)}`).join("\n");
+      s += `<div class="mcell" style="background:${bg}" title="${esc(h.name + "\n" + tip)}" onclick="location.hash='#host/${esc(h.name)}'"><div class="t">${h.golden ? "★" : ""}t${String(t).padStart(2,"0")}</div><div class="dots">${dots}</div></div>`;
+    }
+  }
+  s += `</div></div>`;
+  s += `<div class="card"><h3 style="margin-top:0">测试项汇总</h3><table><tr><th>测试项</th><th>粒度</th><th class="num">通过</th><th class="num">失败</th><th class="num">其他</th><th>失败对象</th></tr>`;
+  for (const it of D.items) {
+    const c = itemCounts(it.id);
+    const who = it.kind === "group" ? D.groups.filter(g => g.item === it.id && BAD.includes(g.status)).map(g => esc(g.id))
+                                    : D.hosts.filter(h => BAD.includes(hostItem(h, it.id))).map(h => `<a href="#host/${esc(h.name)}">${esc(h.name)}</a>`);
+    s += `<tr><td><a href="#item/${it.id}">${esc(it.title)}</a></td><td>${it.kind === "group" ? "组" : "主机"}</td><td class="num">${c.pass}</td><td class="num" style="color:${c.bad?'var(--fail)':''}">${c.bad}</td><td class="num">${c.other}</td><td>${who.join("，")}</td></tr>`;
+  }
+  s += `</table></div>`;
+  const m = D.meta;
+  s += `<div class="card small mut">平台：${esc(m.platform || "—")}；集群：${esc(m.cluster)}；金样本：${esc(m.golden || "—")}；时间：${esc(m.start || "—")} → ${esc(m.end || "—")}；工具：${esc(m.tool)}；结果目录：${esc(m.results_dir)}。<br>
+    判定：只判正确性（退出码、诊断结果、检查项）。性能指标不设门限，只展示数值；表格中按“偏离全部主机中位数”着色，仅作提示。
+    组测试（mpi、委托）的失败计为组的结果，不算到单台主机上。</div>`;
+  return s;
+}
+
+function collectOutliers() {
+  const out = [];
+  for (const it of D.items) {
+    for (const c of it.cols.filter(c => c.type === "num")) {
+      const vals = D.hosts.map(h => (h.metrics[it.id] || {})[c.id]); const med = median(vals);
+      D.hosts.forEach((h, i) => { const v = vals[i]; if (typeof v !== "number" || !med) return;
+        let d = (v - med) / med; if (c.lower_better) d = -d;
+        if (d <= -0.05) out.push({h: h.name, it, c, v, med, d: (v - med) / med, rank: d}); });
+    }
+  }
+  for (const g of D.groups) for (const t of (g.tables || [])) for (const ci of (t.num_cols || [])) {
+    const med = median(t.rows.map(r => r[ci]));
+    for (const r of t.rows) if (med && (r[ci] - med) / med <= -0.05)
+      out.push({h: `${r[0]} ↔ ${r[1]}`, it: itemById[g.item], c: {name: `${g.id} ${t.head[ci]}`, unit: ""}, v: r[ci], med, d: (r[ci] - med) / med});
+  }
+  if (D.rdma) collectRdmaOutliers(out);
+  return out.sort((a, b) => (a.rank ?? a.d) - (b.rank ?? b.d));
+}
+
+function pageIssues() {
+  let s = `<h2>问题与离群值</h2><div class="card"><h3 style="margin-top:0">主机自身失败</h3>`, any = false;
+  for (const h of D.hosts) for (const [id, x] of Object.entries(h.items)) if (ownBad(h, id)) {
+    any = true;
+    s += `<div class="issue">${st(x.status)}<div><b><a href="#host/${esc(h.name)}">${esc(h.name)}</a></b> · ${esc(itemById[id] ? itemById[id].title : id)}<div class="mut">${esc(x.reason)}</div></div></div>`;
+  }
+  if (!any) s += `<div class="mut small">无</div>`;
+  s += `</div><div class="card"><h3 style="margin-top:0">组失败</h3>`;
+  const gb = D.groups.filter(g => BAD.includes(g.status) && itemById[g.item] && itemById[g.item].kind === "group");
+  for (const g of gb)
+    s += `<div class="issue">${st(g.status)}<div><b><a href="#item/${g.item}">${esc(g.id)}</a></b> · ${esc(itemById[g.item].title)}（${g.hosts.length} 节点）<div class="mut">${esc(g.reason)}</div></div></div>`;
+  if (!gb.length) s += `<div class="mut small">无</div>`;
+  const outs = collectOutliers();
+  s += `</div><div class="card"><h3 style="margin-top:0">性能离群值（比全部主机中位数差 5% 以上，仅提示）</h3>`;
+  if (outs.length) {
+    s += `<table><tr><th>主机</th><th>测试项</th><th>指标</th><th class="num">数值</th><th class="num">中位数</th><th class="num">偏离</th></tr>`;
+    for (const o of outs)
+      s += `<tr><td>${o.h.includes("↔") ? esc(o.h) : `<a href="#host/${esc(o.h)}">${esc(o.h)}</a>`}</td><td>${esc(o.it.title)}</td><td>${esc(o.c.name)}</td><td class="num">${fmt(o.v, o.c.unit)}</td><td class="num">${fmt(+o.med.toFixed(2))}</td><td class="num" style="color:var(--fail)">${(100*o.d).toFixed(1)}%</td></tr>`;
+    s += `</table>`;
+  } else s += `<div class="mut small">无</div>`;
+  s += `</div><div class="card"><h3 style="margin-top:0">跳过或未完成</h3>`; any = false;
+  for (const h of D.hosts) for (const [id, x] of Object.entries(h.items)) if (!["pass"].concat(BAD).includes(x.status)) {
+    any = true;
+    s += `<div class="issue">${st(x.status)}<div><b><a href="#host/${esc(h.name)}">${esc(h.name)}</a></b> · ${esc(itemById[id] ? itemById[id].title : id)}<div class="mut">${esc(x.reason)}</div></div></div>`;
+  }
+  if (!any) s += `<div class="mut small">无</div>`;
+  return s + `</div>`;
+}
+
+function rackBar(cb) {
+  return `<span class="small mut">rack：</span>` + ["all", ...D.racks].map(r => `<button class="btn ${rackFilter === r ? 'on' : ''}" onclick="rackFilter='${esc(r)}';${cb}">${r === "all" ? "全部" : esc(r)}</button>`).join("");
+}
+
+function pageItemNode(it) {
+  let hs = D.hosts.filter(h => h.items[it.id] && (rackFilter === "all" || h.rack === rackFilter));
+  const ss = sortState[it.id];
+  const val = (h, c) => c === "_status" ? hostItem(h, it.id) : (h.metrics[it.id] || {})[c];
+  if (ss) hs = [...hs].sort((a, b) => { const va = val(a, ss.c), vb = val(b, ss.c);
+    if (va == null) return 1; if (vb == null) return -1; return (va > vb ? 1 : va < vb ? -1 : 0) * ss.d; });
+  const meds = Object.fromEntries(it.cols.map(c => [c.id, median(D.hosts.map(h => (h.metrics[it.id]||{})[c.id]))]));
+  let s = `<div class="toolbar">${rackBar(`go()`)}<span style="width:16px"></span>
+    <button class="btn ${colorOn ? 'on' : ''}" onclick="colorOn=!colorOn;go()">按偏离中位数着色</button>
+    <span class="legend small"><span><i class="dlo1"></i>-3%</span><span><i class="dlo2"></i>-5%</span><span><i class="dlo3"></i>-10%</span><span><i class="dhi1"></i>+5%</span></span>
+    <span class="mut small">点列头排序</span></div>`;
+  const cats = []; it.cols.forEach(c => { const k = c.cat || ""; if (!cats.length || cats[cats.length-1].k !== k) cats.push({k, n: 1}); else cats[cats.length-1].n++; });
+  s += `<div class="tblwrap"><table>`;
+  if (cats.some(c => c.k)) s += `<tr><th colspan="5"></th>${cats.map(c => `<th colspan="${c.n}" style="text-align:center;border-left:1px solid var(--bd)">${esc(c.k)}</th>`).join("")}</tr>`;
+  const sh = (c, label, cls="") => `<th class="sort ${cls}" onclick="sortBy('${it.id}','${esc(c)}')">${label}${ss && ss.c === c ? (ss.d > 0 ? " ▲" : " ▼") : ""}</th>`;
+  s += `<tr><th>主机</th><th>rack</th><th>tray</th>${sh("_status", "状态")}<th>原因</th>${it.cols.map(c => sh(c.id, esc(c.name) + (c.unit ? `<div class="mut small" style="font-weight:400">${esc(c.unit)}</div>` : ""), c.type === "num" ? "num" : "")).join("")}</tr>`;
+  for (const h of hs) {
+    const m = h.metrics[it.id] || {}, x = h.items[it.id] || {};
+    const reason = x.reason || "";
+    s += `<tr><td><a href="#host/${esc(h.name)}">${esc(h.name)}</a>${h.golden ? " ★" : ""}</td><td>${esc(h.rack)}</td><td>${h.tray}</td><td>${st(x.status)}</td><td class="small mut" title="${esc(reason)}">${esc(reason.length > 40 ? reason.slice(0, 40) + "…" : reason)}</td>`;
+    for (const c of it.cols) {
+      const v = m[c.id];
+      if (c.type === "check") s += `<td>${v ? st(v) : '<span class="mut">—</span>'}</td>`;
+      else if (c.type === "text") s += `<td>${v != null ? esc(v) : '<span class="mut">—</span>'}</td>`;
+      else { const [cl, t] = devClass(v, meds[c.id], c); s += `<td class="num ${cl}" title="${esc(t)}">${fmt(v)}</td>`; }
+    }
+    s += `</tr>`;
+  }
+  if (it.cols.some(c => c.type === "num")) for (const [lab, fn] of [["min", a => Math.min(...a)], ["median", median], ["max", a => Math.max(...a)]]) {
+    s += `<tr class="foot"><td colspan="5">${lab}</td>`;
+    for (const c of it.cols) { const a = hs.map(h => (h.metrics[it.id]||{})[c.id]).filter(v => typeof v === "number"); s += `<td class="num">${c.type === "num" && a.length ? fmt(+fn(a).toFixed(2)) : ""}</td>`; }
+    s += `</tr>`;
+  }
+  s += `</table></div>`;
+  const logs = D.hosts.filter(h => h.logs[it.id]);
+  if (logs.length) s += `<h3>失败日志（末尾）</h3>` + logs.map(h => `<div class="card"><b><a href="#host/${esc(h.name)}">${esc(h.name)}</a></b> <span class="mut">${esc(h.items[it.id].reason)}</span><pre>${esc(h.logs[it.id])}</pre></div>`).join("");
+  return s;
+}
+
+function lineChart(ch) {
+  const W = 520, Hh = 260, L = 50, Rm = 12, T = 12, B = 34;
+  const xs = ch.x.map(v => Math.log2(v)), x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const ymax = Math.max(...ch.series.flatMap(s => s.y)) * 1.08 || 1;
+  const X = v => L + (x1 > x0 ? (Math.log2(v) - x0) / (x1 - x0) : 0.5) * (W - L - Rm), Y = v => T + (1 - v / ymax) * (Hh - T - B);
+  const colors = ["#0969da", "#cf222e", "#1a7f37", "#8250df", "#bf8700", "#57606a"];
+  let g = "";
+  for (let i = 0; i <= 5; i++) { const v = ymax * i / 5; g += `<line x1="${L}" x2="${W-Rm}" y1="${Y(v)}" y2="${Y(v)}" stroke="#eaeef2"/><text x="${L-6}" y="${Y(v)+4}" text-anchor="end">${Math.round(v)}</text>`; }
+  ch.x.forEach((v, i) => { if (i % 2 === 0) g += `<text x="${X(v)}" y="${Hh-B+16}" text-anchor="middle">${fmtBytes(v)}</text>`; });
+  g += `<text x="${L}" y="${T-2}">${esc(ch.unit)}</text><text x="${W-Rm}" y="${Hh-4}" text-anchor="end">消息大小</text>`;
+  ch.series.forEach((s, i) => {
+    g += `<polyline fill="none" stroke="${colors[i%6]}" stroke-width="2" points="${s.y.map((v, j) => `${X(ch.x[j])},${Y(v)}`).join(" ")}"/>`;
+    s.y.forEach((v, j) => g += `<circle cx="${X(ch.x[j])}" cy="${Y(v)}" r="2.5" fill="${colors[i%6]}"><title>${esc(s.name)} @ ${fmtBytes(ch.x[j])}: ${v} ${esc(ch.unit)}</title></circle>`);
+  });
+  const lg = ch.series.map((s, i) => `<span><i style="background:${colors[i%6]}"></i>${esc(s.name)}</span>`).join("");
+  return `<div><div class="small" style="font-weight:600">${esc(ch.title)}</div><div class="legend">${lg}</div><svg viewBox="0 0 ${W} ${Hh}" width="100%">${g}</svg></div>`;
+}
+
+function imexMatrix(m) {
+  const n = m.labels.length;
+  let s = `<div class="imx" style="grid-template-columns:30px repeat(${n},22px)"><div></div>${m.labels.map(l => `<div class="h">${esc(String(l).slice(1))}</div>`).join("")}`;
+  m.cells.forEach((row, i) => { s += `<div class="h">${esc(m.labels[i])}</div>` + row.map(c => `<div class="${c === 'C' ? 'c' : 'x'}">${esc(c)}</div>`).join(""); });
+  return s + `</div><div class="small mut" style="margin-top:4px">C = Connected；- = 未参与</div>`;
+}
+
+function pageItemGroup(it) {
+  let s = "";
+  for (const g of D.groups.filter(g => g.item === it.id)) {
+    s += `<div class="card"><div style="display:flex;gap:10px;align-items:center"><h3 style="margin:0">${esc(g.id)}</h3>${st(g.status)}
+      <span class="mut small">${g.hosts.length} 节点 · ${esc(g.mode)} · run ${esc(g.run_id)}${g.seconds != null ? " · " + g.seconds + "s" : ""}</span></div>
+      <div style="margin:6px 0">${esc(g.summary)}</div>${g.reason ? `<div style="color:var(--fail)">${esc(g.reason)}</div>` : ""}
+      ${g.first_failed ? `<div class="small mut">最先失败：<a href="#host/${esc(g.first_failed)}">${esc(g.first_failed)}</a></div>` : ""}
+      <details class="small"><summary class="mut">参与节点（按 rank）</summary>${g.hosts.map((n, i) => `<span class="mut">${i}:</span><a href="#host/${esc(n)}">${esc(n)}</a> ${hostByName[n] ? st(hostItem(hostByName[n], it.id)) : ""}`).join("　")}</details>`;
+    if (g.matrix || (g.charts || []).length) {
+      s += `<div class="grid2" style="margin-top:10px">`;
+      if (g.matrix) s += `<div><div class="small" style="font-weight:600">连接矩阵</div>${imexMatrix(g.matrix)}</div>`;
+      for (const ch of (g.charts || [])) s += lineChart(ch);
+      s += `</div>`;
+    }
+    for (const t of (g.tables || [])) {
+      const meds = (t.num_cols || []).map(ci => median(t.rows.map(r => r[ci])));
+      const isNum = t.head.map((_, ci) => t.rows.every(r => typeof r[ci] === "number"));
+      s += `<h3>${esc(t.title)}</h3><div class="tblwrap" style="max-height:360px"><table><tr>${t.head.map((h, ci) => `<th class="${isNum[ci] ? 'num' : ''}">${esc(h)}</th>`).join("")}</tr>`;
+      for (const r of t.rows) s += `<tr>${r.map((v, ci) => {
+        const k = (t.num_cols || []).indexOf(ci);
+        if (v === "pass" || v === "fail") return `<td>${st(v)}</td>`;
+        if (typeof v === "string" && hostByName[v]) return `<td><a href="#host/${esc(v)}">${esc(v)}</a></td>`;
+        if (k >= 0) { const [cl, tt] = devClass(v, meds[k], {}); return `<td class="num ${cl}" title="${esc(tt)}">${fmt(v)}</td>`; }
+        return `<td class="${typeof v === 'number' ? 'num' : ''}">${fmt(v)}</td>`; }).join("")}</tr>`;
+      s += `</table></div>`;
+    }
+    if (g.log) s += `<h3>日志（节选）</h3><pre>${esc(g.log)}</pre>`;
+    s += `</div>`;
+  }
+  if (it.cols.length || D.hosts.some(h => h.logs[it.id])) s += `<h3>各主机结果</h3>` + pageItemNode(it);
+  return s;
+}
+
+function pageItem(id) {
+  const it = itemById[id];
+  if (!it) return "<h2>未找到测试项</h2>";
+  const head = `<h2>${esc(it.title)} <span class="mut small">${esc(id)}</span></h2>`;
+  if (it.view === "rdma") return head + pageRdma(it);
+  return head + (it.kind === "group" ? pageItemGroup(it) : pageItemNode(it));
+}
+
+// ---------------- RDMA 打流 ----------------
+const R = D.rdma || {hosts: [], racks: [], pairs: [], tests: [], values: {}, rounds: 0};
+let rd = {test: R.tests.length ? R.tests[0].id : "", rail: "min", sel: null};
+const rdTest = id => R.tests.find(t => t.id === id);
+const pct = (a, q) => { a = [...a].sort((x, y) => x - y); return a.length ? a[Math.min(a.length - 1, Math.floor(q * (a.length - 1) + 0.5))] : null; };
+function rdVal(k, test, rail) {
+  const v = R.values[test];
+  if (rail !== "min") return v[rail][k];
+  const arr = [0, 1, 2, 3].map(r => v[r][k]);
+  if (arr.some(x => x < 0)) return -1;
+  return rdTest(test).lower_better ? Math.max(...arr) : Math.min(...arr);
+}
+const rdCat = k => R.racks[R.pairs[k][0]] === R.racks[R.pairs[k][1]] ? "in" : "out";
+const _rdMed = {};
+function rdMed(test, rail, cat) {
+  const key = test + "/" + rail + "/" + cat;
+  if (!(key in _rdMed)) _rdMed[key] = median(R.pairs.map((_, k) => rdCat(k) === cat ? rdVal(k, test, rail) : -1).filter(v => v >= 0));
+  return _rdMed[key];
+}
+function rdNodeAvg(i, test, rail) {
+  const a = []; R.pairs.forEach((p, k) => { if (p[0] === i || p[1] === i) { const v = rdVal(k, test, rail); if (v >= 0) a.push(v); } });
+  return a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+}
+const short = n => n.replace(/^gb300-/, "");
+function rdCellClass(v, med, T) { if (v < 0) return ["dfail", "失败（-1）"]; return devClass(v, med, T); }
+function collectRdmaOutliers(out) {
+  const rdIt = D.items.find(i => i.view === "rdma") || {title: "RDMA 打流"};
+  for (const t of R.tests) for (let r = 0; r < 4; r++) {
+    const sign = t.lower_better ? -1 : 1;
+    const avgs = R.hosts.map((_, i) => rdNodeAvg(i, t.id, r)), medN = median(avgs), badNode = new Set();
+    avgs.forEach((v, i) => { if (v == null || !medN) return; const d = sign * (v - medN) / medN; if (d <= -0.05) { badNode.add(i);
+      out.push({h: R.hosts[i], it: rdIt, c: {name: `${t.name} rail${r}（节点平均）`, unit: t.unit}, v: +v.toFixed(2), med: medN, d: (v - medN) / medN, rank: d}); } });
+    R.values[t.id][r].forEach((v, k) => { const p = R.pairs[k], med = rdMed(t.id, r, rdCat(k)); if (v < 0 || !med || badNode.has(p[0]) || badNode.has(p[1])) return;
+      const d = sign * (v - med) / med; if (d <= -0.10)
+        out.push({h: `${R.hosts[p[0]]} ↔ ${R.hosts[p[1]]}`, it: rdIt, c: {name: `${t.name} rail${r}（单条路径）`, unit: t.unit}, v, med, d: (v - med) / med, rank: d}); });
+  }
+}
+
+function pageRdma(it) {
+  const n = R.hosts.length, T = rdTest(rd.test);
+  if (!T) return `<div class="mut">无 RDMA 打流数据</div>`;
+  const vals = R.pairs.map((_, k) => rdVal(k, rd.test, rd.rail)), medIn = rdMed(rd.test, rd.rail, "in"), medOut = rdMed(rd.test, rd.rail, "out");
+  const medOf = k => rdCat(k) === "in" ? medIn : medOut;
+  const M = Array.from({length: n}, () => Array(n).fill(-2));
+  R.pairs.forEach((p, k) => { M[p[0]][p[1]] = k; M[p[1]][p[0]] = k; });
+  const railName = r => r === "min" ? (T.lower_better ? "4 rail 最差" : "4 rail 最小") : `rail ${r}`;
+  const nfail = R.tests.reduce((c, t) => c + [0,1,2,3].reduce((c2, r) => c2 + R.values[t.id][r].filter(v => v < 0).length, 0), 0);
+  let s = `<div class="cards">
+    <div class="kpi"><div class="v">${n}</div><div class="l">参与节点</div></div>
+    <div class="kpi"><div class="v">${R.pairs.length}</div><div class="l">节点对（${R.rounds} 轮，每轮 ${Math.floor(n / 2)} 对并发）</div></div>
+    <div class="kpi"><div class="v">${R.pairs.length * 4 * R.tests.length}</div><div class="l">测量次数（× 4 rail × ${R.tests.length} 项）</div></div>
+    <div class="kpi"><div class="v" style="color:${nfail ? 'var(--fail)' : 'var(--pass)'}">${nfail}</div><div class="l">失败测量（-1）</div></div></div>`;
+  s += `<div class="toolbar"><span class="small mut">测试：</span>${R.tests.map(t => `<button class="btn ${rd.test === t.id ? 'on' : ''}" title="${esc(t.cmd)}" onclick="rd.test='${t.id}';go()">${esc(t.name)}</button>`).join("")}</div>
+    <div class="toolbar"><span class="small mut">rail：</span>${["min", 0, 1, 2, 3].map(r => `<button class="btn ${String(rd.rail) === String(r) ? 'on' : ''}" onclick="rd.rail=${r === 'min' ? "'min'" : r};go()">${railName(r)}</button>`).join("")}
+    <span style="width:16px"></span><span class="legend small"><span><i style="background:#cfe8d5"></i>正常</span><span><i style="background:#f5e27a"></i>${T.lower_better ? "+3%" : "-3%"}</span><span><i style="background:#f5a35c"></i>${T.lower_better ? "+5%" : "-5%"}</span><span><i style="background:#e5534b"></i>${T.lower_better ? "+10%" : "-10%"}</span><span><i style="background:#24292f"></i>失败</span></span></div>`;
+  let m = `<div class="rmat" style="grid-template-columns:62px repeat(${n},15px)"><div></div>`;
+  for (let j = 0; j < n; j++) m += `<div class="rt ${j && R.racks[j] !== R.racks[j-1] ? 'rsep' : ''}" title="${esc(R.hosts[j])}">${esc(R.hosts[j].slice(-2))}</div>`;
+  for (let i = 0; i < n; i++) {
+    const top = i && R.racks[i] !== R.racks[i-1] ? "rsept" : "";
+    m += `<div class="rl ${top}" title="${esc(R.hosts[i])}">${esc(short(R.hosts[i]))}</div>`;
+    for (let j = 0; j < n; j++) {
+      const sep = (j && R.racks[j] !== R.racks[j-1] ? "rsep " : "") + top;
+      if (i === j) { m += `<div class="rc rdiag ${sep}"></div>`; continue; }
+      const k = M[i][j];
+      if (k < 0) { m += `<div class="rc rdiag ${sep}"></div>`; continue; }
+      const v = vals[k], [cl, tip] = rdCellClass(v, medOf(k), T);
+      m += `<div class="rc ${cl} ${sep} ${rd.sel === k ? 'sel' : ''}" title="${esc(`${R.hosts[i]} ↔ ${R.hosts[j]}\n${T.name} ${railName(rd.rail)}: ${v < 0 ? '失败' : v + ' ' + T.unit}\n第 ${R.pairs[k][2] + 1} 轮\n${tip}`)}" onclick="rd.sel=${k};go()"></div>`;
+    }
+  }
+  m += `</div>`;
+  s += `<div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap"><div class="card" style="overflow:auto;max-width:100%">
+    <div class="small" style="font-weight:600;margin-bottom:6px">${esc(T.name)} · ${railName(rd.rail)} · 中位数 柜内 ${medIn ?? "—"} / 柜间 ${medOut ?? "—"} ${esc(T.unit)}<span class="mut" style="font-weight:400">　（${esc(T.cmd)}；粗线分隔 rack；颜色按同类中位数；点格子看明细）</span></div>${m}</div>`;
+  s += `<div style="flex:1;min-width:380px">`;
+  if (rd.sel != null) {
+    const p = R.pairs[rd.sel];
+    s += `<div class="card"><h3 style="margin-top:0">${esc(R.hosts[p[0]])} ↔ ${esc(R.hosts[p[1]])}</h3><div class="small mut">第 ${p[2] + 1} 轮 · ${rdCat(rd.sel) === "in" ? "柜内" : "柜间"}</div>
+      <table style="margin-top:6px"><tr><th>测试</th>${[0,1,2,3].map(r => `<th class="num">rail ${r}</th>`).join("")}</tr>`;
+    for (const t of R.tests) s += `<tr><td>${esc(t.name)} <span class="mut small">${esc(t.unit)}</span></td>${[0,1,2,3].map(r => { const v = R.values[t.id][r][rd.sel]; const [cl, tip] = v < 0 ? ["dfailtxt", "失败"] : devClass(v, rdMed(t.id, r, rdCat(rd.sel)), t); return `<td class="num ${cl}" title="${esc(tip)}">${v < 0 ? "失败" : fmt(v)}</td>`; }).join("")}</tr>`;
+    s += `</table></div>`;
+  }
+  const split = {柜内: [], 柜间: []};
+  R.pairs.forEach((p, k) => { if (vals[k] >= 0) split[rdCat(k) === "in" ? "柜内" : "柜间"].push(vals[k]); });
+  s += `<div class="card"><h3 style="margin-top:0">柜内 / 柜间（按节点对分布）</h3><table><tr><th></th><th class="num">对数</th><th class="num">min</th><th class="num">p50</th><th class="num">${T.lower_better ? "p99" : "p1"}</th><th class="num">max</th></tr>`;
+  for (const [k, a] of Object.entries(split)) if (a.length) s += `<tr><td>${k}</td><td class="num">${a.length}</td><td class="num">${fmt(Math.min(...a))}</td><td class="num">${fmt(pct(a, .5))}</td><td class="num">${fmt(pct(a, T.lower_better ? .99 : .01))}</td><td class="num">${fmt(Math.max(...a))}</td></tr>`;
+  s += `</table>${T.lower_better ? '<div class="small mut" style="margin-top:4px">每对只有 t_avg（SuperBench 限制），这里的 p99 是“节点对之间”的分布，不是单次报文的尾延迟。</div>' : ""}</div>`;
+  const fails = [];
+  for (const t of R.tests) for (let r = 0; r < 4; r++) R.values[t.id][r].forEach((v, k) => { if (v < 0) fails.push({t, r, k}); });
+  if (fails.length) {
+    s += `<div class="card"><h3 style="margin-top:0">失败的测量</h3><table><tr><th>节点对</th><th>测试</th><th>rail</th><th>轮</th></tr>`;
+    for (const f of fails) { const p = R.pairs[f.k]; s += `<tr><td><a href="javascript:void(0)" onclick="rd.sel=${f.k};go()">${esc(short(R.hosts[p[0]]))} ↔ ${esc(short(R.hosts[p[1]]))}</a></td><td>${esc(f.t.name)}</td><td>${f.r}</td><td>${p[2] + 1}</td></tr>`; }
+    s += `</table></div>`;
+  }
+  const avgs = R.hosts.map((h, i) => ({h, i, v: rdNodeAvg(i, rd.test, rd.rail)})).filter(a => a.v != null);
+  const medN = median(avgs.map(a => a.v));
+  avgs.sort((a, b) => T.lower_better ? b.v - a.v : a.v - b.v);
+  s += `<div class="card"><h3 style="margin-top:0">节点平均（与其他 ${n - 1} 台的平均，最差在前）</h3><div class="tblwrap" style="max-height:330px"><table><tr><th>节点</th><th class="num">平均 ${esc(T.unit)}</th><th class="num">偏离</th><th class="num">异常格子</th></tr>`;
+  for (const a of avgs) {
+    const [cl, tip] = devClass(a.v, medN, T);
+    let bad = 0; R.pairs.forEach((p, k) => { if ((p[0] === a.i || p[1] === a.i) && (vals[k] < 0 || ["dlo2", "dlo3"].includes(rdCellClass(vals[k], medOf(k), T)[0]))) bad++; });
+    s += `<tr><td><a href="#host/${esc(a.h)}">${esc(a.h)}</a></td><td class="num ${cl}" title="${esc(tip)}">${fmt(+a.v.toFixed(2))}</td><td class="num">${medN ? (100 * (a.v - medN) / medN).toFixed(1) + "%" : ""}</td><td class="num">${bad || ""}</td></tr>`;
+  }
+  s += `</table></div><div class="small mut" style="margin-top:4px">整行偏低 → 节点或其网卡/线缆问题；只有单个格子偏低 → 该路径（交换机端口、拥塞）问题。</div></div>`;
+  return s + `</div></div>`;
+}
+
+function rdHostSection(name) {
+  if (!D.rdma) return "";
+  const i = R.hosts.indexOf(name); if (i < 0) return "";
+  let s = `<div class="card"><h3 style="margin-top:0">RDMA 打流（与其他 ${R.hosts.length - 1} 台的平均）</h3><table><tr><th>测试</th>${[0,1,2,3].map(r => `<th class="num">rail ${r}</th>`).join("")}</tr>`;
+  for (const t of R.tests) s += `<tr><td>${esc(t.name)} <span class="mut small">${esc(t.unit)}</span></td>${[0,1,2,3].map(r => {
+    const v = rdNodeAvg(i, t.id, r), m = median(R.hosts.map((_, j) => rdNodeAvg(j, t.id, r))); const [cl, tip] = devClass(v, m, t);
+    return `<td class="num ${cl}" title="${esc(tip)}">${v == null ? "—" : fmt(+v.toFixed(2))}</td>`; }).join("")}</tr>`;
+  const rdIt = D.items.find(x => x.view === "rdma");
+  return s + `</table>${rdIt ? `<div class="small mut" style="margin-top:4px"><a href="#item/${rdIt.id}">查看矩阵</a></div>` : ""}</div>`;
+}
+
+function pageHosts() {
+  let s = `<h2>主机列表</h2><div class="toolbar">${rackBar("go()")}</div><div class="tblwrap"><table><tr><th>主机</th><th>rack</th><th>tray</th><th>serial</th><th>ssh (LOM)</th><th>mgmt</th><th>总体</th>${D.items.map(i => `<th class="small">${esc(shortTitle(i.title))}</th>`).join("")}</tr>`;
+  for (const h of D.hosts.filter(h => rackFilter === "all" || h.rack === rackFilter))
+    s += `<tr><td><a href="#host/${esc(h.name)}">${esc(h.name)}</a>${h.golden ? " ★" : ""}</td><td>${esc(h.rack)}</td><td>${h.tray}</td><td>${esc(h.serial)}</td><td>${esc(h.ssh)}</td><td>${esc(h.mgmt)}</td><td>${st(h.overall)}</td>${D.items.map(i => `<td title="${esc((h.items[i.id]||{}).reason)}">${st(hostItem(h, i.id))}</td>`).join("")}</tr>`;
+  return s + `</table></div>`;
+}
+
+function versionKeys() { const k = new Set(); D.hosts.forEach(h => Object.keys(h.versions).forEach(x => k.add(x))); return [...k].sort(); }
+function versionMajority() {
+  const maj = {};
+  for (const k of versionKeys()) { const c = {}; D.hosts.forEach(h => { const v = h.versions[k]; if (v != null) c[v] = (c[v] || 0) + 1; }); maj[k] = (Object.entries(c).sort((a, b) => b[1] - a[1])[0] || [""])[0]; }
+  return maj;
+}
+function pageVersions() {
+  const ks = versionKeys();
+  if (!ks.length) return `<h2>版本一致性</h2><div class="card mut">暂无版本信息：测试容器写出 env.json 后在这里显示。</div>`;
+  const maj = versionMajority();
+  const diff = D.hosts.filter(h => ks.some(k => h.versions[k] != null && h.versions[k] !== maj[k]));
+  let s = `<h2>版本一致性</h2><div class="card"><b>多数主机的版本</b><div class="tblwrap" style="margin-top:6px"><table><tr>${ks.map(k => `<th>${esc(k)}</th>`).join("")}</tr><tr>${ks.map(k => `<td>${esc(maj[k])}</td>`).join("")}</tr></table></div></div>`;
+  s += `<div class="card"><b>与多数不一致的主机（${diff.length}）</b><div class="tblwrap" style="margin-top:6px"><table><tr><th>主机</th>${ks.map(k => `<th>${esc(k)}</th>`).join("")}</tr>`;
+  for (const h of diff) s += `<tr><td><a href="#host/${esc(h.name)}">${esc(h.name)}</a></td>${ks.map(k => `<td class="${h.versions[k] != null && h.versions[k] !== maj[k] ? 'dlo3' : 'mut'}">${esc(h.versions[k] ?? "—")}</td>`).join("")}</tr>`;
+  return s + `</table></div></div>`;
+}
+
+function pageHost(name) {
+  const h = hostByName[name]; if (!h) return "<h2>未找到主机</h2>";
+  const maj = versionMajority();
+  let s = `<div class="toolbar"><select onchange="location.hash='#host/'+this.value">${D.hosts.map(x => `<option ${x.name === name ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select></div>
+    <h2>${esc(h.name)} ${h.golden ? '<span class="st pass">★ 金样本</span>' : ""} ${st(h.overall)}</h2>
+    <div class="cards"><div class="kpi"><div class="l">rack / tray</div><div class="v" style="font-size:18px">${esc(h.rack)} / ${h.tray}</div></div>
+    <div class="kpi"><div class="l">serial</div><div class="v" style="font-size:16px">${esc(h.serial || "—")}</div></div>
+    <div class="kpi"><div class="l">ssh (LOM)</div><div class="v" style="font-size:16px">${esc(h.ssh)}</div></div>
+    <div class="kpi"><div class="l">mgmt / storage</div><div style="font-size:13px">${esc(h.mgmt || "—")}<br>${esc(h.storage || "—")}</div></div></div>`;
+  s += `<div class="card"><h3 style="margin-top:0">各测试项</h3><table><tr><th>测试项</th><th>状态</th><th>run</th><th>组 / rank</th><th class="num">耗时 (分钟)</th><th>原因</th></tr>`;
+  for (const it of D.items) { const x = h.items[it.id]; if (!x) { s += `<tr><td>${esc(it.title)}</td><td>${st()}</td><td class="mut">未参与</td><td></td><td></td><td></td></tr>`; continue; }
+    s += `<tr><td><a href="#item/${it.id}">${esc(it.title)}</a></td><td>${st(x.status)}${x.group_result && BAD.includes(x.status) ? ' <span class="small mut">组结果</span>' : ""}</td><td class="small mut">${esc(x.run_id || "")}</td><td class="small">${esc(x.group || "")}${x.rank != null ? " / " + x.rank : ""}</td><td class="num">${x.minutes ?? ""}</td><td>${esc(x.reason)}</td></tr>`; }
+  s += `</table></div>`;
+  for (const it of D.items.filter(i => h.metrics[i.id] && i.cols.length)) {
+    s += `<div class="card"><h3 style="margin-top:0">${esc(it.title)} 指标</h3><table><tr><th>分类</th><th>指标</th><th class="num">本机</th><th class="num">全部主机中位数</th><th class="num">偏离</th></tr>`;
+    for (const c of it.cols) {
+      const v = h.metrics[it.id][c.id];
+      if (v == null) continue;
+      if (c.type !== "num") { s += `<tr><td class="mut">${esc(c.cat||"")}</td><td>${esc(c.name)}</td><td class="num">${c.type === "check" ? st(v) : esc(v)}</td><td></td><td></td></tr>`; continue; }
+      const med = median(D.hosts.map(x => (x.metrics[it.id]||{})[c.id])); const [cl] = devClass(v, med, c);
+      s += `<tr><td class="mut">${esc(c.cat||"")}</td><td>${esc(c.name)}</td><td class="num ${cl}">${fmt(v, c.unit)}</td><td class="num mut">${fmt(med == null ? null : +med.toFixed(2))}</td><td class="num">${typeof v === "number" && med ? (100*(v-med)/med).toFixed(1) + "%" : ""}</td></tr>`;
+    }
+    s += `</table></div>`;
+  }
+  s += rdHostSection(name);
+  const nic = h.nic_map || [], vk = Object.keys(h.versions);
+  if (nic.length || vk.length) {
+    s += `<div class="grid2">`;
+    if (nic.length) {
+      const keys = Object.keys(nic[0]);
+      s += `<div class="card"><h3 style="margin-top:0">网卡映射（S3）</h3><table><tr>${keys.map(k => `<th>${esc(k)}</th>`).join("")}</tr>${nic.map(r => `<tr>${keys.map(k => `<td>${esc(r[k])}</td>`).join("")}</tr>`).join("")}</table>`;
+      const bf = Object.entries(h.bf3 || {});
+      if (bf.length) s += `<div class="small mut" style="margin-top:6px">BF3：${bf.map(([k, v]) => `${esc(k)} ${esc(v)}`).join("；")}</div>`;
+      s += `</div>`;
+    }
+    if (vk.length) s += `<div class="card"><h3 style="margin-top:0">版本</h3><table>${vk.sort().map(k => { const v = h.versions[k]; return `<tr><td>${esc(k)}</td><td class="${v !== maj[k] ? 'dlo3' : ''}">${esc(v)}${v !== maj[k] ? ` <span class="small">（多数为 ${esc(maj[k])}）</span>` : ""}</td></tr>`; }).join("")}</table></div>`;
+    s += `</div>`;
+  }
+  for (const [id, log] of Object.entries(h.logs)) s += `<div class="card"><h3 style="margin-top:0">${esc(itemById[id] ? itemById[id].title : id)} 日志（末尾）</h3><pre>${esc(log)}</pre></div>`;
+  return s;
+}
+
+const csvRow = r => r.map(v => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",");
+function metricsCsv() {
+  const rows = [["run_id", "item", "group", "hostname", "metric", "value", "unit"]];
+  for (const h of D.hosts) for (const it of D.items) {
+    const m = h.metrics[it.id]; if (!m) continue;
+    const e = h.items[it.id] || {};
+    for (const c of it.cols) if (m[c.id] != null) rows.push([e.run_id, it.id, e.group, h.name, c.id, m[c.id], c.unit || ""]);
+  }
+  for (const g of D.groups) for (const t of (g.tables || [])) for (const r of t.rows) rows.push([g.run_id, g.item, g.id, "", t.title + ": " + r[0], r.slice(1).join(" | "), ""]);
+  if (D.rdma) for (const t of R.tests) for (let r = 0; r < 4; r++) R.values[t.id][r].forEach((v, k) => { const p = R.pairs[k];
+    rows.push([R.run_id || "", "rdma", "", `${R.hosts[p[0]]}_${R.hosts[p[1]]}`, `${t.id}:rail${r}:round${p[2] + 1}`, v, t.unit]); });
+  return rows.map(csvRow).join("\n");
+}
+function hostsCsv() {
+  const rows = [["hostname", "rack", "tray", "serial", "overall", ...D.items.map(i => i.id), "fail_reason"]];
+  for (const h of D.hosts) rows.push([h.name, h.rack, h.tray, h.serial, h.overall, ...D.items.map(i => hostItem(h, i.id) || ""),
+    Object.entries(h.items).filter(([id]) => ownBad(h, id)).map(([id, x]) => `${id}: ${x.reason}`).join("; ")]);
+  return rows.map(csvRow).join("\n");
+}
+function download(name, text) { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["\ufeff" + text], {type: "text/csv"})); a.download = name; a.click(); }
+function pageRuns() {
+  let s = `<h2>执行记录与原始数据</h2><div class="toolbar"><button class="btn" onclick="download('hosts.csv', hostsCsv())">下载 hosts.csv</button><button class="btn" onclick="download('metrics.csv', metricsCsv())">下载 metrics.csv</button><span class="mut small">原始结果在 ${esc(D.meta.results_dir)}/&lt;run-id&gt;/ 下</span></div>`;
+  s += `<div class="tblwrap"><table><tr><th>run-id</th><th>状态</th><th>测试项</th><th>开始</th><th class="num">耗时 (分钟)</th><th class="num">节点数</th><th>目录</th></tr>`;
+  for (const r of [...D.runs].reverse()) s += `<tr><td>${esc(r.run_id)}</td><td>${st(r.status)}</td><td>${r.items.map(i => itemById[i] ? `<a href="#item/${i}">${esc(shortTitle(itemById[i].title))}</a>` : esc(i)).join("，") || "—"}</td><td>${esc(r.start)}</td><td class="num">${r.minutes ?? ""}</td><td class="num">${r.hosts}</td><td class="mut">${esc(r.path)}</td></tr>`;
+  return s + `</table></div>`;
+}
+
+function sortBy(item, c) { const s = sortState[item]; sortState[item] = s && s.c === c ? {c, d: -s.d} : {c, d: 1}; go(); }
+function go() {
+  const r = (location.hash || "#overview").slice(1); renderNav();
+  const i = r.indexOf("/"), p = i < 0 ? r : r.slice(0, i), arg = i < 0 ? null : decodeURIComponent(r.slice(i + 1));
+  const pages = {overview: pageOverview, issues: pageIssues, hosts: pageHosts, versions: pageVersions, runs: pageRuns, item: () => pageItem(arg), host: () => pageHost(arg)};
+  $("#main").innerHTML = (pages[p] || pageOverview)();
+}
+$("#hmeta").textContent = `${D.meta.cluster} · ${D.meta.start || "—"} → ${D.meta.end || "—"} · 生成于 ${D.meta.generated} · ${D.meta.tool}`;
+window.addEventListener("hashchange", () => { go(); window.scrollTo(0, 0); });
+go();
+</script></body></html>

@@ -24,7 +24,8 @@ dump_module_diagnostics() {
 }
 
 has_nvidia_gpu() {
-    lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'
+    lspci -n -d 10de: 2>/dev/null | grep -qE ' 030[02]: ' ||
+        lspci | grep -qiE 'nvidia.*(3d|vga|display)|tesla|h100|h200|a100|a800|l40|l4'
 }
 
 archive="$(find "$PACKAGE_DIR" -maxdepth 1 -name 'gdrcopy*.tar.gz' | head -n 1)"

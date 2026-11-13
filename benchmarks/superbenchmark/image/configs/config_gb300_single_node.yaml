@@ -1,0 +1,243 @@
+# SuperBench single-node config for GB300 (one compute tray).
+#
+# Hardware assumptions (confirm on the target system, see docs/superbench-gb300.md):
+#   - 4 x B300 GPUs, 2 x Grace (72 cores each: NUMA node 0 = cores 0-71, node 1 = cores 72-143)
+#   - GPU 0/1 and IB NIC 0/1 are attached to Grace 0; GPU 2/3 and IB NIC 2/3 to Grace 1
+#   - GPU HBM also shows up as NUMA nodes; CPU tests bind to the Grace LPDDR nodes 0 and 1 only
+# Worker image: superbench/main:cuda13.0 (main@9142bdfe, sm_103 build).
+# gemm-flops, cpu-memory-bw-latency and cpu-hpl are left out on purpose (no SM103/arm64 support).
+version: v0.13
+superbench:
+  enable:
+  - cublaslt-gemm:compute
+  - cublaslt-gemm:fp4
+  - nvbandwidth
+  - gpu-copy-bw:perf
+  - gpu-burn
+  - cpu-stream:numa0
+  - cpu-stream:numa1
+  - cpu-stream:cross-numa
+  - cpu-stream:node
+  - ib-loopback:1G
+  - nccl-bw:bw:allreduce:nvlink
+  - nccl-bw:bw:alltoall:nvlink
+  - nccl-bw:bw:allgather:nvlink
+  - nccl-bw:bw:reducescatter:nvlink
+  - nccl-bw:bw:broadcast:nvlink
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  var:
+    default_timeout: 600
+    gpu_local_mode: &gpu_local_mode
+      name: local
+      proc_num: 4
+      prefix: CUDA_VISIBLE_DEVICES={proc_rank}
+      parallel: true
+      env: {}
+    serial_local_mode: &serial_local_mode
+      name: local
+      proc_num: 1
+      prefix: ''
+      parallel: false
+      env: {}
+    nccl_single_node_mode: &nccl_single_node_mode
+      name: mpi
+      proc_num: 4
+      node_num: 1
+      env:
+        NCCL_DEBUG: INFO
+        NCCL_NVLS_ENABLE: '0'
+        PATH: null
+        LD_LIBRARY_PATH: null
+        SB_MICRO_PATH: null
+        SB_WORKSPACE: null
+      mca:
+        pml: ob1
+        btl: ^openib
+        btl_tcp_if_exclude: lo,docker0
+        coll_hcoll_enable: 0
+    nccl_param: &nccl_param
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+      in_place: true
+    cublaslt_param: &cublaslt_param
+      shapes:
+      - 8192,8192,8192
+      - 16384,16384,16384
+      enable_autotune: true
+      num_warmup: 20
+      num_steps: 50
+    # List parameters must be strings: sb exec joins them with ' '.join() before argparse converts to int.
+    grace0_cores: &grace0_cores [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17',
+        '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
+        '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53',
+        '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71'
+      ]
+    grace1_cores: &grace1_cores [
+        '72', '73', '74', '75', '76', '77', '78', '79', '80', '81', '82', '83', '84', '85', '86', '87', '88', '89',
+        '90', '91', '92', '93', '94', '95', '96', '97', '98', '99', '100', '101', '102', '103', '104', '105', '106', '107',
+        '108', '109', '110', '111', '112', '113', '114', '115', '116', '117', '118', '119', '120', '121', '122', '123', '124', '125',
+        '126', '127', '128', '129', '130', '131', '132', '133', '134', '135', '136', '137', '138', '139', '140', '141', '142', '143'
+      ]
+    grace_all_cores: &grace_all_cores [
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15', '16', '17',
+        '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32', '33', '34', '35',
+        '36', '37', '38', '39', '40', '41', '42', '43', '44', '45', '46', '47', '48', '49', '50', '51', '52', '53',
+        '54', '55', '56', '57', '58', '59', '60', '61', '62', '63', '64', '65', '66', '67', '68', '69', '70', '71',
+        '72', '73', '74', '75', '76', '77', '78', '79', '80', '81', '82', '83', '84', '85', '86', '87', '88', '89',
+        '90', '91', '92', '93', '94', '95', '96', '97', '98', '99', '100', '101', '102', '103', '104', '105', '106', '107',
+        '108', '109', '110', '111', '112', '113', '114', '115', '116', '117', '118', '119', '120', '121', '122', '123', '124', '125',
+        '126', '127', '128', '129', '130', '131', '132', '133', '134', '135', '136', '137', '138', '139', '140', '141', '142', '143'
+      ]
+  benchmarks:
+    # cuBLASLt picks the SM103 tcgen05 kernels; gemm-flops still runs SM80 kernels on 10.3.
+    cublaslt-gemm:compute:
+      timeout: 1800
+      modes:
+      - *gpu_local_mode
+      parameters:
+        <<: *cublaslt_param
+        in_types:
+        - bf16
+        - fp16
+        - fp8e4m3
+    # Block-scaled NVFP4 (VEC16_UE4M3) is kept separate so a failure does not hide the other types.
+    cublaslt-gemm:fp4:
+      timeout: 1800
+      modes:
+      - *gpu_local_mode
+      parameters:
+        <<: *cublaslt_param
+        in_types:
+        - fp4e2m1
+    # Single-node only: the image build does not enable -DMULTINODE (see moe-bench / imex-bench.sh).
+    nvbandwidth:
+      timeout: 3600
+      modes:
+      - *serial_local_mode
+      parameters:
+        buffer_size: 512
+        num_loops: 3
+    # Host<->device goes over NVLink-C2C on GB300, so thresholds differ from PCIe systems.
+    gpu-copy-bw:perf:
+      timeout: 7200
+      modes:
+      - *serial_local_mode
+      parameters:
+        mem_type:
+        - htod
+        - dtoh
+        - dtod
+        - one_to_all
+        - all_to_one
+        - all_to_all
+        copy_type:
+        - sm
+        - dma
+        size: 67645734912
+        num_warm_up: 1
+        num_loops: 1
+    # Blackwell Ultra has very limited FP64, so stress with FP32/tensor cores instead of doubles.
+    gpu-burn:
+      timeout: 1800
+      modes:
+      - *serial_local_mode
+      parameters:
+        time: 900
+        doubles: false
+        tensor_core: true
+    cpu-stream:numa0:
+      timeout: 600
+      modes:
+      - *serial_local_mode
+      parameters:
+        cpu_arch: neo2
+        cores: *grace0_cores
+        numa_mem_nodes: ['0']
+    cpu-stream:numa1:
+      timeout: 600
+      modes:
+      - *serial_local_mode
+      parameters:
+        cpu_arch: neo2
+        cores: *grace1_cores
+        numa_mem_nodes: ['1']
+    cpu-stream:cross-numa:
+      timeout: 600
+      modes:
+      - *serial_local_mode
+      parameters:
+        cpu_arch: neo2
+        cores: *grace0_cores
+        numa_mem_nodes: ['1']
+    cpu-stream:node:
+      timeout: 600
+      modes:
+      - *serial_local_mode
+      parameters:
+        cpu_arch: neo2
+        cores: *grace_all_cores
+        numa_mem_nodes: ['0', '1']
+    # IB_DEVICES are indices into the InfiniBand link-layer devices (Ethernet BF3 ports are skipped).
+    # Each mode runs one NIC per Grace in parallel.
+    ib-loopback:1G:
+      timeout: 6000
+      modes:
+      - name: local
+        proc_num: 2
+        prefix: PROC_RANK={proc_rank} IB_DEVICES=0,2 NUMA_NODES=0,1
+        parallel: true
+        env: {}
+      - name: local
+        proc_num: 2
+        prefix: PROC_RANK={proc_rank} IB_DEVICES=1,3 NUMA_NODES=0,1
+        parallel: true
+        env: {}
+      parameters:
+        msg_size: 1073741824
+    nccl-bw:bw:allreduce:nvlink:
+      timeout: 600
+      modes:
+      - *nccl_single_node_mode
+      parameters:
+        <<: *nccl_param
+        operation: allreduce
+        data_type: half
+    nccl-bw:bw:alltoall:nvlink:
+      timeout: 600
+      modes:
+      - *nccl_single_node_mode
+      parameters:
+        <<: *nccl_param
+        operation: alltoall
+        data_type: half
+    nccl-bw:bw:allgather:nvlink:
+      timeout: 600
+      modes:
+      - *nccl_single_node_mode
+      parameters:
+        <<: *nccl_param
+        operation: allgather
+    nccl-bw:bw:reducescatter:nvlink:
+      timeout: 600
+      modes:
+      - *nccl_single_node_mode
+      parameters:
+        <<: *nccl_param
+        operation: reducescatter
+        data_type: half
+    nccl-bw:bw:broadcast:nvlink:
+      timeout: 600
+      modes:
+      - *nccl_single_node_mode
+      parameters:
+        <<: *nccl_param
+        operation: broadcast

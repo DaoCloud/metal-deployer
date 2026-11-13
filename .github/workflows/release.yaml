@@ -48,6 +48,13 @@ jobs:
       contents: write
       packages: write
 
+  build-testkit:
+    uses: ./.github/workflows/call-build-testkit.yaml
+    with:
+      version: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+    permissions:
+      contents: write
+
   release-iso:
     needs: [build-image]
     uses: ./.github/workflows/call-release-iso.yaml

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository has two main areas. `build-iso/` builds a custom Ubuntu 24.04 autoinstall ISO; its key files are `manifest.yaml`, `user-data`, `prepare.sh`, `build.sh`, `test.sh`, `scripts/`, `packages/`, `config/`, and `tools/`. `superbenchmark/` contains GPU/RDMA benchmarking assets, including the sbcli Docker image under `superbenchmark/image/`. General docs live in `README.md`, `guide.md`, and `docs/`. GitHub Actions workflows are under `.github/workflows/`.
+This repository has two main areas. `build-iso/` builds a custom Ubuntu 24.04 autoinstall ISO; its key files are `manifests/manifest.yaml` (x86_64), `manifests/manifest-gb300.yaml` (GB300/arm64), `config/cloud-init/user-data`, `prepare.sh`, `build.sh`, `test.sh`, `scripts/`, `packages/`, `config/`, and `tools/`. `benchmarks/` contains GPU/RDMA benchmarking assets: `benchmarks/superbenchmark/` (including the sbcli Docker image under `benchmarks/superbenchmark/image/`), `benchmarks/moe-bench/`, and `benchmarks/nixl-benchmark/` (one Dockerfile; per-scenario build args in `image/profiles/*.env`). General docs live in `README.md`, `guide.md`, and `docs/`. GitHub Actions workflows are under `.github/workflows/`.
 
 Avoid committing generated artifacts such as `build-iso/custom-ubuntu.iso`, `build-iso/build_workspace/`, `build-iso/qemu.log`, `build-iso/qemu.pid`, or test disk images.
 
@@ -12,11 +12,14 @@ Run commands from the repository root unless noted.
 
 - `make help`: show available targets.
 - `make prepare-iso`: run `build-iso/prepare.sh --skip-images` to download the base ISO and packages.
-- `sudo make build-iso`: build `build-iso/custom-ubuntu.iso`.
+- `sudo make build-iso`: build the ISO (default output `build-iso/.ci-work/custom-ubuntu.iso`).
 - `make test-iso`: run the QEMU autoinstall smoke test.
+- For GB300, add `ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA_PROFILE=cuda13-gb300` to the ISO targets (`CUDA_PROFILE=cuda13-gb300-aggressive` builds the newer R615/CUDA 13.4 backup ISO).
 - `cd build-iso && ./test.sh login`: SSH into the running QEMU test VM.
 - `cd build-iso && ./test.sh clean`: stop and remove QEMU test artifacts.
 - `make build-sbcli`: build the SuperBench control Docker image locally.
+- `make build-sbcli-arm64`: build the arm64 sbcli image (GB300); needs QEMU binfmt on non-arm64 hosts.
+- `make build-nixl-benchmark NIXL_PROFILE=cuda13-gb300`: build the NIXL/NIXLBench image for one profile (`cuda13-x86` for B200/B300); env vars named like a Dockerfile ARG override the profile.
 
 ## Coding Style & Naming Conventions
 
@@ -45,7 +48,7 @@ For ISO behavior, prefer `make test-iso` or `cd build-iso && ./test.sh setup`. C
 
 Recent commits use short descriptive subjects, for example `Add manifest.yaml for Ubuntu 24.04 ISO build configuration` or `Update README.md`. Keep subjects imperative or descriptive, under about 72 characters when possible.
 
-Pull requests should include a concise summary, the affected area (`build-iso`, `superbenchmark`, docs, CI), validation commands run, and any known limitations. Link related issues when available. For ISO changes, mention whether QEMU testing was run and whether generated ISO artifacts were intentionally excluded.
+Pull requests should include a concise summary, the affected area (`build-iso`, `benchmarks`, docs, CI), validation commands run, and any known limitations. Link related issues when available. For ISO changes, mention whether QEMU testing was run and whether generated ISO artifacts were intentionally excluded.
 
 ## Security & Configuration Tips
 

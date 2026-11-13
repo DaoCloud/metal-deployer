@@ -7,3 +7,7 @@
 .opencode
 .clinerules
 skills-lock.json
+# Local drawings, not tracked
+/gb300-ib-network-plan.png
+/gb300-ib-network-plan.drawio
+/docs/images/nvl72-fabric-components.*

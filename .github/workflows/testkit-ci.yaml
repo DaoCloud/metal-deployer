@@ -1,0 +1,28 @@
+name: testkit CI
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    paths:
+      - '.github/workflows/testkit-ci.yaml'
+      - '.github/workflows/call-build-testkit.yaml'
+      - 'benchmarks/testkit/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/testkit-ci.yaml'
+      - '.github/workflows/call-build-testkit.yaml'
+      - 'benchmarks/testkit/**'
+  workflow_dispatch:
+
+concurrency:
+  group: testkit-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  testkit:
+    uses: ./.github/workflows/call-build-testkit.yaml
+    # The nested release job declares contents: write; it is skipped here (no version).
+    permissions:
+      contents: write

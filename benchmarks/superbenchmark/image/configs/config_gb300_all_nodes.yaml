@@ -1,0 +1,109 @@
+# SuperBench config for GB300 NVL72 across racks in the production layout: NVLink (MNNVL) inside each
+# rack, InfiniBand between racks. Used by testkit items superbench.all (collectives) and superbench.soak
+# (long allreduce run, selected by name).
+#
+# NCCL_MNNVL_ENABLE=1: every rack is one NVLink clique; NCCL fails instead of falling back to IB inside a
+# rack. NCCL_NVLS_ENABLE=1: NVLink SHARP inside the racks (allreduce becomes NVLSTree across racks).
+# Both are set explicitly, see config_gb300_sharp.yaml for why the default (2) is avoided.
+# The host IMEX domains must be up in every rack (testkit imex). 4 GPUs and 4 IB rails per tray.
+version: v0.13
+superbench:
+  enable:
+  - nccl-bw:bw:allreduce:mnnvl-ib
+  - nccl-bw:bw:allgather:mnnvl-ib
+  - nccl-bw:bw:reducescatter:mnnvl-ib
+  - nccl-bw:bw:alltoall:mnnvl-ib
+  - nccl-bw:bw:broadcast:mnnvl-ib
+  monitor:
+    enable: true
+    sample_duration: 1
+    sample_interval: 10
+  var:
+    default_timeout: 900
+    mpi_mca: &mpi_mca
+      pml: ob1
+      btl: ^openib
+      btl_tcp_if_exclude: lo,docker0
+      coll_hcoll_enable: 0
+      plm_rsh_args: >-
+        "-F /root/.ssh/config -i /root/.ssh/key"
+    nccl_mnnvl_ib_mode: &nccl_mnnvl_ib_mode
+      name: mpi
+      proc_num: 4
+      node_num: all
+      env:
+        NCCL_DEBUG: INFO
+        NCCL_DEBUG_SUBSYS: INIT,NET,NVLS
+        NCCL_MNNVL_ENABLE: '1'
+        NCCL_NVLS_ENABLE: '1'
+        PATH: null
+        LD_LIBRARY_PATH: null
+        SB_MICRO_PATH: null
+        SB_WORKSPACE: null
+      mca: *mpi_mca
+    nccl_param: &nccl_param
+      minbytes: 1
+      maxbytes: 16G
+      stepfactor: 2
+      check: 1
+      warmup_iters: 20
+      iters: 100
+      ngpus: 1
+      in_place: true
+  benchmarks:
+    nccl-bw:bw:allreduce:mnnvl-ib:
+      timeout: 1800
+      modes:
+      - *nccl_mnnvl_ib_mode
+      parameters:
+        <<: *nccl_param
+        operation: allreduce
+        data_type: half
+    nccl-bw:bw:allgather:mnnvl-ib:
+      timeout: 1800
+      modes:
+      - *nccl_mnnvl_ib_mode
+      parameters:
+        <<: *nccl_param
+        operation: allgather
+    nccl-bw:bw:reducescatter:mnnvl-ib:
+      timeout: 1800
+      modes:
+      - *nccl_mnnvl_ib_mode
+      parameters:
+        <<: *nccl_param
+        operation: reducescatter
+        data_type: half
+    nccl-bw:bw:alltoall:mnnvl-ib:
+      timeout: 1800
+      modes:
+      - *nccl_mnnvl_ib_mode
+      parameters:
+        <<: *nccl_param
+        operation: alltoall
+        data_type: half
+    nccl-bw:bw:broadcast:mnnvl-ib:
+      timeout: 1800
+      modes:
+      - *nccl_mnnvl_ib_mode
+      parameters:
+        <<: *nccl_param
+        operation: broadcast
+    # Stability: one large allreduce repeated for a long time (not in "enable"; testkit superbench.soak selects
+    # it). iters sets the duration: about iters x the time of one 8 GiB allreduce (check the first run and
+    # adjust; e.g. ~30 min). check: 1 verifies every result, so silent data corruption also fails the run.
+    nccl-bw:soak:allreduce:mnnvl-ib:
+      timeout: 7200
+      modes:
+      - *nccl_mnnvl_ib_mode
+      parameters:
+        minbytes: 8G
+        maxbytes: 8G
+        stepfactor: 2
+        check: 1
+        warmup_iters: 20
+        iters: 20000
+        ngpus: 1
+        in_place: true
+        operation: allreduce
+        data_type: half

@@ -43,4 +43,30 @@ end
 template["autoinstall"] ||= {}
 deep_merge(template["autoinstall"], autoinstall_overrides)
 
+# Subiquity >= 24.04.5 rejects reserved usernames such as "admin" in
+# autoinstall `identity` ("Username is reserved by the system") and aborts the
+# install. Keep `identity` as the declarative source in the template/manifest,
+# but hand the account to cloud-init on the installed system instead; subiquity
+# allows omitting `identity` when `user-data` is present.
+identity = template["autoinstall"].delete("identity")
+if identity.is_a?(Hash) && identity["username"]
+  user_data = (template["autoinstall"]["user-data"] ||= {})
+  user = {
+    "name" => identity["username"],
+    "gecos" => identity["realname"] || identity["username"],
+    "groups" => %w[adm cdrom dip plugdev sudo],
+    "shell" => "/bin/bash",
+    "lock_passwd" => false,
+  }
+  user["passwd"] = identity["password"] if identity["password"]
+  user_data["users"] = [user] + Array(user_data["users"]).reject { |u| u.is_a?(Hash) && u["name"] == user["name"] }
+  if identity["hostname"]
+    user_data["hostname"] ||= identity["hostname"]
+    user_data["preserve_hostname"] = false unless user_data.key?("preserve_hostname")
+  end
+  ssh = template["autoinstall"]["ssh"]
+  user_data["ssh_pwauth"] = ssh["allow-pw"] if ssh.is_a?(Hash) && ssh.key?("allow-pw") && !user_data.key?("ssh_pwauth")
+  user_data["chpasswd"] ||= { "expire" => false }
+end
+
 File.write(output_path, "#cloud-config\n#{YAML.dump(template).sub(/\A---\n/, "")}")

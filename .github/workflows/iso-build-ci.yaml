@@ -52,12 +52,21 @@ jobs:
     timeout-minutes: 15
 
     strategy:
+      fail-fast: false
       matrix:
-        cuda_profile: ['cuda12', 'cuda13']
+        include:
+          - cuda_profile: cuda12
+            manifest: manifest.yaml
+          - cuda_profile: cuda13
+            manifest: manifest.yaml
+          - cuda_profile: cuda13-gb300
+            manifest: manifest-gb300.yaml
+          - cuda_profile: cuda13-gb300-aggressive
+            manifest: manifest-gb300.yaml
 
     env:
       CUDA_PROFILE: ${{ matrix.cuda_profile }}
-      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifests/${{ matrix.manifest }}
 
     steps:
       - name: Checkout repository
@@ -97,7 +106,7 @@ jobs:
           # GitHub-hosted runner 访问不到内网 mirror,跳过 *.intranet.* 域名。
           ruby -rjson -ryaml -e '
             urls = []
-            manifest = JSON.parse(`ruby build-iso/tools/resolve_manifest.rb build-iso/manifest.yaml #{ENV.fetch("CUDA_PROFILE")} json`)
+            manifest = JSON.parse(`ruby build-iso/tools/resolve_manifest.rb #{ENV.fetch("MANIFEST_FILE")} #{ENV.fetch("CUDA_PROFILE")} json`)
             base = manifest["base_iso"] && manifest["base_iso"]["source"]
             urls << base if base && base =~ %r{^https?://}
             Array(manifest["packages"]).each do |p|
@@ -141,7 +150,7 @@ jobs:
       DISK_SIZE: 40G
       CUDA_PROFILE: cuda12
       MIRROR_SOURCE: local
-      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifest.yaml
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifests/manifest.yaml
       CACHE_BASE_DIR: /home/runner/actions-runner/_work/metal-deployer-cache
       ISO_CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12
       ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/cuda12/iso
@@ -167,7 +176,7 @@ jobs:
           set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            curl ruby xorriso mtools dosfstools \
+            curl ruby xorriso mtools dosfstools dpkg-dev squashfs-tools \
             qemu-system-x86 qemu-utils sshpass openssh-client pciutils
           if [ -e /dev/kvm ]; then
             sudo chmod 666 /dev/kvm
@@ -186,7 +195,7 @@ jobs:
           path: |
             build-iso/.ci-work/${{ env.CUDA_PROFILE }}/iso
             build-iso/.ci-work/${{ env.CUDA_PROFILE }}/packages
-          key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
+          key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifests/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
           restore-keys: |
             iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-
 
@@ -340,3 +349,83 @@ jobs:
             ! -name iso \
             ! -name packages \
             -exec rm -rf {} +
+
+  # GB300 is arm64: build natively on a GitHub-hosted arm64 runner. No QEMU
+  # smoke test yet; the hosted arm64 fleet has no /dev/kvm.
+  gb300:
+    name: Build GB300 ISO (arm64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    needs: [lint]
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      DOWNLOAD_IMAGES: 'false'
+      CUDA_PROFILE: cuda13-gb300
+      MIRROR_SOURCE: local
+      MANIFEST_FILE: ${{ github.workspace }}/build-iso/manifests/manifest-gb300.yaml
+      CI_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/gb300
+      # prepare.sh copies every download into the cache; it is removed after
+      # prepare to keep the hosted runner disk free for the build.
+      CACHE_BASE_DIR: ${{ github.workspace }}/build-iso/.ci-work/gb300-cache
+      ISO_DIR: ${{ github.workspace }}/build-iso/.ci-work/gb300/iso
+      PACKAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/gb300/packages
+      IMAGE_DIR: ${{ github.workspace }}/build-iso/.ci-work/gb300/packages/images
+      BUILD_WORK_DIR: ${{ github.workspace }}/build-iso/.ci-work/gb300/build_workspace
+      OUTPUT_ISO: ${{ github.workspace }}/build-iso/.ci-work/gb300/custom-ubuntu.iso
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          set -euxo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache /usr/local/share/boost /usr/local/julia* || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - name: Install build dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl ruby xorriso mtools dosfstools dpkg-dev squashfs-tools
+
+      - name: Download base ISO and packages
+        run: |
+          set -euxo pipefail
+          cd build-iso
+          ./prepare.sh --skip-images
+          rm -rf "$CACHE_BASE_DIR"
+          du -sh "$ISO_DIR" "$PACKAGE_DIR"
+          df -h /
+
+      - name: Build custom ISO
+        run: |
+          set -euxo pipefail
+          sudo --preserve-env=DEBIAN_FRONTEND,CUDA_PROFILE,MIRROR_SOURCE,MANIFEST_FILE,ISO_DIR,PACKAGE_DIR,CONFIG_DIR,BUILD_WORK_DIR,OUTPUT_ISO ./build-iso/build.sh
+          sudo rm -rf "$BUILD_WORK_DIR"
+          ls -lh "$OUTPUT_ISO"
+          df -h /
+
+      - name: Verify ISO boot and packaged resources
+        run: |
+          set -euxo pipefail
+          xorriso -indev "$OUTPUT_ISO" -report_el_torito plain 2>/dev/null \
+            | grep -E '^El Torito boot img : +[0-9]+ +UEFI '
+          xorriso -osirrox on -indev "$OUTPUT_ISO" -extract /boot/grub/grub.cfg "$CI_WORK_DIR/grub.cfg"
+          grep -q 'autoinstall' "$CI_WORK_DIR/grub.cfg"
+          grep -q 'console=ttyAMA0' "$CI_WORK_DIR/grub.cfg"
+          xorriso -sh_style_result on -indev "$OUTPUT_ISO" -find /resource -maxdepth 3 -type f -exec echo \
+            | tee "$CI_WORK_DIR/iso-resource-files.txt"
+          grep -q '^/resource/scripts/init_system.sh$' "$CI_WORK_DIR/iso-resource-files.txt"
+          grep -q '^/resource/scripts/install_target_kernel.sh$' "$CI_WORK_DIR/iso-resource-files.txt"
+          grep -q '^/resource/config/rdma_modules.conf$' "$CI_WORK_DIR/iso-resource-files.txt"
+          kernel_release="$(ruby build-iso/tools/resolve_manifest.rb "$MANIFEST_FILE" "$CUDA_PROFILE" json \
+            | ruby -rjson -e 'puts JSON.parse(STDIN.read).dig("install_environment", "KERNEL_RELEASE")')"
+          grep -q "^/resource/packages/linux-image-${kernel_release}_.*_arm64\.deb$" "$CI_WORK_DIR/iso-resource-files.txt"
+          package_count="$(grep -c '^/resource/packages/.*\.deb$' "$CI_WORK_DIR/iso-resource-files.txt")"
+          test "$package_count" -ge 100

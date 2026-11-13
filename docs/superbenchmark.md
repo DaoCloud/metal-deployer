@@ -22,9 +22,11 @@ SuperBench (sb) 是一个用于 AI 基础设施性能测试的工具，支持单
 | 测试配置 | `config_single_node.yaml` |
 | 测试配置 | `config_multi_node.yaml` |
 | 测试配置 | `config_all.yaml` |
+| 测试配置（GB300） | `config_gb300_single_node.yaml`、`config_gb300_multi_node.yaml`、`config_gb300_nvl_domain.yaml`、`config_gb300_sharp.yaml`（testkit SHARP 测试项使用）、`config_gb300_disk.yaml` |
 | 汇总规则 | `rule_single_node.yaml` |
 | 汇总规则 | `rule_multi_node.yaml` |
 | 汇总规则 | `rule_all.yaml` |
+| 汇总规则（GB300） | `rule_gb300.yaml` |
 
 ### 2.2 控制节点 sbcli 镜像准备
 
@@ -38,7 +40,9 @@ SuperBench (sb) 是一个用于 AI 基础设施性能测试的工具，支持单
 
 2. **被测主机环境要求**
    - 每个被测主机已安装 Docker
-   - 被测主机已加载 `docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9` 镜像（需 load 到主机上）
+   - 被测主机已加载 SuperBench 镜像（需 load 到主机上）：
+     - x86（H100/H200/B300 等）：`docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9`
+     - GB300（arm64）：`docker.io/superbench/main:cuda13.0`（GB300 ISO 已预置；v0.12.0 不支持 GB300 的 sm_103）
 
 #### 准备 sbcli 镜像
 
@@ -51,6 +55,8 @@ docker pull ghcr.io/daocloud/metal-deployer/sbcli:latest
 # 验证镜像
 docker run --rm ghcr.io/daocloud/metal-deployer/sbcli:latest sb version
 ```
+
+sbcli 为多架构镜像（`linux/amd64`、`linux/arm64`），可直接在 GB300（Grace）节点上运行。
 
 #### 准备必要文件
 
@@ -90,23 +96,34 @@ docker run -it \
   --entrypoint /bin/bash \
   ghcr.io/daocloud/metal-deployer/sbcli:latest
 
-# 在容器内执行
+# 在容器内执行（x86 被测节点）
 sb deploy -f hosts --no-image-pull -i docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9
+# GB300 被测节点
+sb deploy -f hosts --no-image-pull -i docker.io/superbench/main:cuda13.0
 ```
 
 参数说明：
 - `-f hosts`：指定 inventory 文件
 - `--no-image-pull`：跳过镜像拉取（假设被测主机已预加载镜像）
-- `-i docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9`：指定被测主机上的镜像
+- `-i <镜像>`：指定被测主机上已加载的 SuperBench 镜像（x86 / GB300 取值见上）
 
 该命令会在被测机器上启动 superbench 容器。
+
+#### 容器与宿主机的软件版本
+
+SuperBench 通常使用 worker 镜像自带的 CUDA runtime、cuBLAS、cuDNN、NCCL、MPI 和 UCX。除非显式挂载或覆盖这些库，升级宿主机 CUDA Toolkit 或 NCCL 不会更新容器内版本；宿主机也不必安装相同版本的 Toolkit 才能运行预编译的 GPU 容器。
+
+容器仍共享宿主机内核，依赖宿主机 GPU 驱动、网卡/RDMA 内核模块和 NVIDIA Container Toolkit。驱动必须满足镜像要求，容器内 RDMA 用户态组件需兼容宿主机驱动。GB300 跨节点 NVLink 还依赖宿主机 IMEX、交换托盘 NVOS/NMX 和正确的设备权限，不能仅凭镜像 CUDA 标签判断兼容性。
+
+宿主机 DCGM 用于宿主机监控和诊断，不会替换容器内 DCGM。容器若连接宿主机 hostengine，需单独核对客户端兼容性。GB300 manifest 的 DCGM 4.7.1 升级不改变 SuperBench 镜像；容器测试结果也不能证明宿主机 Toolkit/NCCL 或 DCGM 诊断全部可用。
 
 #### 注意事项
 
 1. **SSH 密钥权限**：确保挂载的 SSH 私钥在容器内具有正确权限（600）
 2. **网络连通性**：确保 Ansible 控制节点能够访问所有被测主机的 SSH 端口
 3. **Docker 权限**：被测主机的用户需要有执行 Docker 命令的权限
-4. **镜像预加载**：被测主机必须预先加载 `docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9` 镜像
+4. **镜像预加载**：被测主机必须预先加载对应架构的 SuperBench 镜像（见上）
+5. **GB300 限制**：main 镜像中 `gemm-flops` 在 GB300 上只跑 Ampere 时代的 kernel，结果不代表峰值算力（等 microsoft/superbenchmark#883）；`cpu-memory-bw-latency`、`cpu-hpl` 仅支持 x86；内存带宽用 `nvbandwidth`。GB300 请使用 `config_gb300_*.yaml`（见 3.4），不要直接套用 x86 的 8 卡配置
 
 ## 三、测试场景与配置文件
 
@@ -177,6 +194,27 @@ superbench:
 - 模型测试: `dist-inference`, `model-benchmarks`, `megatron-gpt` 等。
 
 **注意：** 模型测试需要较长的执行时间，建议单独运行。
+
+### 3.4 GB300 测试 (/workspace/config_gb300_*.yaml)
+
+GB300 每个 tray 为 4 × B300、2 × Grace、4 × ConnectX-8，与 x86 8 卡机型的 GPU 数、NIC 编号、CPU 架构都不同，因此使用单独的配置组。`run-tests.sh -p gb300` 自动选用这些配置和 `rule_gb300.yaml`；sbcli 运行在 arm64 上时默认就是 gb300。
+
+| 配置 | 用途 | 关键点 |
+|-|-|-|
+| `config_gb300_single_node.yaml` | 单机 | `proc_num: 4`；`cublaslt-gemm` 替代 `gemm-flops`；`cpu-stream`（`cpu_arch: neo2`，按 Grace 核和 LPDDR NUMA 节点绑定）替代 MLC/HPL；`nvbandwidth`；`gpu-burn` 不测 FP64；`ib-loopback` 2 组 |
+| `config_gb300_multi_node.yaml` | 跨节点 IB | `ib-traffic` 测 gpu-to-gpu（GPU Direct RDMA，单向/双向），另测 cpu-to-cpu 时延（2 字节）；`set_ib_devices` 只选 IB link-layer 设备；NCCL 4 种集合通信，`NCCL_MNNVL_ENABLE=0` |
+| `config_gb300_nvl_domain.yaml` | 柜内 MNNVL | hosts 必须在同一 NVLink 域；`NCCL_MNNVL_ENABLE=1`，不满足时直接失败而不是回退到 IB |
+| `config_gb300_sharp.yaml` | NVLink SHARP / IB SHARP | 每组 NCCL 设置一个 nccl-bw 条目（U-A/U-B 柜内，O-A~O-D 柜间），均显式设置 `NCCL_NVLS_ENABLE`；O-C/O-D 加载 HPC-X SHARP 插件。由 testkit `sharp.*` 测试项按组选择 |
+| `config_gb300_disk.yaml` | 磁盘 | 只在 `run-tests.sh --disk <设备>` 时执行，设备通过 `--config-override` 注入 |
+
+手动执行时，磁盘配置必须显式指定测试盘：
+
+```bash
+sb run -f hosts --config-file /workspace/config_gb300_disk.yaml \
+    --config-override "superbench.benchmarks.disk-benchmark.parameters.block_devices=[/dev/nvme1n1]"
+```
+
+硬件假设、实机确认项和不在 SuperBench 内处理的测试见 [superbench-gb300.md](./superbench-gb300.md)。
 
 ## 四、测试执行流程
 
