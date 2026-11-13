@@ -2,13 +2,18 @@
 
 本镜像用于 GB300 / B300（Blackwell Ultra，sm_103，arm64/SBSA）的 MoE 测试。MoE（Mixture of Experts，混合专家模型）需要专家并行（EP）通信和分组 GEMM 计算，本镜像同时覆盖这两部分。
 
-镜像中有三种 EP 通信库，对应不同的使用方：
+镜像中有四种 EP 通信库，对应不同的使用方：
 
 | EP 库 | Python 接口 | 使用方 | 节点内 / NVL72 机柜内 | 跨机柜 |
 |---|---|---|---|---|
 | HybridEP | `deep_ep.HybridEPBuffer` | Megatron-LM `flex` dispatcher（NVIDIA） | CUDA fabric handle，支持 MNNVL | DOCA GPUNetIO（GPU 发起 RDMA） |
 | DeepEP V1 | `deep_ep.Buffer` | SGLang `--moe-a2a-backend deepep`，GLM 推理（prefill 用 normal，decode 用 low_latency） | normal：CUDA IPC 或 fabric handle，最多 8 个 rank | NVSHMEM（IBGDA） |
 | MoonEP | `moonep.Buffer` | Kimi（Moonshot）训练，动态冗余专家 | CUDA VMM，跨节点用 fabric handle | 不支持 |
+| FlashInfer NVLink one-sided | `flashinfer.moe_ep`（`NVLinkOneSidedConfig`） | vLLM `--all2all-backend flashinfer_nvlink_one_sided`（kernel 来自 TensorRT-LLM） | MNNVL，单边写入对端显存 | 不支持 |
+
+DeepGEMM Mega MoE（`deep_gemm.get_symm_buffer_for_mega_moe`）把 dispatch、专家 GEMM、combine 融合到一个 kernel，通信用 PyTorch symmetric memory，对应 vLLM `--moe-backend deep_gemm_mega_moe`。
+
+GB300 NVL72 机柜内全部是 NVLink（MNNVL），推理的 EP 通信可以不经过 RDMA。vLLM 在 GB300 上的做法是 `--all2all-backend flashinfer_nvlink_one_sided` 加 `--moe-backend deep_gemm_mega_moe`，对应本镜像的 `nvlink-ep` suite。跨机柜时没有 NVLink，仍需 HybridEP 或 DeepEP V1 这类走 RDMA 的库。
 
 HybridEP 和 DeepEP V1 来自 DeepEP `hybrid-ep` 分支的同一个 `deep_ep` 包，分别编译成 `hybrid_ep_cpp` 和 `deep_ep_cpp` 两个扩展。NVSHMEM 只链接到 `deep_ep_cpp`，HybridEP 不使用 NVSHMEM。
 
@@ -26,6 +31,8 @@ HybridEP 和 DeepEP V1 来自 DeepEP `hybrid-ep` 分支的同一个 `deep_ep` �
 | MoonEP | `master` 分支 `d86fda4` | 源码保留在 `/opt/MoonEP`，测试和 benchmark 从这里运行 |
 | CUTLASS DSL | `nvidia-cutlass-dsl[cu13]` 4.6.2 | MoonEP 的 CuTe DSL kernel，运行时编译。基础镜像自带 4.3.5，安装时被升级；`protobuf` 也因依赖约束从 7.x 降到 6.x |
 | DeepGEMM | `main` 分支 `5081f85` | FP8/FP4/BF16 GEMM 和 Mega MoE |
+| FlashInfer | `flashinfer-python` 0.7.4（`7703905`）和同版本 `flashinfer-cubin`，装在 `/opt/flashinfer-venv` | NVLink one-sided all-to-all。kernel 运行时 JIT 编译；预编译 cubin 由 `flashinfer-cubin` 提供，离线节点不需要运行时下载。上游 `tests/`、`benchmarks/moe_ep/` 用 sparse checkout 放在 `/opt/flashinfer` |
+| CUTLASS DSL（FlashInfer 用） | `nvidia-cutlass-dsl[cu13]` 4.8.1，只在 venv 中 | FlashInfer 0.7.4 要求 4.8.0 及以上，与 MoonEP 的 4.6.2 冲突，所以分开安装 |
 | rdma-core | v60.0（`89ddad4`） | HybridEP RDMA 路径要求的版本 |
 | GPU 架构 | `TORCH_CUDA_ARCH_LIST=10.3` | GB300、B300 |
 
@@ -38,6 +45,8 @@ HybridEP 使用 DOCA/RDMA 后端（`HYBRID_EP_MULTINODE=1`，`USE_NIXL=0`）。�
 基础镜像中 PyTorch 已链接 NVSHMEM 3.5.21，运行时进程只会加载这一份 `libnvshmem_host.so.3`。因此 `NVSHMEM_VERSION` 必须与基础镜像一致，升级基础镜像时要同时修改。
 
 主线 DeepEP V2.5 不在本镜像中。它与 `hybrid-ep` 分支的 Python 包名都是 `deep_ep`，不能装在同一个环境中。MoonEP 的 `benchmarks/bench_vs_deepep.py` 以 V2 为对比对象，因此本镜像不运行它。
+
+FlashInfer venv 使用 `--system-site-packages`，torch、numpy 等直接用基础镜像的版本（安装时有约束），只有 `flashinfer-python`、`flashinfer-cubin`（wheel 在 flashinfer.ai，不在 PyPI）、`nvidia-cutlass-dsl` 4.8.1 和它们的新依赖装在 venv 中，系统 Python 中的 MoonEP 不受影响。`/opt/flashinfer` 中没有 `flashinfer/` 源码目录，测试导入的是已安装的 wheel。
 
 ## 构建
 
@@ -78,10 +87,11 @@ docker exec moe-bench moe-bench-env
 ### 单节点
 
 ```bash
-docker exec moe-bench moe-bench                  # hybrid-ep + deepep + moonep + deepgemm
+docker exec moe-bench moe-bench                  # hybrid-ep + deepep + moonep + nvlink-ep + deepgemm
 docker exec moe-bench moe-bench --suite hybrid-ep
 docker exec moe-bench moe-bench --suite deepep   # GLM 推理使用的 DeepEP V1
 docker exec moe-bench moe-bench --suite moonep
+docker exec moe-bench moe-bench --suite nvlink-ep  # vLLM GB300 路径：FlashInfer one-sided + Mega MoE
 docker exec moe-bench moe-bench --tests mega_moe
 docker exec moe-bench moe-bench --list
 ```
@@ -101,7 +111,9 @@ docker exec -e WORLD_SIZE=2 -e RANK=1 -e MASTER_ADDR=<节点0 IP> -e MASTER_PORT
   moe-bench moe-bench --suite hybrid-ep
 ```
 
-测试脚本自己为每个 GPU 启动进程：HybridEP、DeepEP V1、DeepGEMM 测试用 `torch.multiprocessing`，MoonEP 测试由 `moe-bench` 调用 `torchrun`。不要在外面再用 `torchrun` 按 GPU 启动，否则进程数会重复。
+测试脚本自己为每个 GPU 启动进程：HybridEP、DeepEP V1、DeepGEMM 测试用 `torch.multiprocessing`，MoonEP 和 FlashInfer 测试由 `moe-bench` 调用 `torchrun`。不要在外面再用 `torchrun` 按 GPU 启动，否则进程数会重复。
+
+`nvlink-ep` suite 要求所有 rank 在同一个 NVLink 域内（单节点，或同一 NVL72 机柜内经 MNNVL），不要跨机柜运行。
 
 同一 NVL72 机柜内，HybridEP 会检测 NVLink 域。如果 NVLink 域跨多个节点（MNNVL），测试日志会打印 `[topology] ranks_per_nvlink_domain=...`。可以用 `NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN` 覆盖检测值。跨机柜时，流量走 RDMA。
 
@@ -120,14 +132,16 @@ DeepGEMM 的 `layout`、`bf16`、`fp8_fp4` 是单 GPU 测试，多节点运行�
 | `deepep_low_latency` | `tests/test_low_latency.py` | V1 low_latency 模式（GLM decode），NVSHMEM IBGDA；多节点时加 `--allow-mnnvl` |
 | `moonep_tests` | MoonEP `tests/test_*.py`（pytest） | planning、dispatch、combine、e2e、grad_reduce、prefetch、API 校验 |
 | `moonep_bench` | `benchmarks/bench_comm.py` | 按 hidden、topk、EP 规模、不均衡度扫描各算子耗时，结果写 CSV |
+| `fi_one_sided` | FlashInfer `tests/moe_ep/test_moe_ep_communication_multirank.py -k nvlink_one_sided`（torchrun，可跨节点）；单节点时另跑 `tests/moe_ep/test_nvlink_one_sided.py` | one-sided dispatch/combine 正确性、CUDA Graph 重放、量化 dispatch、EPLB；单节点另测 DeepSeek-V3、Kimi 等模型形状。至少 2 个 rank |
+| `fi_one_sided_bench` | `benchmarks/moe_ep/bench_moe_ep_comm.py --backend nvlink_one_sided` | dispatch、combine 耗时，按每 rank batch 1–1024 扫描，结果写 JSON。至少 2 个 rank |
+| `mega_moe` | DeepGEMM `tests/test_mega_moe.py` | 融合 EP 通信与 GEMM（默认 FP8×FP4），正确性和性能；可跨节点 |
 | `layout` | DeepGEMM `tests/test_layout.py` | 缩放因子布局转换 |
 | `bf16` | `tests/test_bf16.py` | BF16 GEMM 正确性和性能 |
 | `fp8_fp4` | `tests/test_fp8_fp4.py` | FP8/FP4 GEMM 和分组 GEMM |
-| `mega_moe` | `tests/test_mega_moe.py` | 融合 EP 通信与 GEMM，默认不执行 |
 
 HybridEP 测试规模用环境变量调整，例如 `HIDDEN_DIM`、`NUM_TOKENS_PER_RANK`、`NUM_LOCAL_EXPERTS`、`TOPK`、`NUM_SMS_DISPATCH`、`NUM_SMS_COMBINE`。
 
-DeepEP V1 和 MoonEP 用下面的环境变量调整：
+DeepEP V1、MoonEP、FlashInfer 和 Mega MoE 用下面的环境变量调整：
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
@@ -135,8 +149,11 @@ DeepEP V1 和 MoonEP 用下面的环境变量调整：
 | `DEEPEP_LL_NUM_EXPERTS` | 不小于 288 的、rank 总数的最小倍数 | `deepep_low_latency` 的专家数。上游要求专家数能被 rank 总数整除 |
 | `MOONEP_MEM_HANDLE_TYPE` | `auto` | 上游变量。`auto` 在跨节点时用 fabric handle，`fd` 只能在节点内使用 |
 | `MOONEP_BENCH_ARGS` | 空 | 传给 `bench_comm.py` 的额外参数，例如 `--ep 64 --hidden 7168` |
+| `FI_ONE_SIDED_BENCH_ARGS` | `--profile deepseek_v3 -b 1 -e 1024 -f 2` | 替换 `bench_moe_ep_comm.py` 的默认参数，例如 `--profile kimi_k3 --quant nvfp4 -b 1 -e 256 -f 2` |
+| `MEGA_MOE_NUM_EXPERTS` | 不小于 384 的、rank 总数的最小倍数 | `mega_moe` 的专家数。上游测试给每个 rank 分 `num_experts // num_ranks` 个专家 |
+| `MEGA_MOE_ARGS` | 空 | 传给 `test_mega_moe.py` 的额外参数，例如 `--mma-type fp8xfp8 --num-max-tokens-per-rank 4096` |
 
-不适用于当前拓扑的测试报告为 SKIP，不算失败。在 GB300 上，`deepep_intranode` 只在 1 节点或 2 节点（8 个 rank）时运行，`deepep_internode` 总是 SKIP。
+不适用于当前拓扑的测试报告为 SKIP，不算失败。在 GB300 上，`deepep_intranode` 只在 1 节点或 2 节点（8 个 rank）时运行，`deepep_internode` 总是 SKIP。`fi_one_sided`、`fi_one_sided_bench` 在只有 1 个 rank 时 SKIP。
 
 ## 日志
 
@@ -146,6 +163,7 @@ DeepEP V1 和 MoonEP 用下面的环境变量调整：
 - `<主机>-rank<N>-<测试>.log`：测试输出
 - `<主机>-rank<N>-summary.txt`：PASS/FAIL/SKIP 和耗时
 - `<主机>-rank0-moonep_bench.csv`：MoonEP 各算子耗时，只在节点 rank 0 写入
+- `<主机>-rank0-fi_one_sided_bench.json`：FlashInfer one-sided dispatch/combine 耗时，只在节点 rank 0 写入
 
 有任何测试失败时，`moe-bench` 返回非零退出码。PASS 只表示正确性检查通过。带宽和延迟数据在测试日志中，验收门限要按实际平台另外确定。
 
@@ -160,3 +178,5 @@ DeepEP V1 和 MoonEP 用下面的环境变量调整：
 - 主机 GPU 驱动为 R580 时，CUDA 13.2 依赖小版本兼容。HybridEP 和 DeepGEMM 在运行时编译 kernel，必须在实机上确认 JIT 可以正常运行。
 - HybridEP 链接 rdma-core v60.0，PyTorch 的 NCCL 使用基础镜像中的 rdma-core 56.0。上游示例采用同样方式，但两者共存需要在实机上确认。
 - 上游 HybridEP 测试数据只有 H100、B200、GB200，没有 GB300 基线。
+- FlashInfer venv 的安装在 x86 的 NGC PyTorch 26.10 上验证过（import 和测试收集），arm64 的 26.03 基础镜像需要重新构建确认。one-sided 和 Mega MoE 跨节点（MNNVL）运行、Mega MoE 的 PyTorch symmetric memory 能否跨节点使用，都需要在 GB300 机柜上确认。
+- `nvlink-ep` 测的是 kernel 层，不包含 vLLM 本身。vLLM 中 `deep_gemm_mega_moe` 与 `flashinfer_nvlink_one_sided` 组合时实际使用哪条通信路径，要在服务启动日志中确认。

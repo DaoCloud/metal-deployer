@@ -49,6 +49,12 @@ for dist in ("nvidia-nvshmem-cu13", "nvidia-cutlass-dsl"):
     except metadata.PackageNotFoundError:
         print(dist, "not installed")
 PY
+/opt/flashinfer-venv/bin/python - <<'PY' 2>&1 || echo "flashinfer venv: IMPORT FAILED"
+from importlib import metadata
+import flashinfer
+print("flashinfer (venv)", flashinfer.__version__, flashinfer.__file__)
+print("nvidia-cutlass-dsl (venv)", metadata.version("nvidia-cutlass-dsl"))
+PY
 nvcc --version | tail -n 2
 
 section "rdma"
@@ -59,7 +65,8 @@ lsmod 2>/dev/null | grep -E '^(nvidia_peermem|gdrdrv) ' || true
 
 section "launch environment"
 for v in WORLD_SIZE RANK MASTER_ADDR MASTER_PORT NUM_OF_HYBRID_EP_RANKS_PER_NVLINK_DOMAIN \
-         DEEPEP_ALLOW_MNNVL DEEPEP_LL_NUM_EXPERTS MOONEP_MEM_HANDLE_TYPE CUDA_VISIBLE_DEVICES; do
+         DEEPEP_ALLOW_MNNVL DEEPEP_LL_NUM_EXPERTS MOONEP_MEM_HANDLE_TYPE \
+         FI_ONE_SIDED_BENCH_ARGS MEGA_MOE_NUM_EXPERTS MEGA_MOE_ARGS CUDA_VISIBLE_DEVICES; do
     echo "${v}=${!v:-}"
 done
 env | grep -E '^(NCCL|UCX|NVSHMEM)_' | sort || true

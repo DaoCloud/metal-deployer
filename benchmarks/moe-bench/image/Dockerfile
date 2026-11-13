@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
 #
 # MoE communication and compute test image for GB300 / B300 (Blackwell Ultra, sm_103, arm64/SBSA).
-# Contents: DeepEP hybrid-ep branch (HybridEP + DeepEP V1 with NVSHMEM), MoonEP and DeepGEMM.
+# Contents: DeepEP hybrid-ep branch (HybridEP + DeepEP V1 with NVSHMEM), MoonEP, DeepGEMM and
+# FlashInfer (NVLink one-sided MoE all-to-all, in /opt/flashinfer-venv).
 
 # NGC PyTorch 26.03: Ubuntu 24.04, Python 3.12, CUDA 13.2.0, PyTorch 2.11.0a0, NCCL 2.29.7.
 # The digest is the linux/arm64 manifest of nvcr.io/nvidia/pytorch:26.03-py3.
@@ -26,6 +27,12 @@ ARG NVSHMEM_VERSION=3.5.21
 ARG MOONEP_REF=d86fda40329de4002e0cade6817df7b4b5512ee5
 # MoonEP setup.py pins nvidia-cutlass-dsl 4.6.2. The cu13 extra selects the CUDA 13 libraries.
 ARG CUTLASS_DSL_VERSION=4.6.2
+# FlashInfer v0.7.4 (2026-11-11): NVLink one-sided MoE all-to-all (flashinfer.moe_ep), the
+# kernels behind vLLM --all2all-backend flashinfer_nvlink_one_sided. It needs
+# nvidia-cutlass-dsl >= 4.8.0, which conflicts with MoonEP, so it goes into its own venv.
+ARG FLASHINFER_VERSION=0.7.4
+ARG FLASHINFER_REF=77039051b0be921788dc2784ec41423b558878ec
+ARG FLASHINFER_CUTLASS_DSL_VERSION=4.8.1
 # GB300 and B300 are sm_103. Use "10.0 10.3" to also cover B200/GB200.
 ARG TORCH_CUDA_ARCH_LIST=10.3
 ARG MAX_JOBS=16
@@ -130,6 +137,25 @@ RUN pip install -c /etc/moe-bench-constraints.txt "nvidia-cutlass-dsl[cu13]==${C
        pip install --no-build-isolation --no-deps -v . \
     && rm -rf /opt/MoonEP/build
 
+# FlashInfer in /opt/flashinfer-venv. --system-site-packages reuses the base image torch;
+# packages in the venv (flashinfer, nvidia-cutlass-dsl 4.8) shadow the system ones only there.
+# The wheel compiles its kernels at run time. The upstream tests and benchmarks come from a
+# sparse checkout without the flashinfer/ package dir, so they import the installed wheel.
+# flashinfer-cubin carries the prebuilt cubins that FlashInfer otherwise downloads at run time
+# (offline nodes). Its release wheels are on flashinfer.ai, not PyPI; version must match.
+RUN python -m venv --system-site-packages /opt/flashinfer-venv \
+    && /opt/flashinfer-venv/bin/pip install -c /etc/moe-bench-constraints.txt \
+        --find-links https://flashinfer.ai/whl/flashinfer-cubin/ \
+        "flashinfer-python==${FLASHINFER_VERSION}" "flashinfer-cubin==${FLASHINFER_VERSION}" \
+        "nvidia-cutlass-dsl[cu13]==${FLASHINFER_CUTLASS_DSL_VERSION}" pytest \
+    && git clone --filter=blob:none --no-checkout ${GITHUB_URL}/flashinfer-ai/flashinfer.git /opt/flashinfer \
+    && cd /opt/flashinfer \
+    && git sparse-checkout set --no-cone /pytest.ini /tests/ /benchmarks/moe_ep/ \
+    && git checkout --detach ${FLASHINFER_REF} \
+    && test ! -e /opt/flashinfer/flashinfer \
+    && test -f /opt/flashinfer/tests/moe_ep/test_moe_ep_communication_multirank.py \
+    && test -f /opt/flashinfer/benchmarks/moe_ep/bench_moe_ep_comm.py
+
 # Import check without a GPU. Only this step uses the stub libraries.
 RUN cd / && LD_LIBRARY_PATH=/tmp/cuda-stub:${LD_LIBRARY_PATH:-} python - <<'PY'
 import deep_ep, deep_ep_cpp, hybrid_ep_cpp, deep_gemm, moonep, cutlass
@@ -139,6 +165,16 @@ print("hybrid_ep_cpp", hybrid_ep_cpp.__file__)
 print("deep_gemm", getattr(deep_gemm, "__version__", "?"), deep_gemm.__file__)
 print("moonep", moonep.__file__)
 print("cutlass", getattr(cutlass, "__version__", "?"))
+PY
+RUN cd / && LD_LIBRARY_PATH=/tmp/cuda-stub:${LD_LIBRARY_PATH:-} /opt/flashinfer-venv/bin/python - <<'PY'
+from importlib import metadata
+import flashinfer
+from flashinfer.moe_ep import NVLinkOneSidedConfig
+import flashinfer_cubin
+print("flashinfer", flashinfer.__version__, flashinfer.__file__)
+assert metadata.version("flashinfer-cubin") == metadata.version("flashinfer-python"), "flashinfer-cubin version mismatch"
+print("flashinfer-cubin", metadata.version("flashinfer-cubin"), flashinfer_cubin.__file__)
+print("venv nvidia-cutlass-dsl", metadata.version("nvidia-cutlass-dsl"))
 PY
 RUN rm -rf /tmp/cuda-stub
 
@@ -150,6 +186,9 @@ RUN printf '%s\n' \
       "nvshmem_version=${NVSHMEM_VERSION}" \
       "moonep_ref=${MOONEP_REF}" \
       "cutlass_dsl_version=${CUTLASS_DSL_VERSION}" \
+      "flashinfer_version=${FLASHINFER_VERSION}" \
+      "flashinfer_ref=${FLASHINFER_REF}" \
+      "flashinfer_cutlass_dsl_version=${FLASHINFER_CUTLASS_DSL_VERSION}" \
       "torch_cuda_arch_list=${TORCH_CUDA_ARCH_LIST}" \
       > /etc/moe-bench-build.info
 
