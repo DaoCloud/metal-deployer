@@ -3,7 +3,8 @@
 # trays and addresses from here. "testkit net-check" checks the hosts against
 # it (read only); the site script that configures the hosts reads it too. Every host entry is
 # complete: nothing is inherited. testkit logs in to lom.ip as root (passwordless ssh set up
-# beforehand; TESTKIT_SSH_CONFIG may name an extra ssh config file, e.g. for a ProxyJump).
+# beforehand; TESTKIT_SSH_CONFIG may name an extra ssh config file, e.g. for a ProxyJump;
+# TESTKIT_SSH_PORT sets the sshd port of the hosts, default 22).
 #
 #   rack, tray  optional: rack groups hosts in the tests, rack + tray decide the rank order;
 #            without them all hosts are one rack ("all"), ordered by name
