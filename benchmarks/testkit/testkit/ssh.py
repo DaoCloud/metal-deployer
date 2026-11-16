@@ -12,11 +12,23 @@ from concurrent.futures import ThreadPoolExecutor
 
 # testkit has no ssh settings in its files: passwordless login as root is set up beforehand.
 # TESTKIT_SSH_CONFIG names an extra ssh config file ("ssh -F"), e.g. for a key or a ProxyJump.
+# TESTKIT_SSH_PORT sets the sshd port of the hosts. testkit always passes "-p", which wins over a
+# Port in the config file, and the same port is used by host-to-host ssh (SuperBench, nvlink.*).
 DEFAULTS = {"user": "root", "port": 22, "parallel": 24, "connect_timeout": 10}
 
 
+def _port():
+    from testkit.util import ConfigError
+    value = (os.environ.get("TESTKIT_SSH_PORT") or "").strip()
+    if not value:
+        return DEFAULTS["port"]
+    if not value.isdigit() or not 1 <= int(value) <= 65535:
+        raise ConfigError("TESTKIT_SSH_PORT must be a port number 1-65535, got {!r}".format(value))
+    return int(value)
+
+
 def settings():
-    return dict(DEFAULTS, config=os.environ.get("TESTKIT_SSH_CONFIG") or None)
+    return dict(DEFAULTS, port=_port(), config=os.environ.get("TESTKIT_SSH_CONFIG") or None)
 
 
 class Result:

@@ -34,7 +34,7 @@ testkit -n network.yaml -t tests.yaml <命令>            # 两个文件默认�
 - 没写 `rack`、`tray` 时所有主机算一个 rack（`all`），按主机名排序。
 - `x-*` 字段留给配置脚本，testkit 忽略。
 
-testkit 本身没有 SSH 配置：以 root 登录 `lom.ip`，控制机到各主机的免密事先做好。需要额外的密钥、跳板机等时，用环境变量 `TESTKIT_SSH_CONFIG` 指定一个 ssh 配置文件（`ssh -F`）。
+testkit 本身没有 SSH 配置：以 root 登录 `lom.ip`，控制机到各主机的免密事先做好。需要额外的密钥、跳板机等时，用环境变量 `TESTKIT_SSH_CONFIG` 指定一个 ssh 配置文件（`ssh -F`）。主机的 sshd 不在 22 端口时，用环境变量 `TESTKIT_SSH_PORT` 指定端口（例如 `TESTKIT_SSH_PORT=2022`）：testkit 每次 ssh 都显式传 `-p`，会覆盖 `TESTKIT_SSH_CONFIG` 中的 `Port`；这个端口同时用于主机之间的 SSH（SuperBench 的 Ansible inventory、`nvlink.*` 的 rank 0 到其他主机）。
 
 tests.yaml 中与主机相关的可选设置：
 
