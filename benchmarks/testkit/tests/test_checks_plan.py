@@ -93,7 +93,7 @@ class ChecksTest(unittest.TestCase):
 
     def test_removed_section_is_disabled(self):
         text = self.ws.read("tests.yaml")
-        start = text.index("# ---------------- S8 MoE")
+        start = text.index("# ---------------- MoE (L5)")
         end = text.index("# ---------------- S9 report")
         self.ws.write("tests.yaml", text[:start] + text[end:])
         _, tests, problems = load(self.ws)

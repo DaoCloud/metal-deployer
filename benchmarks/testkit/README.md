@@ -385,11 +385,11 @@ CI（`.github/workflows/testkit-ci.yaml`，改动 `benchmarks/testkit/**` 时触
 | P2 | 执行器：SSH、远程 Docker、三种启动模式、结果拉回、`run/status/logs/cancel` | 完成 |
 | P6 | HTML 报告 | 完成 |
 | P3 | S3 网卡识别、`net-check` 网络检查（S4 下发由现场脚本完成） | 完成（实机待确认） |
-| P4 | S5 DCGM | 完成（实机待确认） |
-| P5 | S6 SuperBench（含 RDMA 打流） | 完成（实机待确认） |
-| P7 | S7 IMEX、S7a SHARP | 完成（实机待确认） |
-| P8 | S8 MoE | 待做 |
+| P4 | `dcgm`（L1） | 完成（实机待确认） |
+| P5 | `superbench.*`（L1、L2、L4，含 RDMA 打流） | 完成（实机待确认） |
+| P7 | `imex`（L3）、`sharp.scale_out`（L4） | 完成（实机待确认） |
+| P8 | `moe.*`（L5） | 待做 |
 | P9 | testkit 镜像、文档 | 待做 |
 | P10 | SuperBench 磁盘测试（安全检查） | 待做 |
-| P11 | 分层与关卡、rack 完整性、链路错误计数器与内核日志、L0 `links`（含 `mlxlink`）、RDMA 柜内/跨柜固定配对、S7b `nvlink.*`（mndiag）、离群与基线、`nvshmem.*` | 完成（单元测试与 e2e；实机待确认） |
+| P11 | 分层与关卡、rack 完整性、链路错误计数器与内核日志、L0 `links`（含 `mlxlink`）、RDMA 柜内/跨柜固定配对、L3 `nvlink.*`（mndiag）、离群与基线、`nvshmem.*` | 完成（单元测试与 e2e；实机待确认） |
 | P12 | `nixl.*`（NIXLBench：单机、跨节点、存储） | 完成（单元测试；实机待确认） |

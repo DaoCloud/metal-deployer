@@ -58,7 +58,7 @@ def build_parser():
     nc.add_argument("--static", action="store_true", help="only check the file, do not log in to hosts")
     nc.add_argument("--json", action="store_true", help="print host results as JSON")
 
-    run = sub.add_parser("run", help="S5-S8: run enabled test items in the built-in order")
+    run = sub.add_parser("run", help="L0-L5: run enabled test items in the built-in order")
     _add_selection(run)
     run.add_argument("--from", dest="start_from", metavar="ITEM",
                      help="start at this item (or prefix) and run the enabled items after it, e.g. after a gate stop")

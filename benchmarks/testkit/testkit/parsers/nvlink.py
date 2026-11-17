@@ -1,4 +1,4 @@
-"""Results of the S7b nvlink items (node_scripts/nvlink_run.py on the rank 0 host).
+"""Results of the nvlink.* items (L3) (node_scripts/nvlink_run.py on the rank 0 host).
 
 raw/done.json            steps run, with nvlink_run.py's verdict
 raw/pairs.txt            dcgmi mndiag text output of mnnvbandwidth gpuPairs=all (pair counts are text only)
