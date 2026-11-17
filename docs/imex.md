@@ -15,6 +15,7 @@ GB300 NVL72 一个机柜 = 18 个计算托盘（72 GPU）+ 9 个 NVSwitch 托盘
 |---|---|---|
 | 安装 `nvidia-imex-580`、`nvidia-modprobe`、R580 open 驱动、CUDA 13、NCCL 2.31 | ✅ 首启安装 | [manifest-gb300.yaml](../build-iso/manifests/manifest-gb300.yaml) `cuda.profiles.cuda13-gb300`（备用 `cuda13-gb300-aggressive` 为 `nvidia-imex-615` + R615 + CUDA 13.4 + NCCL 2.32） |
 | `options nvidia NVreg_CreateImexChannel0=1`（`/dev/nvidia-caps-imex-channels/channel0`） | ✅ | [nvidia_setup.sh](../build-iso/scripts/nvidia_setup.sh) → `/etc/modprobe.d/nvidia-imex.conf` |
+| CDMM：`options nvidia NVreg_CoherentGPUMemoryMode=driver`（仅 `PLATFORM=gb300/gb200`，`ENABLE_CDMM=1/0` 可覆盖）+ `update-initramfs -u` | ✅ | [nvidia_setup.sh](../build-iso/scripts/nvidia_setup.sh) → `/etc/modprobe.d/nvidia-cdmm.conf` |
 | systemd drop-in `ConditionPathExists=/etc/nvidia-imex/nodes_config.cfg` | ✅ | [config/imex/10-wait-config.conf](../build-iso/config/imex/10-wait-config.conf) |
 | `systemctl enable nvidia-imex`（无节点列表时静默不启动） | ✅ | nvidia_setup.sh |
 | GB300 下不 enable `nvidia-fabricmanager` | ✅ | nvidia_setup.sh（`PLATFORM=gb300`，可用 `SKIP_FABRIC_MANAGER=0/1` 覆盖） |
