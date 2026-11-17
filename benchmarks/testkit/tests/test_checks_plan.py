@@ -75,8 +75,19 @@ class ChecksTest(unittest.TestCase):
                      "  scale_out:\n    enabled: true")
         self.ws.edit("tests.yaml", "    groups: [[R1, R2]]\n    cases: [O-A", "    groups: [[R1]]\n    cases: [O-A")
         self.ws.edit("tests.yaml", "    per_rank: {}", "    per_rank: {first: {}}")
+        self.ws.edit("tests.yaml", "    benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-bidir,\n"
+                     "                           ib-traffic:perftest:multinode-lat]}\n    ib_pairs: rack_adjacent",
+                     "    ib_pairs: rack_adjacent")
+        self.ws.edit("tests.yaml", "    benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-bidir,\n"
+                     "                           ib-traffic:perftest:multinode-lat]}\n    ib_pairs: cross_rack",
+                     "    benchmarks: {include: [ib-traffic:perftest:multinode, nccl-bw:bw:allreduce:ib]}\n"
+                     "    ib_pairs: cross_rack")
         problems = self.errors()
         self.assertTrue(any("use MNNVL but imex is not enabled" in w for w in problems.warnings))
+        self.assertIn("superbench.rack: benchmarks.include is empty, so every benchmark in config_gb300_multi_node.yaml "
+                      "runs (NCCL too); L2 should run ib-traffic only, NCCL is tested in L4", problems.warnings)
+        self.assertIn("superbench.cross_rack: benchmarks.include has ['nccl-bw:bw:allreduce:ib']; L2 should run "
+                      "ib-traffic only, NCCL is tested in L4", problems.warnings)
         self.assertIn("sharp.scale_out: group R1 has only one rack; IB SHARP needs at least 2", problems.warnings)
         self.assertIn("moe.single.per_rank: key 'first' must be a rank number", problems.errors)
 

@@ -136,8 +136,10 @@ def run():
                         rnd, idx, x, y, rail)] = 97.0 + rail
                     d["ib-traffic:perftest:multinode-lat/ib_write_lat_2_cpu-to-cpu_{}_{}:{}_{}:{}".format(
                         rnd, idx, x, y, rail)] = 2.0
-        for size in (1048576, 8589934592):
-            d["nccl-bw:bw:allreduce:ib/allreduce_{}_busbw".format(size)] = 10.0 if size < 2 ** 30 else 360.0
+        # Like sb: without superbench.enable every benchmark of the config runs, NCCL over IB too.
+        if not override or "nccl-bw" in override:
+            for size in (1048576, 8589934592):
+                d["nccl-bw:bw:allreduce:ib/allreduce_{}_busbw".format(size)] = 10.0 if size < 2 ** 30 else 360.0
         lines = [d] + [{"node": n} for n in names[1:]]
     with open(os.path.join(out, "results-summary.jsonl"), "w") as f:
         for d in lines:

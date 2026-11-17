@@ -72,6 +72,9 @@ def build_parser():
     rep.add_argument("--out", help="output directory (default: <results_dir>/report)")
     rep.add_argument("--title", help="report title (default: report.title in tests.yaml)")
     rep.add_argument("--archive", action="store_true", help="also pack all run directories into raw-logs.tar.gz")
+    rep.add_argument("--results", action="append", metavar="DIR",
+                     help="results directory to read, repeat to merge several into one report (newest result "
+                          "of each host and item wins; default: results_dir in tests.yaml)")
     return parser
 
 
@@ -270,9 +273,15 @@ def main(argv=None):
             return cmd_nic(args, cluster, tests)
         if args.command == "report":
             from testkit.report import write_report
-            data, written = write_report(cluster, tests, out_dir=args.out, title=args.title, archive=args.archive)
+            missing = [d for d in args.results or [] if not os.path.isdir(d)]
+            if missing:
+                print("error: results directory not found: " + ", ".join(missing))
+                return 1
+            data, written = write_report(cluster, tests, out_dir=args.out, title=args.title, archive=args.archive,
+                                         results_dirs=args.results)
             n_fail = sum(1 for h in data["hosts"] if h["overall"] == "fail")
             print("{} hosts, {} items, {} hosts with own failures".format(len(data["hosts"]), len(data["items"]), n_fail))
+            print("verdict: {}".format(data["verdict"]["status"]))
             for path in written:
                 print("wrote " + path)
             return 0

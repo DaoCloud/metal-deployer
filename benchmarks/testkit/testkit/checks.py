@@ -117,6 +117,15 @@ def _check_item(tests, cluster, item, cfg, problems):
             for g in groups:
                 if len(g.hosts) < 2:
                     problems.warn("{}: group {} has one host; multi-node benchmarks need at least 2".format(where, g.id))
+    if item.section == "superbench" and item.layer == "L2":
+        include = (cfg.get("benchmarks") or {}).get("include") or []
+        other = [b for b in include if not str(b).startswith("ib-traffic")]
+        if not include:
+            problems.warn("{}: benchmarks.include is empty, so every benchmark in {} runs (NCCL too); L2 should run "
+                          "ib-traffic only, NCCL is tested in L4".format(where, cfg.get("config") or "the config"))
+        elif other:
+            problems.warn("{}: benchmarks.include has {}; L2 should run ib-traffic only, NCCL is tested in L4".format(
+                where, other))
     if cfg.get("timeout") is not None and (not isinstance(cfg["timeout"], int) or cfg["timeout"] <= 0):
         problems.error("{}: timeout must be a positive integer (seconds)".format(where))
     if item.id == "dcgm":

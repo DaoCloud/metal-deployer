@@ -200,7 +200,7 @@ nixl:
 testkit run nixl
 ```
 
-testkit 不使用 testNixl 的 SSH 编排，而是用自己的 mpi 模式容器（rank 0 容器启动 etcd，其他主机的进程经容器内 sshd 启动），结果进入 testkit 报告。细节见 [benchmarks/testkit/README.md](../benchmarks/testkit/README.md#nixlnixlbench可选默认关闭)。
+testkit 不使用 testNixl 的 SSH 编排，而是用自己的 mpi 模式容器（rank 0 容器启动 etcd，其他主机的进程经容器内 sshd 启动），结果进入 testkit 报告。细节见 [benchmarks/testkit/README.md](../benchmarks/testkit/README.md#nixlnixlbenchl4可选默认关闭)。
 
 ## 六、常见问题
 
