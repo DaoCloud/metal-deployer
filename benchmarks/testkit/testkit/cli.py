@@ -36,6 +36,14 @@ def build_parser():
 
     sub.add_parser("doctor", help="check local dependencies (python, PyYAML, ssh, rsync, sb)")
 
+    pre = sub.add_parser("preflight", help="check that the hosts are ready for the selected items: ssh, docker, "
+                                           "GPU runtime, GPUs, images, leftover containers, host tools, "
+                                           "host-to-host ssh port (read only unless --pull)")
+    _add_selection(pre)
+    pre.add_argument("--pull", action="store_true",
+                     help="fetch missing images as 'testkit run' does (tests.yaml image_pull)")
+    pre.add_argument("--json", action="store_true", help="print host results as JSON")
+
     nic = sub.add_parser("nic", help="S3: discover GPUs and NICs (read only) and compare with the golden host")
     nic.add_argument("action", choices=["discover", "show"])
     nic.add_argument("host", nargs="?", help="host for 'show' (default: the golden host)")
@@ -166,6 +174,35 @@ def cmd_plan(args):
     return 0
 
 
+def cmd_preflight(args):
+    from testkit import preflight
+    from testkit.docker import DockerOps
+    from testkit.items import known_selector
+    from testkit.plan import build_plan
+    from testkit.selection import SelectionError
+    cluster, tests, problems = _load(args)
+    for s in args.items:
+        if not known_selector(s):
+            problems.error("'{}' is not a test item or prefix".format(s))
+    if not problems.ok:
+        _print_problems(problems)
+        return 1
+    try:
+        hosts = _hosts(cluster, args)
+        plans = build_plan(cluster, tests, args.items, only=args.hosts, exclude=args.exclude)
+    except SelectionError as e:
+        print("error: " + str(e))
+        return 1
+    if not hosts:
+        print("no hosts selected")
+        return 1
+    if not args.json:
+        for msg in problems.warnings:
+            print("warning: " + msg)
+    return preflight.run(cluster, tests, hosts, plans, DockerOps(cluster.ssh), pull=args.pull, as_json=args.json,
+                         out=lambda m: print(m, flush=True))
+
+
 def _interrupt(signum, frame):
     raise KeyboardInterrupt
 
@@ -261,6 +298,8 @@ def main(argv=None):
             return cmd_plan(args)
         if args.command == "run":
             return cmd_run(args)
+        if args.command == "preflight":
+            return cmd_preflight(args)
         from testkit import runs
         cluster, tests = _load_quiet(args)
         if args.command == "status":

@@ -155,6 +155,19 @@ out=$(testkit s1 validate --ssh 2>&1) && rc=0 || rc=$?
 check "validate exits 0" [ "$rc" = 0 ]
 check "all hosts reachable" grep -q "ssh: 3/3 hosts reachable" <<<"$out"
 
+log "1b. preflight (no GPUs here: only the gpu check fails)"
+testkit s1 preflight --json >"$E2E_ROOT/pre1.json" && rc=0 || rc=$?
+pre() { json "$E2E_ROOT/$1" "d['hosts']['$2']['$3']['status']"; }
+check "preflight exits 1" [ "$rc" = 1 ]
+check "ssh, docker, image and containers ok" [ "$(for c in ssh docker images containers; do pre pre1.json gb300-r1-t02 $c; done | tr -d '\n')" = okokokok ]
+check "no GPU runtime check without --gpus" [ "$(pre pre1.json gb300-r1-t02 runtime)" = - ]
+check "gpu fails without nvidia-smi" [ "$(json "$E2E_ROOT/pre1.json" "d['hosts']['gb300-r1-t01']['gpu']['detail']")" = "nvidia-smi not found" ]
+docker stop -t 1 gb300-r1-t03 >/dev/null
+testkit s1 preflight >"$E2E_ROOT/pre1b.log" 2>&1 || true
+docker start gb300-r1-t03 >/dev/null
+check "stopped host fails ssh" grep -qE "gb300-r1-t03 +(❌ )?FAIL ssh:" "$E2E_ROOT/pre1b.log"
+for _ in $(seq 30); do testkit s1 validate --ssh 2>&1 | grep -q "ssh: 3/3" && break; sleep 1; done
+
 log "2. per-node, scope node"
 testkit s1 run smoke >"$E2E_ROOT/s1.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s1)
@@ -276,6 +289,9 @@ scenario s11 node per-node 0 300 "" "superbench:
   rack: {enabled: true, scope: rack, hosts: all, config: config_gb300_multi_node.yaml,
          benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-lat]}}"
 sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s11/tests.yaml"
+testkit s11 preflight superbench --json >"$E2E_ROOT/pre11.json" || true
+check "preflight: rank 0 reaches the ssh port of every host" [ "$(pre pre11.json gb300-r1-t01 peers)" = ok ]
+check "preflight: sbcli and worker images present on rank 0" [ "$(pre pre11.json gb300-r1-t01 images)" = ok ]
 testkit s11 run superbench >"$E2E_ROOT/s11.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s11)
 check "run exits 0" [ "$rc" = 0 ]

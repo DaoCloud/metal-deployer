@@ -11,6 +11,17 @@ import subprocess
 from testkit.ssh import Remote, Result
 
 q = shlex.quote
+IMAGE_INSPECT = "docker image inspect --format '{{.Id}}|{{json .RepoDigests}}' "
+
+
+def parse_image_info(out):
+    """Digest from IMAGE_INSPECT output: the first RepoDigest, or the image ID for local-only images."""
+    image_id, _, digests = out.strip().partition("|")
+    try:
+        repo = json.loads(digests or "[]")
+    except ValueError:
+        repo = []
+    return repo[0] if repo else image_id
 
 
 class DockerOps:
@@ -34,15 +45,10 @@ class DockerOps:
 
     def image_info(self, host, image):
         """(present, digest). digest is the first RepoDigest, or the image ID for local-only images."""
-        res = self._run(host, "docker image inspect --format '{{.Id}}|{{json .RepoDigests}}' " + q(image))
+        res = self._run(host, IMAGE_INSPECT + q(image))
         if not res.ok:
             return False, ""
-        image_id, _, digests = res.out.strip().partition("|")
-        try:
-            repo = json.loads(digests or "[]")
-        except ValueError:
-            repo = []
-        return True, repo[0] if repo else image_id
+        return True, parse_image_info(res.out)
 
     def pull(self, host, image, timeout=3600):
         return self._run(host, "docker pull " + q(image), timeout=timeout)
