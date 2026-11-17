@@ -273,7 +273,8 @@ log "11. superbench (stub sb: real ssh with the run key, SuperBench result forma
 scenario s11 node per-node 0 300 "" "superbench:
   common: {rule: rule_gb300.yaml, timeout: 120}
   single_node: {enabled: true, scope: node, hosts: all, config: config_gb300_single_node.yaml, benchmarks: {exclude: [gpu-burn]}}
-  rack: {enabled: true, scope: rack, hosts: all, config: config_gb300_multi_node.yaml}"
+  rack: {enabled: true, scope: rack, hosts: all, config: config_gb300_multi_node.yaml,
+         benchmarks: {include: [ib-traffic:perftest:multinode, ib-traffic:perftest:multinode-lat]}}"
 sed -i 's/^smoke: {enabled: true/smoke: {enabled: false/' "$E2E_ROOT/s11/tests.yaml"
 testkit s11 run superbench >"$E2E_ROOT/s11.log" 2>&1 && rc=0 || rc=$?
 run=$(last_run s11)
@@ -284,6 +285,9 @@ check "exclude reached sb" grep -q 'superbench.enable=\["cublaslt-gemm:compute",
     "$E2E_ROOT/s11/runs/$run/gb300-r1-t01/superbench.single_node/sb/run/override.txt"
 check "per-host metrics split out" [ "$(json "$E2E_ROOT/s11/runs/$run/gb300-r1-t03/superbench.single_node/summary.json" "d['metrics']['cublaslt-gemm:compute/fp8e4m3_0_8192_8192_8192_flops']['value']")" = 4477.0 ]
 check "rack: fixed pairs t01-t02, then t03-t01 (odd host)" [ "$(json "$E2E_ROOT/s11/runs/$run/_groups/superbench.rack/R1/summary.json" "sorted(d['rdma']['pairs'])")" = "['gb300-r1-t01|gb300-r1-t02', 'gb300-r1-t01|gb300-r1-t03']" ]
+check "rack: ib-traffic only, no NCCL result in L2" python3 -c "
+import json,sys; d=json.load(open('$E2E_ROOT/s11/runs/$run/_groups/superbench.rack/R1/summary.json'))
+sys.exit(0 if d['rdma'] and not d.get('charts') and not any('nccl' in json.dumps(t) for t in d.get('tables', [])) else 1)"
 check "rack: pairing file by SuperBench hostfile index" [ "$(cat "$E2E_ROOT/s11/runs/$run/gb300-r1-t01/superbench.rack/raw/ib-pairs.txt" | tr '\n' ' ')" = "0,1 2,0 " ]
 check "rack: pairing files removed from the hosts" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h sh -c "ls /mnt/testkit/$run 2>/dev/null | wc -l"; done | tr -d '\n')" = 000 ]
 check "run key removed from every host" [ "$(for h in gb300-r1-t01 gb300-r1-t02 gb300-r1-t03; do docker exec $h grep -c testkit- /root/.ssh/authorized_keys; done | tr -d '\n')" = 000 ]
@@ -354,6 +358,21 @@ check "report exits 0" [ "$rc" = 0 ]
 check "report.html written" grep -q "const D = " "$E2E_ROOT/s3/runs/report/report.html"
 check "hosts.csv marks the failing host" grep -q '^gb300-r1-t02,R1,2,,fail,' "$E2E_ROOT/s3/runs/report/hosts.csv"
 check "raw logs archived" tar -tzf "$E2E_ROOT/s3/runs/report/raw-logs.tar.gz" >/dev/null
+
+log "14. one report from the results of every scenario"
+merge=()
+for d in "$E2E_ROOT"/s*/runs; do merge+=(--results "$d"); done
+out=$(testkit s3 report --out "$E2E_ROOT/report" "${merge[@]}") && rc=0 || rc=$?
+check "merged report exits 0" [ "$rc" = 0 ]
+check "merged report: one page with every layer that ran, RDMA summary inside L2" python3 -c "
+import json,re,sys; s=open('$E2E_ROOT/report/report.html').read()
+d=json.loads(re.search(r'const D = (.*);\n', s).group(1).replace('<\\\\/', '</'))
+ran={l['id'] for l in d['layers'] if l['ran']}
+ids=[i['id'] for i in d['items']]
+l3=[i for i, x in enumerate(d['items']) if x['layer'] == 'L3']
+ok=ran >= {'', 'L1', 'L2', 'L3', 'L4'} and len(d['meta']['results_dirs']) == ${#merge[@]} // 2
+ok=ok and 'rdma' in ids and l3 and ids.index('rdma') < l3[0] and d['verdict']['status'] in ('pass', 'fail', 'incomplete')
+sys.exit(0 if ok else 1)"
 
 echo
 log "passed $PASSED, failed $FAILED"

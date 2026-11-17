@@ -45,27 +45,27 @@ class Item:
 
 ITEMS = [
     # S3 runs through "testkit nic", not "testkit run"; listed for state and report.
-    Item("nic", "nic", None, "cli", "", "P3", "S3 网卡识别"),
+    Item("nic", "nic", None, "cli", "", "P3", "网卡识别"),
     Item("smoke", "smoke", None, "per-node", "sb_worker", "P2", "冒烟测试（smoke）"),
     # L0: static link state and error counters of every NVLink and IB port, read-only.
-    Item("links", "links", None, "host", "", "P11", "L0 链路状态与错误计数", layer="L0", gate=True),
+    Item("links", "links", None, "host", "", "P11", "链路状态与错误计数", layer="L0", gate=True),
     # L1: one host at a time.
-    Item("dcgm", "dcgm", None, "per-node", "dcgm", "P4", "S5 DCGM 诊断", layer="L1", gate=True),
-    Item("superbench.single_node", "superbench", "single_node", "delegate", "sbcli", "P5", "S6 SuperBench 单机",
+    Item("dcgm", "dcgm", None, "per-node", "dcgm", "P4", "DCGM 诊断", layer="L1", gate=True),
+    Item("superbench.single_node", "superbench", "single_node", "delegate", "sbcli", "P5", "SuperBench 单机",
          batch=True, layer="L1", gate=True),
-    Item("superbench.disk", "superbench", "disk", "per-node", "sb_worker", "P10", "S6 SuperBench 磁盘", layer="L1"),
+    Item("superbench.disk", "superbench", "disk", "per-node", "sb_worker", "P10", "SuperBench 磁盘", layer="L1"),
     # L2: RDMA point to point, same rail on both ends: inside each rack first, then rack to rack.
-    Item("superbench.pair", "superbench", "pair", "delegate", "sbcli", "P5", "S6 RDMA 双节点冒烟", layer="L2",
+    Item("superbench.pair", "superbench", "pair", "delegate", "sbcli", "P5", "RDMA 双节点冒烟", layer="L2",
          gate=True),
-    Item("superbench.rack", "superbench", "rack", "delegate", "sbcli", "P5", "S6 RDMA 柜内两两（同 rail）",
+    Item("superbench.rack", "superbench", "rack", "delegate", "sbcli", "P5", "RDMA 柜内两两（同 rail）",
          layer="L2", gate=True),
-    Item("superbench.cross_rack", "superbench", "cross_rack", "delegate", "sbcli", "P5", "S6 RDMA 跨柜两两（同 rail）",
+    Item("superbench.cross_rack", "superbench", "cross_rack", "delegate", "sbcli", "P5", "RDMA 跨柜两两（同 rail）",
          layer="L2", gate=True),
     # L3: NVLink inside each rack: IMEX, every GPU pair, then the fabric under concurrent traffic.
-    Item("imex", "imex", None, "mpi", "sb_worker", "P7", "S7 IMEX", layer="L3", gate=True, full_rack=True),
-    Item("nvlink.pairs", "nvlink", "pairs", "host", "", "P11", "S7b NVLink GPU 对（mnnvbandwidth）", layer="L3",
+    Item("imex", "imex", None, "mpi", "sb_worker", "P7", "IMEX", layer="L3", gate=True, full_rack=True),
+    Item("nvlink.pairs", "nvlink", "pairs", "host", "", "P11", "NVLink GPU 对（mnnvbandwidth）", layer="L3",
          gate=True, full_rack=True),
-    Item("nvlink.fabric", "nvlink", "fabric", "host", "", "P11", "S7b NVLink Fabric 并发（NVLoom）", layer="L3",
+    Item("nvlink.fabric", "nvlink", "fabric", "host", "", "P11", "NVLink Fabric 并发（NVLoom）", layer="L3",
          gate=True, full_rack=True),
     # L4: NCCL collectives (whole-system throughput): one tray, one rack over MNNVL, all racks, IB SHARP.
     Item("superbench.nccl_node", "superbench", "nccl_node", "delegate", "sbcli", "P5", "NCCL 单机（节点内 NVLink）",
@@ -85,11 +85,11 @@ ITEMS = [
          layer="L4"),
     Item("superbench.soak", "superbench", "soak", "delegate", "sbcli", "P5", "NCCL 长稳（跨柜 allreduce）", layer="L4"),
     # L5: MoE workloads.
-    Item("moe.single", "moe", "single", "per-node", "moe_bench", "P8", "S8 MoE 单机（第 1 档）", layer="L5"),
-    Item("moe.rack", "moe", "rack", "per-node", "moe_bench", "P8", "S8 MoE rack 内（第 2 档）", layer="L5", full_rack=True),
-    Item("moe.cross_rack", "moe", "cross_rack", "per-node", "moe_bench", "P8", "S8 MoE 跨 rack（第 3 档）", layer="L5"),
-    Item("moe.all", "moe", "all", "per-node", "moe_bench", "P8", "S8 MoE 全部节点（第 4 档）", layer="L5"),
-    Item("moe.moonep", "moe", "moonep", "per-node", "moe_bench", "later", "S8 MoonEP", layer="L5"),
+    Item("moe.single", "moe", "single", "per-node", "moe_bench", "P8", "MoE 单机（第 1 档）", layer="L5"),
+    Item("moe.rack", "moe", "rack", "per-node", "moe_bench", "P8", "MoE rack 内（第 2 档）", layer="L5", full_rack=True),
+    Item("moe.cross_rack", "moe", "cross_rack", "per-node", "moe_bench", "P8", "MoE 跨 rack（第 3 档）", layer="L5"),
+    Item("moe.all", "moe", "all", "per-node", "moe_bench", "P8", "MoE 全部节点（第 4 档）", layer="L5"),
+    Item("moe.moonep", "moe", "moonep", "per-node", "moe_bench", "later", "MoonEP", layer="L5"),
 ]
 
 BY_ID = {item.id: item for item in ITEMS}

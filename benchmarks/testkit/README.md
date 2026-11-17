@@ -158,10 +158,10 @@ runs/
 ## 报告
 
 ```bash
-testkit report [--out DIR] [--title T] [--archive]
+testkit report [--out DIR] [--title T] [--archive] [--results DIR ...]
 ```
 
-只读本地结果目录，不连主机，可随时重新生成。默认写到 `<results_dir>/report/`：
+只读本地结果目录，不连主机，可随时重新生成。默认写到 `<results_dir>/report/`。同一套 tests.yaml 的所有 run 都在一个结果目录里，出一份报告；结果分散在几个目录时（例如分批在不同控制机上执行），重复 `--results DIR` 把它们合成一份报告，同一主机、同一测试项、同一组取 run id 最新的结果：
 
 | 文件 | 内容 |
 |---|---|
@@ -170,7 +170,14 @@ testkit report [--out DIR] [--title T] [--archive]
 | `metrics.csv` | 每条指标一行：run、测试项、组、主机、指标、数值、单位 |
 | `raw-logs.tar.gz` | `--archive` 时打包所有 run 目录 |
 
-每台主机每个测试项取 `state.json` 中的最新结果。页面：总览（rack × tray 矩阵）、问题与离群值、各测试项（主机 × 指标表，按偏离全部主机中位数着色；多节点项另有组卡片）、主机详情、版本一致性、执行记录。
+每台主机每个测试项取 `state.json` 中的最新结果。报告章节（左侧导航）：
+
+1. 验收结论（默认页）：总结论（通过、不通过、未完成）、各层结论、关卡（gate）停止的位置。任一主机或组失败为不通过；有被停止、取消、阻断的结果，或 tests.yaml 启用的测试项还没有结果，为未完成。性能指标不影响结论。
+2. 总览：rack × tray 矩阵、按层排列的测试项汇总。
+3. 主机列表，点进主机详情。
+4. 测试：按验收层级分组，准备（网卡识别、冒烟测试、版本一致性）、L0 链路、L1 单机、L2 RDMA（含 RDMA 打流汇总）、L3 NVLink、L4 NCCL、L5 MoE。点层名进入该层概览，没有结果的层标“未执行”（tests.yaml 启用了）或“未启用”。各测试项页是主机 × 指标表，按偏离全部主机中位数着色，多节点项另有组卡片。测试项标题不带层级或阶段编号。
+5. 执行记录与原始数据。
+6. 问题汇总：主机自身失败、组失败、性能异常（比全部主机中位数差 5% 以上，仅提示）、跳过或未完成。
 
 判定规则：主机“有自身失败项”只看它自己的结果（fail / error / timeout）；mpi、delegate 的组结果和被连带停止都记在组上，不改变主机结论。性能指标不设门限，只按偏离中位数着色提示。
 
@@ -184,7 +191,7 @@ testkit report [--out DIR] [--title T] [--archive]
 
 可选 `/results/env.json`（`{"driver": "580.95.05", ...}`）用于版本一致性页。组级 `summary.json` 可带 `tables`、`charts`、`matrix`，在组卡片中显示。
 
-### dcgm：S5 DCGM 诊断
+### dcgm：DCGM 诊断（L1）
 
 使用官方镜像 `nvcr.io/nvidia/cloud-native/dcgm:4.7.1-ubuntu24.04`（含 arm64、CUDA 13 诊断插件，与 ISO 中 DCGM 4.7.1 一致），不另做镜像。testkit 把包装脚本 `node_scripts/dcgm_run.sh` 写到主机并挂载进容器，脚本只采集原始输出，判定在控制端完成（`testkit/parsers/dcgm.py`）。
 
@@ -204,7 +211,7 @@ testkit report [--out DIR] [--title T] [--archive]
 
 `gpu_burn` 尚未接入 dcgm 项，开启时记为跳过。
 
-### links：L0 链路状态与错误计数（每台主机）
+### links：链路状态与错误计数（L0，每台主机）
 
 不启动容器，经 SSH 在主机上执行 `node_scripts/link_counters.py`（只读），在控制端判定（`testkit/parsers/links.py`）：
 
@@ -220,7 +227,7 @@ testkit report [--out DIR] [--title T] [--archive]
 
 快照保存在 `raw/link-counters.json`，与之后各测试项前后的快照格式相同。
 
-### nvlink：S7b NVLink GPU 对与 Fabric（每个 rack 一组，主机模式）
+### nvlink：NVLink GPU 对与 Fabric（L3，每个 rack 一组，主机模式）
 
 用 ISO 预装的 DCGM multinode 包（`datacenter-gpu-manager-4-multinode{,-cuda13}`）在每个 rack 的 rank 0 主机执行 `dcgmi mndiag`，不用容器：
 
@@ -237,11 +244,11 @@ DCGM 的 Pass 只表示传输完成，不检查带宽；带宽和延迟由 testk
 
 实机待确认：nv-hostengine 改监听地址后其他依赖 127.0.0.1:5555 的服务（如 dcgm-exporter）在测试期间连不上；`targetNumPairs=-1` 在 72 GPU 上的耗时（据此调 `time_to_run`）；workload 日志的实际文件名与位置。
 
-### nvshmem：S7b NVSHMEM perftest（可选，默认关闭）
+### nvshmem：NVSHMEM perftest（L4，可选，默认关闭）
 
 mpi 模式，镜像默认 `moe_bench`（需含 `libnvshmem3-dev-cuda-13`，perftest 在 `/usr/bin/nvshmem_13/perftest/device`）。rank 0 容器执行 `node_scripts/nvshmem_run.sh`：设置 `NVSHMEM_BOOTSTRAP=MPI`、`NVSHMEM_MACHINE_READABLE_OUTPUT=1`，逐个运行 `tests` 中的 perftest。`nvshmem.pair` 在 2 台主机上各用 1 张 GPU 测 put/get 带宽和延迟；`nvshmem.rack` 用整个 rack 的 GPU 测 alltoall 延迟。结果只记录（带宽取最大消息、延迟取最小消息），perftest 退出码非 0 时该组失败。
 
-### nixl：NIXLBench（可选，默认关闭）
+### nixl：NIXLBench（L4，可选，默认关闭）
 
 mpi 模式，镜像 `images.nixl_benchmark`（[`benchmarks/nixl-benchmark`](../nixl-benchmark/README.md)，GB300 用 `latest-cuda13-gb300`）。testkit 把 case 清单（`nixl_cases.tsv`）和主机配对（`nixl_pairs.tsv`）写到 `/testkit`；rank 0 容器执行 `node_scripts/nixl_run.sh`：在本容器启动 etcd（mgmt 地址，`etcd_port` 默认 12379），每个 case 先起 initiator、5 秒后起 target（两进程在 etcd 汇合，先注册的是 rank 0），其他主机上的进程经 ssh 在其容器内启动，并读取该容器的环境（`/proc/1/environ`），所以每台主机自己的 `UCX_NET_DEVICES` 生效。测试项与 [S1-S6 smoke 套件](../nixl-benchmark/nixlbench-acceptance-smoke-suite.md) 对应：
 
@@ -253,13 +260,13 @@ mpi 模式，镜像 `images.nixl_benchmark`（[`benchmarks/nixl-benchmark`](../n
 
 判定：nixlbench 退出码非 0（`124` 为超时）、没有结果表、出现 `Consistency check failed` 时该次运行失败；`min_bw_gbps`（最大块带宽）、`max_lat_us`（最小块延迟）按 case 设置，不设只记录。应运行但没有结果的 case（脚本中途退出）记为 `not run`。跨节点失败时两端主机都标为故障主机（`group_result: false`），组内其余主机取组结果。报告显示每次运行的最小块延迟、最大块带宽和带宽曲线；单机 case 的带宽、延迟另写入主机指标 `nixl/<case>/bw_gbps`、`nixl/<case>/lat_us`。
 
-### superbench：S6 SuperBench 与 RDMA 打流
+### superbench：SuperBench 与 RDMA 打流（L1、L2、L4）
 
 每组在 rank 0 主机上启动 sbcli 镜像（`images.sbcli`，需与主机同为 arm64），由它对组内所有主机执行 `sb deploy` / `sb run`（脚本 `node_scripts/sb_run.sh`）。worker 镜像 `images.sb_worker` 须已在每台主机上（ISO 预置），预检会逐台检查。
 
 - inventory：名称为主机的 mgmt 地址（MPI 走业务网），`ansible_host` 为 LOM 地址（SSH）。
 - SSH 密钥：本次运行生成的密钥在预检时加入每台主机的 `authorized_keys`，结束后（包括失败、取消）删除，rank 0 主机上的私钥同时删除；不会把控制机的密钥拷到主机。
-- `benchmarks.include` / `exclude` 改写配置的 `superbench.enable`。
+- `benchmarks.include` / `exclude` 改写配置的 `superbench.enable`。L2 的 `superbench.pair`、`superbench.rack`、`superbench.cross_rack` 用 `include` 只启用 ib-traffic（`config_gb300_multi_node.yaml` 里还有 `nccl-bw:*:ib`，NCCL 在 L4 测）；`include` 为空或含非 ib-traffic 测试时，`validate` 和运行前的检查给出警告。
 - `timeout`（默认 14400 秒）覆盖 `runtime.run_timeout`。
 - 主机名：SuperBench 用各主机的短 OS 主机名（Ansible facts）命名节点和 ib-traffic 指标，testkit 预检时读每台主机的 `hostname`，结果映射回 network.yaml 中的主机，即使 OS 主机名与 network.yaml 不同也能对上。
 - RDMA 配对（`ib_pairs`）：`rack_adjacent`（`superbench.rack` 默认：每个 rack 内 tray 1-2、3-4……，所有 rack 同一轮；奇数台时最后一台在第二轮与第一台配对）、`rack_half`（tray i 与 i+n/2）、`cross_rack`（`superbench.cross_rack` 默认：rack A 第 i 台与 rack B 第 i 台；多于 2 个 rack 时每种 rack 组合一轮，`cross_rack_rounds: first` 只跑第一轮）、`round_robin`（SuperBench 原生 one-to-one，所有节点对，n−1 轮）。前三种由 testkit 生成 ib-traffic 配对文件：先按 SuperBench hostfile 的顺序（OS 主机名不区分大小写排序）换算行号，写到每台主机的 `/mnt/testkit/<run>/<项>-<组>/ib-pairs.txt`（worker 容器挂载 `/mnt`），用 `--config-override ...ib-traffic*.parameters.config=` 传给 `ib-traffic`，结束后删除；配对表保存在 `raw/ib-pairs-hosts.tsv`。每对的 4 个 rail 同时打流（rail k ↔ rail k）。
@@ -279,7 +286,7 @@ NCCL 网卡校验（`superbench.common.hca_check`，默认 `fail`）：从 Super
 
 磁盘测试（`superbench.disk`）在 P10 实现。
 
-### imex：S7 IMEX 配置与测试（每个 rack 一组）
+### imex：IMEX 配置与测试（L3，每个 rack 一组）
 
 1. 主机侧（`configure: true` 时）：把 rack 的 mgmt 地址列表（rank 顺序）以相同路径、相同内容写到每台主机，执行 `<scripts_dir>/imex-configure.sh --nodes <列表> --expect <台数>`；任一主机失败，整组不启动。
 2. rank 0 主机等待 `nvidia-imex-ctl -N` 显示 `Domain State: UP`（`wait_ready_seconds`），超时则整组记为 error，不启动容器。
@@ -288,7 +295,7 @@ NCCL 网卡校验（`superbench.common.hca_check`，默认 `fail`）：从 Super
 
 报告的组卡片显示连接矩阵、READY、Domain State、T1/T2 结果。柜内 MNNVL 集合通信由 `superbench.nvl_domain` 测试（在 `imex` 之后执行）。
 
-### sharp：S7a IB SHARP（L4）
+### sharp：IB SHARP（L4）
 
 用 SuperBench 执行 `config_gb300_sharp.yaml`，每个操作（`ops`）、每组 NCCL 设置（`cases`）是一个 nccl-bw 条目 `nccl-bw:sharp:<op>:<case>`：
 
@@ -298,7 +305,7 @@ NCCL 网卡校验（`superbench.common.hca_check`，默认 `fail`）：从 Super
 
 每组都显式设置 `NCCL_NVLS_ENABLE`；O-C、O-D 把 HPC-X 的 SHARP 插件与库加入 `LD_LIBRARY_PATH` 并开启 SAT。报告显示每组 busbw 曲线、最大消息 busbw、O-B/O-A、O-D/O-B、O-D/O-C、O-C/O-A 倍数（只展示，不判定），以及 NCCL 日志中 NVLS、CollNet/SHARP、插件、算法相关的行；某组返回码非 0 记为失败。需要新版 NCCL 时用 `sharp.common.worker_image` 指定加层镜像。柜内 NVLS 与关闭 NVLS 的对比由 `superbench.nvl_domain` 完成，配置中的 U-A、U-B 不再执行。
 
-### smoke：检查节点能否运行测试容器
+### smoke：检查节点能否运行测试容器（准备）
 
 `smoke` 在每台主机启动一个容器，写出 `summary.json` 后退出，用来确认 SSH、Docker、镜像都正常。`mode: mpi` 时在组内跑一次 `mpirun hostname`，用来确认 mpi 模式（sshd、hostfile、跨节点 SSH）可用。`sleep`、`exit_code` 用于演练；在 tests.yaml `hosts.<主机>.env` 中设置 `TESTKIT_SMOKE_EXIT: "1"` 可让它单独失败。
 

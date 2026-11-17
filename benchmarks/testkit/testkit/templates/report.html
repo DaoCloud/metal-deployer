@@ -13,6 +13,8 @@ nav a{display:block;padding:5px 18px;color:var(--fg);text-decoration:none;font-s
 nav a:hover{background:#f3f4f6}nav a.on{background:#ddf4ff;border-left:3px solid var(--acc);padding-left:15px;font-weight:600}
 nav .sec{padding:10px 18px 4px;color:var(--mut);font-size:12px;font-weight:600}
 nav .cnt{float:right;font-size:11px;color:var(--mut)}nav .cnt b{color:var(--fail)}
+nav a.lay{font-weight:600}nav a.it{padding-left:30px}nav a.it.on{padding-left:27px}
+.verdict{font-size:22px;font-weight:700;padding:6px 14px;border-radius:6px;display:inline-block}
 main{flex:1;padding:18px 24px;min-width:0}
 h2{font-size:20px;margin:4px 0 14px}h3{font-size:15px;margin:18px 0 8px}
 .card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:14px 16px;margin-bottom:14px}
@@ -70,7 +72,12 @@ const ownBad = (h, it) => { const e = h.items[it]; return !!e && BAD.includes(e.
 const itemById = Object.fromEntries(D.items.map(i => [i.id, i]));
 const hostByName = Object.fromEntries(D.hosts.map(h => [h.name, h]));
 const fmtBytes = b => b >= 2**30 ? (b/2**30)+"G" : b >= 2**20 ? (b/2**20)+"M" : b >= 2**10 ? (b/2**10)+"K" : b+"";
-const shortTitle = t => t.replace(/^S\d+a? /, "");
+const layerById = Object.fromEntries(D.layers.map(l => [l.id, l]));
+const layerName = l => (layerById[l || ""] || {}).name || l;
+const VERDICT = {pass: "通过", fail: "不通过", incomplete: "未完成", none: "暂无结果"};
+// A layer or item without results: "未执行" if tests.yaml enables it, else "未启用".
+const notRun = x => `<span class="st none">${x.expected || x.enabled ? "未执行" : "未启用"}</span>`;
+const layerSt = l => l.ran ? st(l.status) : notRun(l);
 let rackFilter = "all", colorOn = true, sortState = {};
 
 function itemCounts(id) {
@@ -89,17 +96,61 @@ function devClass(v, med, col) {
 }
 
 function renderNav() {
-  const r = location.hash || "#overview";
-  const a = (h, t, extra="") => `<a href="${h}" class="${r === h ? 'on' : ''}">${t}${extra}</a>`;
-  let s = `<div class="sec">报告</div>` + a("#overview", "总览") + a("#issues", "问题与离群值");
-  s += `<div class="sec">测试项</div>`;
-  for (const it of D.items) {
-    const c = itemCounts(it.id);
-    s += a(`#item/${it.id}`, esc(it.title), `<span class="cnt">${c.bad ? `<b>${c.bad}✘</b> ` : ""}${c.pass}✔</span>`);
+  const r = location.hash || "#summary";
+  const a = (h, t, extra="", cls="") => `<a href="${h}" class="${cls} ${r === h ? 'on' : ''}">${t}${extra}</a>`;
+  let s = `<div class="sec">报告</div>` + a("#summary", "验收结论") + a("#overview", "总览") + a("#hosts", "主机列表");
+  s += `<div class="sec">测试</div>`;
+  for (const l of D.layers) {
+    const mark = !l.ran ? (l.expected ? "未执行" : "未启用") : l.status === "fail" ? `<b>${l.bad}✘</b>` : l.status === "pass" ? "✔" : esc(ST[l.status] || l.status);
+    s += a(`#layer/${l.id}`, esc(l.name), `<span class="cnt">${mark}</span>`, "lay");
+    for (const it of D.items.filter(it => (it.layer || "") === l.id)) {
+      const c = itemCounts(it.id);
+      s += a(`#item/${it.id}`, esc(it.title), it.view ? "" : `<span class="cnt">${c.bad ? `<b>${c.bad}✘</b> ` : ""}${c.pass}✔</span>`, "it");
+    }
+    if (!l.id) s += a("#versions", "版本一致性", "", "it");
   }
-  if (!D.items.length) s += `<div class="small mut" style="padding:4px 18px">暂无结果</div>`;
-  s += `<div class="sec">其他</div>` + a("#hosts", "主机列表") + a("#versions", "版本一致性") + a("#runs", "执行记录与原始数据");
+  s += `<div class="sec">其他</div>` + a("#runs", "执行记录与原始数据") + a("#issues", "问题汇总");
   $("#nav").innerHTML = s;
+}
+
+function pageSummary() {
+  const v = D.verdict, m = D.meta;
+  const color = {pass: "var(--pass)", fail: "var(--fail)", incomplete: "var(--blk)"}[v.status] || "var(--mut)";
+  const bg = {pass: "var(--passbg)", fail: "var(--failbg)", incomplete: "var(--blkbg)"}[v.status] || "#f6f8fa";
+  let s = `<h2>验收结论</h2><div class="card"><span class="verdict" style="color:${color};background:${bg}">${VERDICT[v.status] || esc(v.status)}</span>
+    <div class="small" style="margin-top:10px">平台：${esc(m.platform || "—")}；集群：${esc(m.cluster)}；金样本：${esc(m.golden || "—")}；时间：${esc(m.start || "—")} → ${esc(m.end || "—")}；工具：${esc(m.tool)}</div></div>`;
+  if (v.gate) {
+    const later = D.layers.filter(l => !l.ran && l.expected).map(l => esc(l.name));
+    s += `<div class="card" style="border-left:4px solid var(--fail)"><b>关卡停止</b>：run ${esc(v.gate.run_id)} 中 <a href="#item/${esc(v.gate.item)}">${esc(v.gate.title)}</a> ${st(v.gate.status)}，之后的测试项没有执行${later.length ? `（${later.join("、")}）` : ""}。
+      <div class="small mut" style="margin-top:4px">修复后执行 <code>testkit run --from ${esc(v.gate.item)}</code> 继续，或加 <code>--no-gate</code> 跳过关卡。</div></div>`;
+  }
+  s += `<div class="card"><h3 style="margin-top:0">各层结论</h3><table><tr><th>层</th><th>结论</th><th class="num">已执行 / 启用</th><th class="num">失败对象</th><th>未通过的测试项</th></tr>`;
+  for (const l of D.layers) {
+    const bad = l.items.filter(r => r.ran && r.status !== "pass" && r.status !== "skip").map(r => `<a href="#item/${r.id}">${esc(r.title)}</a> ${st(r.status)}`);
+    const todo = l.items.filter(r => !r.ran && r.enabled).map(r => `${esc(r.title)} ${notRun(r)}`);
+    s += `<tr><td><a href="#layer/${l.id}">${esc(l.name)}</a></td><td>${layerSt(l)}</td><td class="num">${l.ran} / ${l.expected}</td><td class="num" style="color:${l.bad ? 'var(--fail)' : ''}">${l.bad}</td><td class="small">${bad.concat(todo).join("，")}</td></tr>`;
+  }
+  s += `</table></div><div class="card small mut">结论规则：任一主机或组失败（失败、错误、超时）为“不通过”；有被停止、取消、阻断的结果，或 tests.yaml 启用的测试项还没有结果，为“未完成”。
+    “未执行”指 tests.yaml 启用了但没有结果；“未启用”指 tests.yaml 没有启用该层的测试项，不影响总结论。性能指标不设门限，不影响结论，偏低的数值见<a href="#issues">问题汇总</a>。</div>`;
+  return s;
+}
+
+function pageLayer(id) {
+  const l = layerById[id || ""];
+  if (!l) return `<h2>未知的层</h2>`;
+  let s = `<h2>${esc(l.name)} ${layerSt(l)}</h2><div class="card"><table><tr><th>测试项</th><th>粒度</th><th>结论</th><th class="num">通过</th><th class="num">失败</th><th class="num">其他</th><th>失败对象</th></tr>`;
+  for (const r of l.items) {
+    const it = itemById[r.id];
+    if (!it) { s += `<tr><td>${esc(r.title)}</td><td></td><td>${notRun(r)}</td><td></td><td></td><td></td><td></td></tr>`; continue; }
+    const c = itemCounts(it.id);
+    const who = it.kind === "group" ? D.groups.filter(g => g.item === it.id && BAD.includes(g.status)).map(g => esc(g.id))
+                                    : D.hosts.filter(h => BAD.includes(hostItem(h, it.id))).map(h => `<a href="#host/${esc(h.name)}">${esc(h.name)}</a>`);
+    s += `<tr><td><a href="#item/${it.id}">${esc(it.title)}</a></td><td>${it.kind === "group" ? "组" : "主机"}</td><td>${st(r.status)}</td><td class="num">${c.pass}</td><td class="num" style="color:${c.bad?'var(--fail)':''}">${c.bad}</td><td class="num">${c.other}</td><td>${who.join("，")}</td></tr>`;
+  }
+  for (const it of D.items.filter(it => it.view && (it.layer || "") === l.id))
+    s += `<tr><td><a href="#item/${it.id}">${esc(it.title)}</a></td><td>汇总</td><td colspan="5" class="small mut">由本层测试项的结果汇总，不单独判定</td></tr>`;
+  if (!l.id) s += `<tr><td><a href="#versions">版本一致性</a></td><td>汇总</td><td colspan="5" class="small mut">由各测试容器写出的 env.json 汇总，不单独判定</td></tr>`;
+  return s + `</table></div>`;
 }
 
 function pageOverview() {
@@ -118,7 +169,7 @@ function pageOverview() {
     if (e.status === "blocked") return "#d4a72c"; return "#8c959f"; };
   s += `<div class="card"><h3 style="margin-top:0">rack × tray</h3>
     <div class="legend small" style="margin-bottom:8px"><span><i style="background:var(--passbg)"></i>全部通过</span><span><i style="background:var(--failbg)"></i>有自身失败项</span><span><i style="background:var(--blkbg)"></i>未完成</span><span><i style="background:#f6f8fa"></i>暂无结果</span>
-    <span class="mut">小圆点依次为：${D.items.map(i => esc(shortTitle(i.title))).join(" · ") || "—"}（橙色 = 所在组失败）</span></div>`;
+    <span class="mut">小圆点依次为：${D.items.map(i => esc(i.title)).join(" · ") || "—"}（橙色 = 所在组失败）</span></div>`;
   s += `<div class="matrix" style="grid-template-columns:40px repeat(${D.trays},1fr)"><div></div>`;
   for (let t = 1; t <= D.trays; t++) s += `<div class="mhead">t${String(t).padStart(2,"0")}</div>`;
   for (const r of D.racks) {
@@ -133,12 +184,12 @@ function pageOverview() {
     }
   }
   s += `</div></div>`;
-  s += `<div class="card"><h3 style="margin-top:0">测试项汇总</h3><table><tr><th>测试项</th><th>粒度</th><th class="num">通过</th><th class="num">失败</th><th class="num">其他</th><th>失败对象</th></tr>`;
+  s += `<div class="card"><h3 style="margin-top:0">测试项汇总</h3><table><tr><th>层</th><th>测试项</th><th>粒度</th><th class="num">通过</th><th class="num">失败</th><th class="num">其他</th><th>失败对象</th></tr>`;
   for (const it of D.items) {
     const c = itemCounts(it.id);
     const who = it.kind === "group" ? D.groups.filter(g => g.item === it.id && BAD.includes(g.status)).map(g => esc(g.id))
                                     : D.hosts.filter(h => BAD.includes(hostItem(h, it.id))).map(h => `<a href="#host/${esc(h.name)}">${esc(h.name)}</a>`);
-    s += `<tr><td><a href="#item/${it.id}">${esc(it.title)}</a></td><td>${it.kind === "group" ? "组" : "主机"}</td><td class="num">${c.pass}</td><td class="num" style="color:${c.bad?'var(--fail)':''}">${c.bad}</td><td class="num">${c.other}</td><td>${who.join("，")}</td></tr>`;
+    s += `<tr><td>${esc(layerName(it.layer))}</td><td><a href="#item/${it.id}">${esc(it.title)}</a></td><td>${it.kind === "group" ? "组" : "主机"}</td><td class="num">${c.pass}</td><td class="num" style="color:${c.bad?'var(--fail)':''}">${c.bad}</td><td class="num">${c.other}</td><td>${who.join("，")}</td></tr>`;
   }
   s += `</table></div>`;
   const m = D.meta;
@@ -168,7 +219,7 @@ function collectOutliers() {
 }
 
 function pageIssues() {
-  let s = `<h2>问题与离群值</h2><div class="card"><h3 style="margin-top:0">主机自身失败</h3>`, any = false;
+  let s = `<h2>问题汇总</h2><div class="card"><h3 style="margin-top:0">主机自身失败</h3>`, any = false;
   for (const h of D.hosts) for (const [id, x] of Object.entries(h.items)) if (ownBad(h, id)) {
     any = true;
     s += `<div class="issue">${st(x.status)}<div><b><a href="#host/${esc(h.name)}">${esc(h.name)}</a></b> · ${esc(itemById[id] ? itemById[id].title : id)}<div class="mut">${esc(x.reason)}</div></div></div>`;
@@ -180,7 +231,7 @@ function pageIssues() {
     s += `<div class="issue">${st(g.status)}<div><b><a href="#item/${g.item}">${esc(g.id)}</a></b> · ${esc(itemById[g.item].title)}（${g.hosts.length} 节点）<div class="mut">${esc(g.reason)}</div></div></div>`;
   if (!gb.length) s += `<div class="mut small">无</div>`;
   const outs = collectOutliers();
-  s += `</div><div class="card"><h3 style="margin-top:0">性能离群值（比全部主机中位数差 5% 以上，仅提示）</h3>`;
+  s += `</div><div class="card"><h3 style="margin-top:0">性能异常（比全部主机中位数差 5% 以上，仅提示）</h3>`;
   if (outs.length) {
     s += `<table><tr><th>主机</th><th>测试项</th><th>指标</th><th class="num">数值</th><th class="num">中位数</th><th class="num">偏离</th></tr>`;
     for (const o of outs)
@@ -422,7 +473,7 @@ function rdHostSection(name) {
 }
 
 function pageHosts() {
-  let s = `<h2>主机列表</h2><div class="toolbar">${rackBar("go()")}</div><div class="tblwrap"><table><tr><th>主机</th><th>rack</th><th>tray</th><th>serial</th><th>ssh (LOM)</th><th>mgmt</th><th>总体</th>${D.items.map(i => `<th class="small">${esc(shortTitle(i.title))}</th>`).join("")}</tr>`;
+  let s = `<h2>主机列表</h2><div class="toolbar">${rackBar("go()")}</div><div class="tblwrap"><table><tr><th>主机</th><th>rack</th><th>tray</th><th>serial</th><th>ssh (LOM)</th><th>mgmt</th><th>总体</th>${D.items.map(i => `<th class="small">${esc(i.title)}</th>`).join("")}</tr>`;
   for (const h of D.hosts.filter(h => rackFilter === "all" || h.rack === rackFilter))
     s += `<tr><td><a href="#host/${esc(h.name)}">${esc(h.name)}</a>${h.golden ? " ★" : ""}</td><td>${esc(h.rack)}</td><td>${h.tray}</td><td>${esc(h.serial)}</td><td>${esc(h.ssh)}</td><td>${esc(h.mgmt)}</td><td>${st(h.overall)}</td>${D.items.map(i => `<td title="${esc((h.items[i.id]||{}).reason)}">${st(hostItem(h, i.id))}</td>`).join("")}</tr>`;
   return s + `</table></div>`;
@@ -508,18 +559,18 @@ function hostsCsv() {
 }
 function download(name, text) { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob(["\ufeff" + text], {type: "text/csv"})); a.download = name; a.click(); }
 function pageRuns() {
-  let s = `<h2>执行记录与原始数据</h2><div class="toolbar"><button class="btn" onclick="download('hosts.csv', hostsCsv())">下载 hosts.csv</button><button class="btn" onclick="download('metrics.csv', metricsCsv())">下载 metrics.csv</button><span class="mut small">原始结果在 ${esc(D.meta.results_dir)}/&lt;run-id&gt;/ 下</span></div>`;
+  let s = `<h2>执行记录与原始数据</h2><div class="toolbar"><button class="btn" onclick="download('hosts.csv', hostsCsv())">下载 hosts.csv</button><button class="btn" onclick="download('metrics.csv', metricsCsv())">下载 metrics.csv</button><span class="mut small">${D.meta.results_dirs.length > 1 ? `合并了 ${D.meta.results_dirs.length} 个结果目录，原始结果见“目录”列` : `原始结果在 ${esc(D.meta.results_dir)}/&lt;run-id&gt;/ 下`}</span></div>`;
   s += `<div class="tblwrap"><table><tr><th>run-id</th><th>状态</th><th>测试项</th><th>开始</th><th class="num">耗时 (分钟)</th><th class="num">节点数</th><th>目录</th></tr>`;
-  for (const r of [...D.runs].reverse()) s += `<tr><td>${esc(r.run_id)}</td><td>${st(r.status)}</td><td>${r.items.map(i => itemById[i] ? `<a href="#item/${i}">${esc(shortTitle(itemById[i].title))}</a>` : esc(i)).join("，") || "—"}</td><td>${esc(r.start)}</td><td class="num">${r.minutes ?? ""}</td><td class="num">${r.hosts}</td><td class="mut">${esc(r.path)}</td></tr>`;
+  for (const r of [...D.runs].reverse()) s += `<tr><td>${esc(r.run_id)}</td><td>${st(r.status)}</td><td>${r.items.map(i => itemById[i] ? `<a href="#item/${i}">${esc(itemById[i].title)}</a>` : esc(i)).join("，") || "—"}</td><td>${esc(r.start)}</td><td class="num">${r.minutes ?? ""}</td><td class="num">${r.hosts}</td><td class="mut">${esc(r.path)}</td></tr>`;
   return s + `</table></div>`;
 }
 
 function sortBy(item, c) { const s = sortState[item]; sortState[item] = s && s.c === c ? {c, d: -s.d} : {c, d: 1}; go(); }
 function go() {
-  const r = (location.hash || "#overview").slice(1); renderNav();
+  const r = (location.hash || "#summary").slice(1); renderNav();
   const i = r.indexOf("/"), p = i < 0 ? r : r.slice(0, i), arg = i < 0 ? null : decodeURIComponent(r.slice(i + 1));
-  const pages = {overview: pageOverview, issues: pageIssues, hosts: pageHosts, versions: pageVersions, runs: pageRuns, item: () => pageItem(arg), host: () => pageHost(arg)};
-  $("#main").innerHTML = (pages[p] || pageOverview)();
+  const pages = {summary: pageSummary, layer: () => pageLayer(arg), overview: pageOverview, issues: pageIssues, hosts: pageHosts, versions: pageVersions, runs: pageRuns, item: () => pageItem(arg), host: () => pageHost(arg)};
+  $("#main").innerHTML = (pages[p] || pageSummary)();
 }
 $("#hmeta").textContent = `${D.meta.cluster} · ${D.meta.start || "—"} → ${D.meta.end || "—"} · 生成于 ${D.meta.generated} · ${D.meta.tool}`;
 window.addEventListener("hashchange", () => { go(); window.scrollTo(0, 0); });
