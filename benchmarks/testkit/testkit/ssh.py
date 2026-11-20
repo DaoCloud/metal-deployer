@@ -95,7 +95,10 @@ class Remote:
     def put(self, host, path, data, mode="600", timeout=60):
         if isinstance(data, str):
             data = data.encode()
-        cmd = "mkdir -p {d} && cat > {p} && chmod {m} {p}".format(
+        # Write a temp file and rename it, so a reader (or another host writing the same path on a
+        # shared node_results_dir) never sees a truncated file.
+        cmd = ("mkdir -p {d} && t={p}.tmp.$$ && {{ cat > \"$t\" && chmod {m} \"$t\" && mv -f \"$t\" {p}; }} "
+               "|| {{ rm -f \"$t\"; exit 1; }}").format(
             d=shlex.quote(os.path.dirname(path)), p=shlex.quote(path), m=mode)
         return self.run(host, cmd, timeout=timeout, input=data)
 
