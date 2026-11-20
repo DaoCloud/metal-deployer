@@ -83,16 +83,6 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             curl ruby xorriso mtools dosfstools dpkg-dev squashfs-tools
 
-      - name: Restore ISO/package cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            build-iso/.ci-work/${{ inputs.cuda_profile }}/iso
-            build-iso/.ci-work/${{ inputs.cuda_profile }}/packages
-          key: iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-${{ hashFiles(format('build-iso/manifests/{0}', contains(inputs.cuda_profile, 'gb300') && 'manifest-gb300.yaml' || 'manifest.yaml'), 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
-          restore-keys: |
-            iso-inputs-${{ runner.os }}-${{ inputs.cuda_profile }}-
-
       - name: Download base ISO and packages
         run: |
           set -euxo pipefail
