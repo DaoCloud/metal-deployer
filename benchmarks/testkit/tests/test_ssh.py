@@ -85,3 +85,45 @@ class SshPortTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PutTest(unittest.TestCase):
+    """Remote.put on a path that several hosts write at once (shared node_results_dir)."""
+
+    def test_concurrent_writers_never_expose_a_partial_file(self):
+        import subprocess
+        import threading
+        from testkit.ssh import Result
+
+        class Local(Remote):
+            def __init__(self):
+                pass
+
+            def run(self, host, command, timeout=None, input=None):
+                p = subprocess.run(["sh", "-c", command], input=input, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, timeout=timeout)
+                return Result(p.returncode, p.stdout.decode(), p.stderr.decode())
+
+        data = "".join("10.10.0.{}\n".format(i) for i in range(1, 200))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "share dir", "nodes.list")
+            self.assertTrue(Local().put(None, path, data, "644").ok)
+            seen, done = set(), threading.Event()
+
+            def read():
+                while not done.is_set():
+                    with open(path) as f:
+                        seen.add(f.read())
+            reader = threading.Thread(target=read)
+            reader.start()
+            writers = [threading.Thread(target=lambda: [Local().put(None, path, data, "644") for _ in range(10)])
+                       for _ in range(3)]
+            for w in writers:
+                w.start()
+            for w in writers:
+                w.join()
+            done.set()
+            reader.join()
+            self.assertEqual(seen, {data})
+            self.assertEqual(os.listdir(os.path.dirname(path)), ["nodes.list"])
+            self.assertEqual(os.stat(path).st_mode & 0o777, 0o644)
