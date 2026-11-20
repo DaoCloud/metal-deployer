@@ -191,7 +191,7 @@ def node_script(name):
 
 
 def dcgm_job(ctx, item, cfg, nodes, image):
-    """S5: dcgmi diag + nvidia-smi checks in the official DCGM image; parsed by testkit.parsers.dcgm."""
+    """dcgm (L1): dcgmi diag + nvidia-smi checks in the official DCGM image; parsed by testkit.parsers.dcgm."""
     from testkit.parsers import dcgm
     tests, run_id = ctx.tests, ctx.run_id
     mode = cfg.get("hostengine", "container")
@@ -231,7 +231,7 @@ def inventory(nodes, ssh_cfg, key_path):
 
 
 def superbench_job(ctx, item, cfg, nodes, image, worker=None, parser=None):
-    """S6: sbcli container on the rank 0 host runs sb deploy/run against the whole group.
+    """superbench.* (L1, L2, L4): sbcli container on the rank 0 host runs sb deploy/run against the whole group.
 
     A key made for this run is added to every host's authorized_keys before and removed after.
     """
@@ -351,7 +351,7 @@ SHARP_OPS = ["allreduce", "reducescatter", "allgather"]
 
 
 def sharp_job(ctx, item, cfg, nodes, image):
-    """S7a: SuperBench nccl-bw:sharp:<op>:<case> from config_gb300_sharp.yaml, one case per NCCL setting."""
+    """sharp.scale_out (L4): SuperBench nccl-bw:sharp:<op>:<case> from config_gb300_sharp.yaml, one case per NCCL setting."""
     from testkit.parsers import sharp
     cfg = dict(cfg)
     cfg.setdefault("config", "config_gb300_sharp.yaml")
@@ -394,7 +394,7 @@ def imex_source():
 
 
 def imex_job(ctx, item, cfg, nodes, image):
-    """S7: configure IMEX on the hosts, wait for the domain, check, then T1/T2 in mpi-mode containers."""
+    """imex (L3): configure IMEX on the hosts, wait for the domain, check, then T1/T2 in mpi-mode containers."""
     from testkit.parsers import imex
     tests, run_id = ctx.tests, ctx.run_id
     scripts = cfg.get("scripts_dir") or "/opt/resource/scripts"
@@ -487,7 +487,7 @@ def links_job(ctx, item, cfg, nodes):
     return Job("host", [], host_task=task, parse_group=parse, group_result=True)
 
 
-# ---------------- S7b NVLink (dcgmi mndiag) ----------------
+# ---------------- nvlink.* (L3, dcgmi mndiag) ----------------
 
 NVLOOM_SUITES = ["gpu-to-rack", "pairwise", "all-to-one", "multicast", "latency", "fabric-stress"]
 PLUGIN_DIR = "/usr/libexec/datacenter-gpu-manager-4/plugins/cuda13"
@@ -579,7 +579,7 @@ def _host_names(ctx, item_id, nodes):
 
 
 def nvlink_job(ctx, item, cfg, nodes):
-    """S7b: dcgmi mndiag on the rank 0 host with the hosts' DCGM (multinode packages from the ISO).
+    """nvlink.* (L3): dcgmi mndiag on the rank 0 host with the hosts' DCGM (multinode packages from the ISO).
 
     Every host: nv-hostengine listens on its mgmt address while the item runs (systemd drop-in in /run),
     and the run's public key is authorized. Rank 0: a run key and ssh_config.d entry let Open MPI reach the
@@ -671,7 +671,7 @@ def nvlink_job(ctx, item, cfg, nodes):
     return job
 
 
-# ---------------- S7b NVSHMEM (optional) ----------------
+# ---------------- nvshmem.* (L4, optional) ----------------
 
 NVSHMEM_TESTS = {"nvshmem.pair": ["pt-to-pt/shmem_put_bw", "pt-to-pt/shmem_get_bw", "pt-to-pt/shmem_put_latency",
                                   "pt-to-pt/shmem_get_latency", "pt-to-pt/shmem_p_latency"],

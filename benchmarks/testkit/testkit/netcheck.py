@@ -426,17 +426,23 @@ def check_hosts(network, hosts, ping=True):
         return dict(pool.map(one, hosts))
 
 
-def format_results(hosts, results):
+def format_results(hosts, results, icons=None):
+    from testkit import marks
+    if icons is None:
+        icons = marks.fancy()
     lines = []
     width = max([len(h.name) for h in hosts] + [4])
+    status_w = 7 if icons else 4
     for h in hosts:
         res = results[h.name]
         if res.get("error"):
-            lines.append("{:<{w}}  {:<26}  {:<4}  {}".format(h.name, "ssh", "FAIL", res["error"], w=width))
+            lines.append("{:<{w}}  {:<26}  {}  {}".format(h.name, "ssh", marks.pad(marks.labeled("FAIL", icons),
+                                                                                  status_w), res["error"], w=width))
             continue
         for c in res["checks"]:
-            lines.append("{:<{w}}  {:<26}  {:<4}  {}".format(h.name, c["name"], c["result"].upper(), c["detail"],
-                                                           w=width))
+            lines.append("{:<{w}}  {:<26}  {}  {}".format(h.name, c["name"],
+                                                         marks.pad(marks.labeled(c["result"].upper(), icons), status_w),
+                                                         c["detail"], w=width))
     return "\n".join(lines)
 
 

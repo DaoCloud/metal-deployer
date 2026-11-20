@@ -1,6 +1,6 @@
 # testkit：GB300 批量测试与验收工具
 
-> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`net-check`、`nic`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`links`、`dcgm`、`superbench.*`、`imex`、`nvlink.*`、`sharp.scale_out`、`nvshmem.*`、`nixl.*`；其余测试项按 [实施计划](#实施进度) 逐步实现。
+> 状态：开发中。已可用 `init`、`validate`、`plan`、`doctor`、`preflight`、`net-check`、`nic`、`run`、`status`、`logs`、`cancel`、`report`；目前可运行的测试项：`smoke`、`links`、`dcgm`、`superbench.*`、`imex`、`nvlink.*`、`sharp.scale_out`、`nvshmem.*`、`nixl.*`；其余测试项按 [实施计划](#实施进度) 逐步实现。
 
 `testkit` 在一台控制机上经 SSH 管理一批 GB300 节点：检查网络是否已按规划配好、识别网卡，然后在各节点用 Docker 容器运行 DCGM、SuperBench、IMEX、SHARP、MoE 等测试，把结果拉回本机，生成一个 HTML 报告。设计见 [gb300-acceptance-plan.md](../../docs/gb300-acceptance-plan.md)。
 
@@ -90,6 +90,30 @@ testkit nic show [host]                   # 查看一台主机（默认金样本
 - rail N = PCI 树上离 GPU N 最近的 CX8（没有 GPU 时按 PCI 地址排序）；记录 RDMA 设备、IPoIB 接口、NUMA、端口状态与速率、`LINK_TYPE_P1`。
 - BF3 模式取 `INTERNAL_CPU_OFFLOAD_ENGINE`（`DISABLED(1)` 为 NIC 模式）；LOM = 承载本次 SSH 会话的接口，记录地址、网关与控制机地址；serial 取自 DMI（`/sys/class/dmi/id/product_serial`，否则 `dmidecode`），报告中显示。
 - 检查：GPU、CX8、BF3 口数量，链路层、端口 ACTIVE、速率，BF3 模式，与金样本的 rail↔GPU↔RDMA 设备↔NUMA 映射一致；`plan_pci` 列出 network.yaml 中在主机上找不到的 PCI，以及 compute 顺序与按 GPU 距离得到的 rail 顺序不一致的情况。结果写入 `runs/nic/<主机>.json`，测试项中的 `{mgmt_if}`、`{ib_hcas}` 由此填充。S3 不通过不会把主机排除在后续测试之外。
+
+## 测试前检查主机环境（preflight）
+
+`testkit doctor` 只检查控制机。`testkit preflight` 登录被测主机，检查环境是否满足 `testkit run` 将要执行的测试项。它与 `run`、`plan` 使用同样的测试项和主机选择；每台主机建一个 SSH 会话，并发检查。默认只读，不改动主机：
+
+```bash
+testkit preflight                       # 全部 enabled 项、全部主机
+testkit preflight superbench --hosts R1 # 只检查部分项、部分主机需要的环境
+testkit preflight --pull                # 缺少的镜像按 image_pull 拉取（registry）或推送（push）
+testkit preflight --json
+```
+
+| 检查 | 内容 | 不满足时 |
+|---|---|---|
+| ssh | 按 `TESTKIT_SSH_PORT` 与 SSH 配置免密登录 | FAIL，其余检查跳过（`-`） |
+| docker | Docker daemon 可用，记录版本 | FAIL |
+| runtime | `container_args` 含 `--gpus` 时：docker 有 nvidia runtime，或装有 nvidia-container-toolkit（hook/cli/CDI） | FAIL |
+| gpu | `nvidia-smi` 看到的 GPU 数等于主机 `gpus`；驱动版本与多数主机不一致时 warn | FAIL / warn |
+| images | 所选测试项在这台主机上用到的镜像都在（delegate 项的 sbcli 只查 rank 0，sb_worker 查组内每台）；digest 与多数主机不一致时 warn | FAIL / warn |
+| containers | 没有残留的 `acc-` 测试容器在运行 | FAIL |
+| tools | 测试项在主机上直接调用的工具：计数器与 `links` 的 python3、`mlxlink`；`nvlink.*` 的 mpirun、dcgmi、nvidia-dcgm 服务、DCGM 插件，rank 0 的 systemd-run；`imex` 的 nvidia-imex-ctl 与 IMEX 脚本；`dcgm` 主机模式的 nvidia-dcgm 服务 | FAIL，并写明哪一项需要 |
+| peers | SuperBench/SHARP（经 LOM）和 `nvlink.*`（经 mgmt）从组的 rank 0 登录其他主机：在 rank 0 上测试到这些地址 SSH 端口的 TCP 连通 | FAIL |
+
+表格中 ✅ 为通过、❌ 为 FAIL、🟡 为 warn，不适用的检查显示 `-`；`doctor`、`net-check` 在状态文字前加同样的图标。stdout 不是 UTF-8，或设置了 `TESTKIT_PLAIN=1` / `NO_COLOR` 时只输出文字；`--json` 不受影响。只要有一项 FAIL 退出码为 1；warn 不影响退出码。主机间 SSH 只测端口连通，运行时使用的临时密钥由 `testkit run` 下发。
 
 ## 执行测试
 
@@ -328,6 +352,7 @@ PYTHONPATH=$OLDPWD python3 -m testkit doctor
 
 ```bash
 testkit init | validate | plan | doctor
+testkit preflight [item ...] [--hosts R1] [--pull] [--json]   # 测试前检查被测主机环境
 testkit net-check [--static]                  # 测试前只读检查网络
 testkit nic discover | nic show [host]        # S3
 testkit run [item ...] [--hosts R1] [--exclude h1,h2] [--from item] [--force] [--no-gate]   # L0–L4
@@ -343,7 +368,7 @@ benchmarks/testkit/e2e/run-e2e.sh [--keep]       # 执行器端到端测试，�
 benchmarks/testkit/e2e/run-net-e2e.sh [--keep]   # S3 与 net-check 端到端测试，约 2 分钟
 ```
 
-端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `testkit`，覆盖 per-node、mpi、delegate 三种方式、单台失败、超时、`testkit cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错），和用 sb 替身镜像跑 `superbench`（替身经真实 SSH 用本次运行的密钥连每台主机并检查 worker 镜像，输出 SuperBench 格式结果；验证 include/exclude、按主机拆分、ib-traffic 节点对、运行后密钥删除、报告 RDMA 矩阵），以及 `imex`（主机上放替身 IMEX 脚本与 `nvidia-imex-ctl`；验证节点列表一致、等待 domain、矩阵解析，T1 经 mpirun 在各容器编译，无 CUDA 时报告编译失败，T2 跳过）、`superbench.nvl_domain`、`superbench.all`（小消息时延、NCCL 网卡使用表）与 `sharp.scale_out`（O-B/O-A 对比与 NCCL 日志提取），以及 imex 关卡停止与 `--no-gate`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
+端到端测试不需要 GPU 节点：在本机用 Docker 启动 3 个“假节点”（sshd + docker CLI，使用本机 Docker），再经真实 SSH 执行 `testkit`，覆盖 `preflight`（SSH、Docker、镜像、无 GPU 时 gpu FAIL、停掉一台主机时 ssh FAIL、rank 0 到各主机的 SSH 端口），per-node、mpi、delegate 三种方式、单台失败、超时、`testkit cancel`、SIGTERM、`status`、`logs`、`report`，以及用官方 DCGM 镜像跑 `dcgm`（无 GPU，验证脚本下发、容器内 hostengine、原始输出拉回与解析、主机模式缺少 hostengine 时报错），和用 sb 替身镜像跑 `superbench`（替身经真实 SSH 用本次运行的密钥连每台主机并检查 worker 镜像，输出 SuperBench 格式结果；验证 include/exclude、按主机拆分、ib-traffic 节点对、运行后密钥删除、报告 RDMA 矩阵），以及 `imex`（主机上放替身 IMEX 脚本与 `nvidia-imex-ctl`；验证节点列表一致、等待 domain、矩阵解析，T1 经 mpirun 在各容器编译，无 CUDA 时报告编译失败，T2 跳过）、`superbench.nvl_domain`、`superbench.all`（小消息时延、NCCL 网卡使用表）与 `sharp.scale_out`（O-B/O-A 对比与 NCCL 日志提取），以及 imex 关卡停止与 `--no-gate`。需要本机有 Docker，首次运行会拉取 `docker:cli`、`debian:bookworm-slim` 并安装 OpenMPI。网段默认 172.28.0.0/24、172.29.0.0/24，冲突时用 `SSH_NET`、`MGMT_NET` 环境变量修改。
 
 S3 与 net-check 端到端测试启动 3 台 systemd 容器（netplan、systemd-networkd、sshd），有 LOM、mgmt、storage 和 4 个 rail 网络；网络在启动时用 netplan 配好（模拟现场脚本：默认路由经 mgmt、LOM 策略路由、存储路由、IPoIB MTU），容器内用假的 `/sys` 把 veth 映射成 BF3 与 CX8。覆盖：`validate --ssh`（`TESTKIT_SSH_CONFIG` 指定密钥）、`nic discover`（按 PCI 找到 mgmt/storage 口、rail 顺序、策略表中的 LOM 网关、金样本比对、serial、PCI 不存在时失败）、`net-check`（全部通过；MTU 错误、PCI 不存在时 FAIL 并给出与多数主机不一致的警告；不改动主机）、报告。需要能拉取 ubuntu:24.04（`UBUNTU_IMAGE` 可改为镜像站），网段默认 172.28.10–43.0/24（`NET_PREFIX` 可改）。两个 e2e 使用同名容器，不能同时运行。
 
@@ -360,11 +385,11 @@ CI（`.github/workflows/testkit-ci.yaml`，改动 `benchmarks/testkit/**` 时触
 | P2 | 执行器：SSH、远程 Docker、三种启动模式、结果拉回、`run/status/logs/cancel` | 完成 |
 | P6 | HTML 报告 | 完成 |
 | P3 | S3 网卡识别、`net-check` 网络检查（S4 下发由现场脚本完成） | 完成（实机待确认） |
-| P4 | S5 DCGM | 完成（实机待确认） |
-| P5 | S6 SuperBench（含 RDMA 打流） | 完成（实机待确认） |
-| P7 | S7 IMEX、S7a SHARP | 完成（实机待确认） |
-| P8 | S8 MoE | 待做 |
+| P4 | `dcgm`（L1） | 完成（实机待确认） |
+| P5 | `superbench.*`（L1、L2、L4，含 RDMA 打流） | 完成（实机待确认） |
+| P7 | `imex`（L3）、`sharp.scale_out`（L4） | 完成（实机待确认） |
+| P8 | `moe.*`（L5） | 待做 |
 | P9 | testkit 镜像、文档 | 待做 |
 | P10 | SuperBench 磁盘测试（安全检查） | 待做 |
-| P11 | 分层与关卡、rack 完整性、链路错误计数器与内核日志、L0 `links`（含 `mlxlink`）、RDMA 柜内/跨柜固定配对、S7b `nvlink.*`（mndiag）、离群与基线、`nvshmem.*` | 完成（单元测试与 e2e；实机待确认） |
+| P11 | 分层与关卡、rack 完整性、链路错误计数器与内核日志、L0 `links`（含 `mlxlink`）、RDMA 柜内/跨柜固定配对、L3 `nvlink.*`（mndiag）、离群与基线、`nvshmem.*` | 完成（单元测试与 e2e；实机待确认） |
 | P12 | `nixl.*`（NIXLBench：单机、跨节点、存储） | 完成（单元测试；实机待确认） |

@@ -24,6 +24,23 @@ skip_fabric_manager() {
     [ "${PLATFORM:-}" = "gb300" ] || [ "${PLATFORM:-}" = "gb200" ]
 }
 
+# Grace (GB200/GB300): CDMM lets the driver, not the kernel, manage GPU memory
+# (no GPU memory as NUMA nodes). ENABLE_CDMM=1/0 overrides the platform default.
+enable_cdmm() {
+    case "${ENABLE_CDMM:-}" in
+        1|true|yes) return 0 ;;
+        0|false|no) return 1 ;;
+    esac
+    [ "${PLATFORM:-}" = "gb300" ] || [ "${PLATFORM:-}" = "gb200" ]
+}
+
+prepare_cdmm() {
+    enable_cdmm || return 0
+    cat >/etc/modprobe.d/nvidia-cdmm.conf <<'EOF'
+options nvidia NVreg_CoherentGPUMemoryMode=driver
+EOF
+}
+
 prepare_imex() {
     has_imex || return 0
 
@@ -58,6 +75,7 @@ blacklist nouveau
 options nouveau modeset=0
 EOF
 prepare_imex
+prepare_cdmm
 update-initramfs -u || true
 
 if lsmod | grep -q '^nouveau'; then

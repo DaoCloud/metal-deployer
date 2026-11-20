@@ -112,7 +112,7 @@ links:                            # read-only, over ssh, no container: nvidia-sm
   mlxlink: true                   # mlxlink -m -c -e per IB port: module, BER, effective physical errors (MFT)
   mlxlink_limits: {max_effective_ber: null, max_raw_ber: null, max_module_temp_c: null}   # null: report only
 
-# ---------------- S5 DCGM ----------------
+# ---------------- DCGM (L1) ----------------
 dcgm:
   enabled: true
   scope: node
@@ -125,7 +125,7 @@ dcgm:
   checks: [ecc, remapped_rows, nvlink, fabric_state]
   gpu_burn: {enabled: false, seconds: 600}
 
-# ---------------- S6 SuperBench ----------------
+# ---------------- SuperBench (L1, L2, L4) ----------------
 superbench:
   # The sbcli image (images.sbcli) runs on the rank 0 host of each group and drives every host of the
   # group with sb deploy/run; images.sb_worker must already be on every host. A key made for the run is
@@ -232,7 +232,7 @@ superbench:
     benchmarks: {include: [nccl-bw:soak:allreduce:mnnvl-ib]}
     timeout: 7200
 
-# ---------------- S7 IMEX ----------------
+# ---------------- IMEX (L3) ----------------
 imex:
   enabled: true
   scope: rack                     # one IMEX domain per rack
@@ -245,7 +245,7 @@ imex:
     t2_nvbandwidth: false         # 2-host multinode nvbandwidth; replaced by nvlink.pairs (whole rack)
     nvbandwidth: ""               # path of a multinode nvbandwidth in the image (empty: /opt/superbench/bin/nvbandwidth)
 
-# ---------------- S7b NVLink (dcgmi mndiag) ----------------
+# ---------------- NVLink, dcgmi mndiag (L3) ----------------
 # Runs on the hosts, not in containers: the rank 0 host of each rack runs "dcgmi mndiag" with the ISO's
 # DCGM multinode packages (datacenter-gpu-manager-4-multinode{,-cuda13}) and Open MPI. While an item
 # runs, nv-hostengine on every host listens on its mgmt address (drop-in in /run, removed afterwards)
@@ -277,7 +277,7 @@ nvlink:
     time_to_run: {default: 1800, fabric-stress: 1200}
     rich_output: [pairwise]       # suites that print every measured GPU pair
 
-# ---------------- S7a IB SHARP ----------------
+# ---------------- IB SHARP (L4) ----------------
 # SuperBench nccl-bw from config_gb300_sharp.yaml; each case is one NCCL setting defined there:
 #   O-A off, O-B NVLS inside racks + plain IB, O-C IB SHARP only, O-D NVLS + IB SHARP (>= 2 racks).
 # NVLink SHARP inside a rack (NVLS) is covered by superbench.nvl_domain.
@@ -294,7 +294,7 @@ sharp:
     groups: [[R1, R2]]
     cases: [O-A, O-B, O-C, O-D]
 
-# ---------------- S7b NVSHMEM (optional) ----------------
+# ---------------- NVSHMEM, optional (L4) ----------------
 # NVSHMEM perftests (libnvshmem3-dev-cuda-13 in the moe-bench image) in mpi-mode containers:
 # GPU-initiated put/get bandwidth and latency. Results are recorded, not judged.
 nvshmem:
@@ -358,7 +358,7 @@ nixl:
     cases: [posix, posix_read]    # gds / gds_read need GPUDirect Storage (nvidia-fs or a GDS-capable file system)
     filepath: /mnt/nixl-bench     # created if missing; the test files are removed before and after
 
-# ---------------- S8 MoE ----------------
+# ---------------- MoE (L5) ----------------
 moe:
   common:
     image: moe_bench

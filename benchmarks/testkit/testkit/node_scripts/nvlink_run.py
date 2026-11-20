@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""S7b NVLink steps on the rank 0 host: dcgmi mndiag (mnnvbandwidth / nvloom), one step after another.
+"""nvlink.* (L3) steps on the rank 0 host: dcgmi mndiag (mnnvbandwidth / nvloom), one step after another.
 
 Started by testkit with systemd-run so it survives the ssh session; testkit polls <out>/done.json.
 Usage: python3 nvlink_run.py <args.json>

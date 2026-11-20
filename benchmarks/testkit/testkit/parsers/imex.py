@@ -1,4 +1,4 @@
-"""S7 IMEX: parse host checks (imex-check.sh), the domain view (nvidia-imex-ctl -N) and T1/T2 output.
+"""imex (L3): parse host checks (imex-check.sh), the domain view (nvidia-imex-ctl -N) and T1/T2 output.
 
 Per host, in <host>/imex/raw/: imex-configure.txt, imex-check.txt (imex-check.sh --quiet summary).
 On the rank 0 host also: group-pre.txt (wait for Domain State UP, ends with nvidia-imex-ctl -N -H output),

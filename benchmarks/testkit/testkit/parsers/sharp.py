@@ -1,4 +1,4 @@
-"""S7a IB SHARP: SuperBench nccl-bw:sharp:<op>:<case> results -> per-case busbw, comparisons, NCCL log evidence.
+"""sharp.scale_out (L4) IB SHARP: SuperBench nccl-bw:sharp:<op>:<case> results -> per-case busbw, comparisons, NCCL log evidence.
 
 Comparisons are shown, not judged (no baselines): O-B/O-A, O-D/O-B, O-D/O-C, O-C/O-A at the largest
 message size. A case fails only when its benchmark fails (return code), e.g. when a forced NCCL_ALGO

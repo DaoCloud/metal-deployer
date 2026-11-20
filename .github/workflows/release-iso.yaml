@@ -15,6 +15,8 @@ on:
         options:
           - 'cuda12'
           - 'cuda13'
+          - 'cuda13-gb300'
+          - 'cuda13-gb300-aggressive'
       version:
         description: Release version, used in ISO filename (metal-deployer-vX.Y.Z-...)
         required: true
@@ -31,6 +33,11 @@ on:
         options:
           - 'false'
           - 'true'
+      update_release:
+        description: Also create/update the GitHub Release for `version` (creates the tag if missing)
+        required: false
+        default: false
+        type: boolean
 
 jobs:
   release-iso:
@@ -41,6 +48,7 @@ jobs:
       version: ${{ inputs.version }}
       destination_url: ${{ inputs.destination_url }}
       cleanup_after_run: ${{ inputs.cleanup_after_run }}
+      update_release: ${{ inputs.update_release }}
     secrets: inherit
     permissions:
       contents: write

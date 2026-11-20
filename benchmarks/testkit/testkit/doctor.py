@@ -39,12 +39,17 @@ def checks():
 
 
 def run():
+    from testkit import marks
+    icons = marks.fancy()
     rows = checks()
     width = max(len(r[0]) for r in rows)
     failed = False
     for name, required, ok, detail, impact in rows:
         mark = "ok" if ok else ("MISSING" if required else "missing")
-        line = "{:<{w}}  {:<8} {}".format(name, mark, detail, w=width)
+        label = marks.labeled(mark, icons)
+        if not ok and required and icons:
+            label = "{} {}".format(marks.icon("fail", icons), mark)
+        line = "{:<{w}}  {} {}".format(name, marks.pad(label, 11 if icons else 8), detail, w=width)
         if impact:
             line += "  -> " + impact
         print(line)
