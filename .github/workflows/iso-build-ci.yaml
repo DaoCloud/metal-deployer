@@ -122,7 +122,8 @@ jobs:
           failed=0
           while IFS= read -r url; do
             [ -n "$url" ] || continue
-            if ! curl -fsSIL --retry 3 --retry-delay 2 --max-time 30 -o /dev/null \
+            # launchpad.net redirects to its librarian and is often slow: allow time and retry any error.
+            if ! curl -fsSIL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 20 --max-time 90 -o /dev/null \
                   -w '%{http_code} %{url_effective}\n' "$url"; then
               echo "UNREACHABLE: $url" >&2
               failed=$((failed+1))
@@ -188,16 +189,6 @@ jobs:
           set +e
           cd build-iso
           CI_WORK_DIR="$ISO_CI_WORK_DIR" PRESERVE_TEST_LOGS=0 ./test.sh clean
-
-      - name: Restore ISO/package cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            build-iso/.ci-work/${{ env.CUDA_PROFILE }}/iso
-            build-iso/.ci-work/${{ env.CUDA_PROFILE }}/packages
-          key: iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-${{ hashFiles('build-iso/manifests/manifest.yaml', 'build-iso/prepare.sh', 'build-iso/tools/resolve_manifest.rb') }}
-          restore-keys: |
-            iso-inputs-${{ runner.os }}-${{ env.CUDA_PROFILE }}-
 
       - name: Download base ISO and packages
         run: |
