@@ -4,6 +4,14 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 PACKAGE_DIR="${PACKAGE_DIR:-/opt/resource/packages}"
+INSTALL_ENV_FILE="${INSTALL_ENV_FILE:-/opt/resource/config/install.env}"
+
+# init_system.sh sources install.env without exporting it, so read the
+# manifest's DOCA_PACKAGES here unless the caller already set it.
+if [ -z "${DOCA_PACKAGES:-}" ] && [ -f "$INSTALL_ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    DOCA_PACKAGES="$(. "$INSTALL_ENV_FILE" && echo "${DOCA_PACKAGES:-}")"
+fi
 
 log() {
     echo "[install_doca] $*"
