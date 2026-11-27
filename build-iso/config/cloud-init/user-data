@@ -5,6 +5,11 @@ autoinstall:
   apt:
     fallback: offline-install
     preserve_sources_list: false
+    # The installer runs unattended-upgrades against these suites whenever the
+    # node has internet, so the same ISO would install different package
+    # versions depending on network access. Drop them so the install is
+    # reproducible; first boot switches to the offline repo anyway.
+    disable_suites: [security, updates, backports]
 
   kernel:
     package: linux-generic
