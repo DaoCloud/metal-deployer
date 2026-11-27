@@ -234,6 +234,11 @@ Unattended-Upgrade::Package-Blacklist {
 EOF
 
     systemctl disable --now apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service 2>/dev/null || true
+    # Timers that reach the internet without upgrading anything: firmware
+    # metadata (LVFS), login news and update reminders.
+    systemctl disable --now fwupd-refresh.timer motd-news.timer \
+        update-notifier-download.timer update-notifier-motd.timer 2>/dev/null || true
+    [ -f /etc/default/motd-news ] && sed -i 's/^ENABLED=1/ENABLED=0/' /etc/default/motd-news
 
     apt-mark hold \
         linux-generic \

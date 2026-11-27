@@ -60,7 +60,7 @@ cd build-iso
 | `digest` | 按 digest 拉取以固定内容，再打回 `image` 的 tag，节点导入后名字不变 |
 | `download: false` | 不下载、不打进 ISO |
 
-GB300 manifest 中的 SuperBench 镜像直接从 Docker Hub 拉取（`docker.io/superbench/main`，不在 daocloud 镜像站白名单内），构建机需能访问 Docker Hub。
+GB300 manifest 中的 SuperBench 镜像（`docker.io/superbench/main`，约 16 GB）默认不打包（`download: false`）；去掉该行重新打包时，构建机需能访问 Docker Hub（不在 daocloud 镜像站白名单内）。
 
 只检查远端 URL 与动作，不实际下载：
 
@@ -109,9 +109,11 @@ sudo -E make build-iso ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA
 
 GB300 manifest 的宿主机 DCGM 升级为 4.7.1（包版本 `1:4.7.1-2`），包含核心服务、同版本客户端、CUDA 13 诊断插件和专有诊断插件的完整依赖，下载约 982 MiB；尚未在 GB300 实机验证。另含 multinode 包（`datacenter-gpu-manager-4-multinode`、`-multinode-cuda13`，约 5 MiB），提供 `dcgmi mndiag` 的 `mnnvbandwidth`、`nvloom`、`mnubergemm`，用于 rack 级 NVLink Fabric 测试（见 [验收计划 S7b](../docs/gb300-acceptance-plan.md)），依赖首启安装的 `openmpi-bin`。DCGM 私有计算库不会替换系统 CUDA 13.0.3、NCCL 2.31.2 或 SuperBench 镜像内的库，GPU 驱动保持 580.178.04。
 
+Secure Boot：GPU 驱动和 nvidia-fs 是 Canonical 签名的预编译模块，开着 Secure Boot 也能加载。DOCA 的 mlnx-ofed-kernel（激进版还有 mlnx-nvme / mlnx-nfsrdma）和 gdrdrv 是首启时 DKMS 本机编译的，没有签名。所以首启检测到 Secure Boot 开启、且没有已登记的 MOK 密钥时，`install_doca.sh` 跳过 DOCA，保留内核自带的 mlx5 / rdma-core（网口照常可用，GPUDirect RDMA 走 dma-buf），`install_gdrcopy.sh` 跳过 gdrdrv 加载。需要 DOCA 时，先在 BIOS 关闭 Secure Boot，或登记 `/var/lib/shim-signed/mok/MOK.der`（`mokutil --import`，重启时在 MokManager 确认），再重跑这两个阶段；`DOCA_SECURE_BOOT=install` 可强制安装。
+
 #### GB300 激进版（备用 ISO）：`cuda13-gb300-aggressive`
 
-默认 profile `cuda13-gb300` 对齐 DGX OS 7.6.0。如果某个性能特性开不了，或者遇到已在新版本修复的 bug，可以改用 `cuda13-gb300-aggressive` 打一个备用 ISO。安装流程不变：GPU 驱动仍用 Canonical 签名的预编译模块，不走 DKMS，开着 Secure Boot 也能装。只是版本更新：
+默认 profile `cuda13-gb300` 对齐 DGX OS 7.6.0。如果某个性能特性开不了，或者遇到已在新版本修复的 bug，可以改用 `cuda13-gb300-aggressive` 打一个备用 ISO。安装流程不变：GPU 驱动仍用 Canonical 签名的预编译模块，不走 DKMS，开着 Secure Boot 也能加载（DOCA 与 gdrdrv 见上方 Secure Boot 说明）。只是版本更新：
 
 | 组件 | `cuda13-gb300` | `cuda13-gb300-aggressive` |
 |---|---|---|
@@ -121,6 +123,7 @@ GB300 manifest 的宿主机 DCGM 升级为 4.7.1（包版本 `1:4.7.1-2`），�
 | NCCL / cuDNN | 2.31.2 / 9.24.0 | 2.32.3 / 9.28.1 |
 | DCGM | 4.7.1 | 4.8.0 |
 | DOCA-OFED | 3.2.3 LTS | 3.5.0（非 LTS） |
+| NVMe-oF / NFS over RDMA | 不可用 | 可用（mlnx-nvme-dkms / mlnx-nfsrdma-dkms） |
 | Container Toolkit | 1.20.0 | 1.20.1 |
 
 ```bash
@@ -130,6 +133,7 @@ sudo -E make build-iso ISO_MANIFEST=build-iso/manifests/manifest-gb300.yaml CUDA
 ```
 
 - R615 是 New Feature Branch，支持周期短，只当备用，不作为默认。
+- 存储走 NVMe-oF 或 NFS over RDMA（如 VAST）时用激进版。DOCA-OFED 会用空壳模块顶替内核自带的 `nvme-rdma` / `rpcrdma`，需要 DOCA 自己的 mlnx-nvme / mlnx-nfsrdma 重新编译；DOCA 3.2.3 的这两个包在 7.0 内核上编译失败，DOCA 3.5 可以（2026-11-27 在 arm64 容器中验证）。本地盘、WEKA、Lustre 不受影响。
 - 没有用 R620（2026-11-04 发布的新 LTSB）+ CUDA 13.5：Ubuntu 还没有发布 R620 的 nvidia-64k 签名模块，用它就得走 DKMS 和 MOK。等 Canonical 发布后，改这个 profile 的版本号即可。
 - profile 可以覆盖 basic 中的包：profile 里同名的条目会原位替换 basic 条目；`exclude_packages` 按名字删除 basic 条目，例如 1024 内核的 ABI 包。
 - 生成的 `/.metal-deployer/release.json` 里 `cuda_profile` 字段写明是哪个 profile；卷标两者相同，需要区分时用 `ISO_VOLUME_ID` 覆盖。

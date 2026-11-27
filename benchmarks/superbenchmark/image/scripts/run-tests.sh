@@ -73,7 +73,7 @@ while [[ $# -gt 0 ]]; do
             echo "                          默认: single-node,multi-node (执行单机和多机测试)"
             echo "  -i, --worker-image IMG  被测节点镜像"
             echo "                          默认: default 为 docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9，"
-            echo "                                gb300 为 docker.io/superbench/main:cuda13.0 (GB300 ISO 预置)"
+            echo "                                gb300 为 docker.io/superbench/main:cuda13.0 (需预先 load 到被测节点)"
             echo "  --disk DEVS             (仅 gb300) 磁盘测试块设备，逗号分隔，如 /dev/nvme1n1"
             echo "                          警告: 会覆盖写入设备数据，只能指定已确认可清空的测试盘"
             echo "  --help                  显示此帮助信息"
