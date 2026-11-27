@@ -442,7 +442,7 @@ testkit run                                  # 按内置顺序执行全部 enabl
 
 ### S6 SuperBench
 
-SuperBench 由两部分组成：sbcli 控制镜像（`sb` 命令、测试配置、汇总规则）和被测节点上的 worker 镜像（`superbench/main:cuda13.0`，ISO 预置，含 sm_103）。测试项和规模由配置文件决定。仓库已为 GB300 单独写了一组配置，worker 镜像不需要重建；改动和依据见 [superbench-gb300.md](./superbench-gb300.md)。
+SuperBench 由两部分组成：sbcli 控制镜像（`sb` 命令、测试配置、汇总规则）和被测节点上的 worker 镜像（`superbench/main:cuda13.0`，含 sm_103，约 16 GB，ISO 默认不打包，需预先加载到被测节点）。测试项和规模由配置文件决定。仓库已为 GB300 单独写了一组配置，worker 镜像不需要重建；改动和依据见 [superbench-gb300.md](./superbench-gb300.md)。
 
 **GB300 专用配置**（`run-tests.sh -p gb300` 时选用，位于 `benchmarks/superbenchmark/image/configs/`）
 

@@ -33,7 +33,7 @@
 #   nvidia-system-*  2404.26.01              curated subset           DGX tuning debs, see dgx-system-tuning
 #   HPC-X            (not in DGX OS)         NGC hpc-benchmarks:25.09 optional (download: false); nccl-tests need only Ubuntu openmpi
 #   Containers       DLFW 26.07              cuda:13.0.3-runtime      smoke test; pytorch:26.09-py3 (12 GB) left out
-#   SuperBench       (not in DGX OS)         superbench/main:cuda13.0 main@9142bdfe, digest-pinned, sm_103 build
+#   SuperBench       (not in DGX OS)         superbench/main:cuda13.0 main@9142bdfe, digest-pinned, not bundled
 #
 # TOOLING STATUS FOR THIS MANIFEST
 #   done prepare.sh : cross-arch offline package set. An isolated apt root (CI_WORK_DIR/apt-arm64,
@@ -94,6 +94,10 @@ basic:
     KERNEL_RELEASE: 7.0.0-1024-nvidia-64k
     SERIAL_CONSOLE: ttyAMA0
     NVIDIA_DRIVER_FLAVOR: open
+    # No mlnx-nvme-dkms / mlnx-nfsrdma-dkms: DOCA 3.2.3 (MOFED 25.10) fails to
+    # build them on the 7.0 kernel (rq_end_io signature, RPC_IFDEBUG removed;
+    # verified 2026-11-27). MOFED's ib_core also breaks the inbox nvme-rdma /
+    # rpcrdma, so NVMe-oF and NFS over RDMA need cuda13-gb300-aggressive.
     DOCA_PACKAGES: mlnx-ofed-kernel-dkms mlnx-ofed-kernel-utils ibverbs-providers libibverbs1 ibverbs-utils librdmacm1 infiniband-diags mft
   packages:
   # ---------------------------------------------------------------------------
@@ -201,15 +205,9 @@ basic:
     filename: linux-nvidia-7.0-tools-7.0.0-1024_7.0.0-1024.25_arm64.deb
     install_method: apt
     group: kernel
-  - name: linux-firmware
-    description: linux-firmware（kernel 元包依赖版本 >= 该版本,ISO 自带版本可能更旧）
-    url: http://ports.ubuntu.com/ubuntu-ports/pool/main/l/linux-firmware/linux-firmware_20240318.git3b128b60.0ubuntu3.1_all.deb
-    version: 20240318.git3b128b60.0ubuntu3.1
-    sha256: aa3204e819089c4c73c1e69a3d1048e034253e39090887e1020f162eff78071a
-    required: true
-    filename: linux-firmware_20240318.git3b128b60.0ubuntu3.1_all.deb
-    install_method: apt
-    group: kernel
+  # linux-firmware is not listed: the kernel metapackage depends on it without
+  # a version, and the installer already puts the ISO pool's
+  # 20240318.git3b128b60.0ubuntu3.1 on the target (prepare.sh seeds that closure).
 
   # ---------------------------------------------------------------------------
   # NVIDIA Container Toolkit 1.20.0 (DGX OS 7.6.0) — arm64
@@ -621,15 +619,6 @@ basic:
     filename: nvidia-kernel-defaults_21.05-1_all.deb
     install_method: apt
     group: dgx-system-tuning
-  - name: nv-cpu-governor
-    description: CPU governor = performance（可替代仓库 cpu-performance.service）
-    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nv-cpu-governor/nv-cpu-governor_22.05-1_all.deb
-    version: 22.05-1
-    sha256: 7073fb7e550fb20c0ace648ade376b2a6976e521436b4e2167f1c89c4099d662
-    required: false
-    filename: nv-cpu-governor_22.05-1_all.deb
-    install_method: apt
-    group: dgx-system-tuning
   - name: nvidia-disable-numa-balancing
     description: 关闭自动 NUMA balancing
     url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-disable-numa-balancing/nvidia-disable-numa-balancing_24.10-2_all.deb
@@ -736,15 +725,6 @@ basic:
     sha256: 5d9cec7d2e00c0fa9ed1dd2d7a4863c78060880f6c4159fc4fb793a272ab2a4b
     required: false
     filename: nvidia-fs-loader_23.02-1_all.deb
-    install_method: apt
-    group: dgx-system-tuning
-  - name: nvidia-peermem-loader
-    description: 开机加载 nvidia_peermem（legacy PeerDirect）
-    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-peermem-loader/nvidia-peermem-loader_25.03-1_all.deb
-    version: 25.03-1
-    sha256: 111d74953782a8542efbcd698fea8707eb4511f739f15613834c2004b5714710
-    required: false
-    filename: nvidia-peermem-loader_25.03-1_all.deb
     install_method: apt
     group: dgx-system-tuning
   - name: nvidia-ib-umad-loader
@@ -859,6 +839,13 @@ basic:
   #                                    kernel-mft-dkms/mst_pci) -> systemd-modules-load
   #                                    would fail. Firmware tooling comes from DOCA `mft`.
   #   nvidia-mlnx-tools 23.04        : Conflicts: mlnx-tools, which DOCA-OFED installs.
+  #   nvidia-peermem-loader 25.03    : modules-load.d entry for nvidia_peermem. The
+  #                                    Canonical signed nvidia_peermem is built without
+  #                                    PeerDirect symbols and its init returns -EINVAL,
+  #                                    so systemd-modules-load would fail every boot.
+  #                                    GPUDirect RDMA uses dma-buf (DOCA ib_core).
+  #   nv-cpu-governor 22.05          : same job as cpu-performance.service (scripts),
+  #                                    which writes sysfs and does not need cpupower.
   #   NVSM 26.06 / NVVCT 1.0         : DGX-only "dgx" component, empty on the public repo.
 
   # ---------------------------------------------------------------------------
@@ -1039,13 +1026,16 @@ basic:
   # Pulled straight from Docker Hub: docker.m.daocloud.io only proxies
   # allow-listed repos and docker.io/superbench/main is not on that list
   # (only superbench/superbench is). The ISO build host needs Docker Hub access.
+  # Not bundled by default (download: false): ~16 GB compressed, and S6 runs
+  # load it on the tested nodes separately (docs/superbench-gb300.md 4.7).
   - name: superbench
-    description: SuperBench main（CUDA 13.0,arm64,按 digest 固定；支持 GB300 sm_103。gemm-flops 在 GB300 上仅为 Ampere kernel,数值不代表峰值；arm64 约 16 GB 压缩）
+    description: SuperBench main（CUDA 13.0,arm64,按 digest 固定；支持 GB300 sm_103。gemm-flops 在 GB300 上仅为 Ampere kernel,数值不代表峰值；arm64 约 16 GB 压缩；默认不打包,测试前单独 docker load）
     image: docker.io/superbench/main:cuda13.0
     digest: sha256:7d2acaabb4773f79eb040d0c0ad4e1726d47b5aa7bbe38b75fb42d608119c80d
     platform: linux/arm64
     filename: images/superbench-main-cuda13.0-9142bdfe-arm64.tar
     required: false
+    download: false
   runtime_config:
     ssh:
       authorized_keys_file: config/ssh_authorized_keys
@@ -1147,7 +1137,7 @@ basic:
     target: scripts/install_hpcx.sh
     executable: true
   - name: install_test_tools
-    description: 安装 GPU 测试工具（NCCL tests, bandwidthTest, nvbandwidth, perftest）
+    description: 安装 GPU 测试工具（NCCL tests, nvbandwidth, perftest）
     source: scripts/install_test_tools.sh
     target: scripts/install_test_tools.sh
     executable: true
@@ -1168,7 +1158,7 @@ basic:
     target: scripts/setNicRdmaMode.sh
     executable: true
   - name: cpu_performance_service
-    description: CPU 性能模式 systemd 服务（若安装 nv-cpu-governor 可省略）
+    description: CPU 性能模式 systemd 服务（替代 DGX nv-cpu-governor）
     source: scripts/cpu-performance.service
     target: systemd/cpu-performance.service
   - name: apt_source_config
@@ -1193,7 +1183,7 @@ cuda:
         NVIDIA_DRIVER_VERSION: 580.178.04
         NVIDIA_DRIVER_FLAVOR: open
         NVIDIA_DRIVER_PKG_SUFFIX: 0ubuntu0.24.04.1
-        NVIDIA_DRIVER_PACKAGES: nvidia-headless-no-dkms-580-server-open nvidia-utils-580-server linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04 nvidia-fabricmanager-580 libnvidia-nscq-580 nvidia-imex-580 nvidia-modprobe
+        NVIDIA_DRIVER_PACKAGES: nvidia-headless-no-dkms-580-server-open nvidia-utils-580-server linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04 nvidia-imex-580 nvidia-modprobe
       packages:
       # -----------------------------------------------------------------------
       # GPU driver: Canonical signed R580 server-open 580.178.04 (ports.ubuntu.com
@@ -1292,22 +1282,9 @@ cuda:
         filename: nvidia-utils-580-server_580.178.04_arm64.deb
         install_method: apt
         group: gpu-driver
-      - name: nvidia-fabricmanager-580
-        description: NVSwitch Fabric Manager 580.178.04（Ubuntu multiverse；NVL72 交换托盘由 NMX-C 管理,节点侧安装但 nvidia_setup.sh 保持 disabled）
-        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/f/fabric-manager-580/nvidia-fabricmanager-580_580.178.04-0ubuntu0.24.04.1_arm64.deb
-        version: 580.178.04-0ubuntu0.24.04.1
-        required: false
-        filename: nvidia-fabricmanager-580_580.178.04_arm64.deb
-        install_method: apt
-        group: gpu-driver
-      - name: libnvidia-nscq-580
-        description: NVSwitch Configuration and Query library 580.178.04（Ubuntu multiverse）
-        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/libn/libnvidia-nscq-580/libnvidia-nscq-580_580.178.04-0ubuntu0.24.04.1_arm64.deb
-        version: 580.178.04-0ubuntu0.24.04.1
-        required: false
-        filename: libnvidia-nscq-580_580.178.04_arm64.deb
-        install_method: apt
-        group: gpu-driver
+      # Not shipped: nvidia-fabricmanager-580 / libnvidia-nscq-580. On NVL72 the
+      # NVLink fabric is managed by NMX-C on the switch tray and a compute tray
+      # has no local NVSwitch; nvidia_setup.sh never enabled FM on GB300.
       - name: nvidia-imex-580
         description: NVIDIA IMEX daemon 580.178.04（多节点 NVLink 域,GB300 NVL72）。ISO 只安装+预置（channel0 modprobe、systemd drop-in、enable）,不启动：nodes_config.cfg 需柜内 18 节点管理 IP,装机后运行 scripts/imex-configure.sh 生成并启动
         url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-imex-580/nvidia-imex-580_580.178.04-0ubuntu0.24.04.1_arm64.deb
@@ -1322,7 +1299,7 @@ cuda:
       # conflicts and needs NVIDIA's libnvidia-cfg1 naming (verified 2026-11-05).
       # Ubuntu only has a 535 nvidia-modprobe; take 580 from the NVIDIA sbsa repo.
       - name: nvidia-modprobe
-        description: nvidia-modprobe 580.178.04（设备节点创建,fabricmanager/imex 依赖,arm64/sbsa）
+        description: nvidia-modprobe 580.178.04（设备节点创建,imex 依赖,arm64/sbsa）
         url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/nvidia-modprobe_580.178.04-1ubuntu1_arm64.deb
         version: 580.178.04
         required: true
@@ -1414,14 +1391,6 @@ cuda:
         filename: hpcx-v2.23-ubuntu2404-cuda12-aarch64.tbz
         install_method: extract
         install_path: "/opt/hpcx"
-      - name: cuda-samples-bandwidthtest
-        description: CUDA Bandwidth Test（CUDA 13.0 配套）
-        url: https://github.com/NVIDIA/cuda-samples/archive/refs/tags/v13.0.tar.gz
-        version: '13.0'
-        required: false
-        filename: cuda-samples-13.0.tar.gz
-        install_method: build
-        build_target: Samples/1_Utilities/bandwidthTest
       docker_images:
       - name: cuda-runtime-smoke-test
         description: CUDA 13.0.3 runtime 冒烟测试镜像（arm64 约 1.8 GB 压缩）,docker run --gpus all nvidia-smi
@@ -1463,12 +1432,16 @@ cuda:
       install_environment:
         CUDA_PROFILE: cuda13-gb300-aggressive
         CUDA_TOOLKIT_PACKAGE: cuda-toolkit-13-4
+        # DOCA 3.5 (MOFED 2607) builds mlnx-nvme / mlnx-nfsrdma on 7.0.0-1025
+        # (verified 2026-11-27); they replace MOFED's dummy nvme-rdma / rpcrdma
+        # so NVMe-oF and NFS over RDMA keep working.
+        DOCA_PACKAGES: mlnx-ofed-kernel-dkms mlnx-ofed-kernel-utils mlnx-nvme-dkms mlnx-nfsrdma-dkms ibverbs-providers libibverbs1 ibverbs-utils librdmacm1 infiniband-diags mft
         KERNEL_RELEASE: 7.0.0-1025-nvidia-64k
         NVIDIA_DRIVER_BRANCH: 615-server-open-signed
         NVIDIA_DRIVER_VERSION: 615.71.09
         NVIDIA_DRIVER_FLAVOR: open
         NVIDIA_DRIVER_PKG_SUFFIX: 0ubuntu0.24.04.2
-        NVIDIA_DRIVER_PACKAGES: nvidia-headless-no-dkms-615-server-open nvidia-utils-615-server linux-modules-nvidia-615-server-open-nvidia-64k-hwe-24.04 nvidia-fabricmanager-615 libnvidia-nscq-615 nvidia-imex-615 nvidia-modprobe
+        NVIDIA_DRIVER_PACKAGES: nvidia-headless-no-dkms-615-server-open nvidia-utils-615-server linux-modules-nvidia-615-server-open-nvidia-64k-hwe-24.04 nvidia-imex-615 nvidia-modprobe
       # basic entries tied to the 1024 kernel ABI; replaced by 1025 below.
       exclude_packages:
       - linux-image-7.0.0-1024-nvidia-64k
@@ -1585,8 +1558,8 @@ cuda:
       # -----------------------------------------------------------------------
       # GPU driver: Canonical signed R615 server-open 615.71.09 (ports.ubuntu.com
       # noble-updates multiverse + restricted signed modules for 1025). Same
-      # package layout as the R580 set in cuda13-gb300; every userspace piece,
-      # fabricmanager, nscq and imex is 615.71.09 (verified 2026-11-09).
+      # package layout as the R580 set in cuda13-gb300; every userspace piece
+      # and imex is 615.71.09 (verified 2026-11-09).
       # -----------------------------------------------------------------------
       - name: nvidia-headless-no-dkms-615-server-open
         description: R615 server-open headless 元包（无 DKMS、无 X11,Canonical 签名路径入口）
@@ -1678,24 +1651,6 @@ cuda:
         filename: nvidia-utils-615-server_615.71.09_arm64.deb
         install_method: apt
         group: gpu-driver
-      - name: nvidia-fabricmanager-615
-        description: NVSwitch Fabric Manager 615.71.09（Ubuntu multiverse；NVL72 交换托盘由 NMX-C 管理,节点侧安装但 nvidia_setup.sh 保持 disabled）
-        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/f/fabric-manager-615/nvidia-fabricmanager-615_615.71.09-0ubuntu0.24.04.1_arm64.deb
-        version: 615.71.09-0ubuntu0.24.04.1
-        sha256: e70d7e76db4b3b097bfa3e8d53101312b8cd0fc46d6e315a4481d973ed1c42a6
-        required: false
-        filename: nvidia-fabricmanager-615_615.71.09_arm64.deb
-        install_method: apt
-        group: gpu-driver
-      - name: libnvidia-nscq-615
-        description: NVSwitch Configuration and Query library 615.71.09（Ubuntu multiverse）
-        url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/libn/libnvidia-nscq-615/libnvidia-nscq-615_615.71.09-0ubuntu0.24.04.1_arm64.deb
-        version: 615.71.09-0ubuntu0.24.04.1
-        sha256: 76f32707df05436e62cf6555d44bae82e2fa9e0d13ca7e4e7790004eb1d7a5a2
-        required: false
-        filename: libnvidia-nscq-615_615.71.09_arm64.deb
-        install_method: apt
-        group: gpu-driver
       - name: nvidia-imex-615
         description: NVIDIA IMEX daemon 615.71.09（多节点 NVLink 域,GB300 NVL72）。ISO 只安装+预置,装机后运行 scripts/imex-configure.sh 生成 nodes_config.cfg 并启动
         url: http://ports.ubuntu.com/ubuntu-ports/pool/multiverse/n/nvidia-imex-615/nvidia-imex-615_615.71.09-0ubuntu0.24.04.1_arm64.deb
@@ -1706,7 +1661,7 @@ cuda:
         install_method: apt
         group: gpu-driver
       - name: nvidia-modprobe
-        description: nvidia-modprobe 615.71.09（设备节点创建,fabricmanager/imex 依赖,arm64/sbsa）
+        description: nvidia-modprobe 615.71.09（设备节点创建,imex 依赖,arm64/sbsa）
         url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/nvidia-modprobe_615.71.09-2ubuntu1_arm64.deb
         version: '615.71.09'
         sha256: 9831cdf3236d34c1091e71a8896c88e3d357db176b8e97ee4c7758a9c2614633
@@ -2014,14 +1969,6 @@ cuda:
         filename: hpcx-v2.23-ubuntu2404-cuda12-aarch64.tbz
         install_method: extract
         install_path: "/opt/hpcx"
-      - name: cuda-samples-bandwidthtest
-        description: CUDA Bandwidth Test（CUDA 13.4 配套）
-        url: https://github.com/NVIDIA/cuda-samples/archive/refs/tags/v13.4.tar.gz
-        version: '13.4'
-        required: false
-        filename: cuda-samples-13.4.tar.gz
-        install_method: build
-        build_target: Samples/1_Utilities/bandwidthTest
       docker_images:
       - name: cuda-runtime-smoke-test
         description: CUDA 13.4.3 runtime 冒烟测试镜像（arm64）,docker run --gpus all nvidia-smi
@@ -2097,7 +2044,7 @@ user_data:
       log: "/var/log/installer/metal-deployer-root-disk.log"
     autoinstall_late_commands:
     - name: nvidia_kernel
-      description: 安装阶段 late-commands 中执行 install_target_kernel.sh：从 /opt/resource/packages 离线安装 linux-nvidia-64k-hwe-24.04（7.0.0-1024）并 hold,安装器重启后直接进入该内核
+      description: 安装阶段 late-commands 中执行 install_target_kernel.sh：从 /opt/resource/packages 离线安装 linux-nvidia-64k-hwe-24.04（7.0.0-1024）并 hold,删除安装器 linux-generic 元包与 6.8 headers（6.8 内核镜像留作 GRUB 救援项,DKMS 不再为它编译）,安装器重启后直接进入该内核
       script: install_target_kernel.sh
       enabled: true
       log: "/var/log/metal-deployer-target-kernel.log"
@@ -2117,7 +2064,7 @@ user_data:
       enabled: true
     - name: dgx_system_tuning
       description: 安装 DGX 系统调优包（grub/sysctl/modprobe/modules-load）
-      command: apt-get install -y --no-install-recommends nv-common-apis nvidia-grub-params nvidia-kernel-defaults nv-cpu-governor nvidia-disable-numa-balancing nvidia-disable-init-on-alloc nv-iommu nvidia-acs-disable nvidia-pci-bridge-power nvidia-relaxed-ordering-gpu nvidia-relaxed-ordering-nvme nvidia-nvme-options nv-limits nv-ipmi-devintf nv-persistence-mode nvidia-fs-loader nvidia-peermem-loader nvidia-ib-umad-loader nvidia-arm-cspmu-loader nvidia-sbsa-gwdt-options nvidia-cppc-cpufreq-options nvidia-earlycon nvidia-crashdump nvidia-logrotate nvgpu-services-list nvidia-chardev-links && update-grub
+      command: apt-get install -y --no-install-recommends nv-common-apis nvidia-grub-params nvidia-kernel-defaults nvidia-disable-numa-balancing nvidia-disable-init-on-alloc nv-iommu nvidia-acs-disable nvidia-pci-bridge-power nvidia-relaxed-ordering-gpu nvidia-relaxed-ordering-nvme nvidia-nvme-options nv-limits nv-ipmi-devintf nv-persistence-mode nvidia-fs-loader nvidia-ib-umad-loader nvidia-arm-cspmu-loader nvidia-sbsa-gwdt-options nvidia-cppc-cpufreq-options nvidia-earlycon nvidia-crashdump nvidia-logrotate nvgpu-services-list nvidia-chardev-links && update-grub
       enabled: true
       log: "/var/log/dgx-system-tuning.log"
     - name: apt_packages
@@ -2125,8 +2072,8 @@ user_data:
       enabled: true
       log: "/var/log/apt-install.log"
     - name: gpu_driver
-      description: 安装 Canonical 签名 R580 server-open 580.178.04（预编译模块,无 DKMS）+ FM + NSCQ + IMEX + GDS tools 1.15 + DCGM 4.7.1 + NCCL 2.31.2
-      command: apt-get install -y --no-install-recommends nvidia-headless-no-dkms-580-server-open nvidia-utils-580-server linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04 nvidia-fabricmanager-580 libnvidia-nscq-580 nvidia-imex-580 nvidia-modprobe cuda-toolkit-13-0 gds-tools-13-0 libnccl2 libnccl-dev datacenter-gpu-manager-4-core datacenter-gpu-manager-4-proprietary datacenter-gpu-manager-4-cuda13 datacenter-gpu-manager-4-proprietary-cuda13
+      description: 安装 Canonical 签名 R580 server-open 580.178.04（预编译模块,无 DKMS）+ IMEX + GDS tools 1.15 + DCGM 4.7.1 + NCCL 2.31.2
+      command: apt-get install -y --no-install-recommends nvidia-headless-no-dkms-580-server-open nvidia-utils-580-server linux-modules-nvidia-580-server-open-nvidia-64k-hwe-24.04 nvidia-imex-580 nvidia-modprobe cuda-toolkit-13-0 gds-tools-13-0 libnccl2 libnccl-dev datacenter-gpu-manager-4-core datacenter-gpu-manager-4-proprietary datacenter-gpu-manager-4-cuda13 datacenter-gpu-manager-4-proprietary-cuda13
       enabled: true
       condition: "lspci -d 10de: | grep -qiE '3d|vga|display'"
       log: "/var/log/gpu-driver.log"

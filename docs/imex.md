@@ -18,7 +18,7 @@ GB300 NVL72 一个机柜 = 18 个计算托盘（72 GPU）+ 9 个 NVSwitch 托盘
 | CDMM：`options nvidia NVreg_CoherentGPUMemoryMode=driver`（仅 `PLATFORM=gb300/gb200`，`ENABLE_CDMM=1/0` 可覆盖）+ `update-initramfs -u` | ✅ | [nvidia_setup.sh](../build-iso/scripts/nvidia_setup.sh) → `/etc/modprobe.d/nvidia-cdmm.conf` |
 | systemd drop-in `ConditionPathExists=/etc/nvidia-imex/nodes_config.cfg` | ✅ | [config/imex/10-wait-config.conf](../build-iso/config/imex/10-wait-config.conf) |
 | `systemctl enable nvidia-imex`（无节点列表时静默不启动） | ✅ | nvidia_setup.sh |
-| GB300 下不 enable `nvidia-fabricmanager` | ✅ | nvidia_setup.sh（`PLATFORM=gb300`，可用 `SKIP_FABRIC_MANAGER=0/1` 覆盖） |
+| GB300 下不安装 `nvidia-fabricmanager` / `libnvidia-nscq`，也不 enable | ✅ | manifest 不打包；nvidia_setup.sh（`PLATFORM=gb300`，`SKIP_FABRIC_MANAGER=0/1` 可覆盖，用于手动装了 FM 的主机） |
 | 运维脚本 `imex-configure.sh` / `imex-check.sh` / `imex-bench.sh` | ✅ | `/opt/resource/scripts/` |
 | 测试工具 nccl-tests、nvbandwidth（`-DMULTINODE=1`）、`imex_fabric_ipc_test` | ✅ 首启编译 | `/opt/gpu-rdma-test-tools/bin/` |
 | QEMU 打包自检 `imex-check.sh --smoke`（`nvidia-imex -nogpu` 回环域） | ✅ | [test.sh](../build-iso/test.sh) |

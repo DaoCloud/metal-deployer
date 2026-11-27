@@ -42,7 +42,7 @@ SuperBench (sb) 是一个用于 AI 基础设施性能测试的工具，支持单
    - 每个被测主机已安装 Docker
    - 被测主机已加载 SuperBench 镜像（需 load 到主机上）：
      - x86（H100/H200/B300 等）：`docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9`
-     - GB300（arm64）：`docker.io/superbench/main:cuda13.0`（GB300 ISO 已预置；v0.12.0 不支持 GB300 的 sm_103）
+     - GB300（arm64）：`docker.io/superbench/main:cuda13.0`（GB300 ISO 默认不打包，加载方法见 [superbench-gb300.md](./superbench-gb300.md) 4.7 节；v0.12.0 不支持 GB300 的 sm_103）
 
 #### 准备 sbcli 镜像
 

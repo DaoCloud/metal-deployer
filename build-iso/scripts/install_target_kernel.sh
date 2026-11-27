@@ -75,6 +75,24 @@ fi
 # shellcheck disable=SC2086
 apt-mark hold ${KERNEL_PACKAGE} >/dev/null
 
+# The installer kernel (user-data kernel.package: linux-generic) stays only as
+# a GRUB rescue entry. Drop its metapackages and headers: with headers present
+# every DKMS module (DOCA mlnx-ofed-kernel, gdrdrv) is also built for it on
+# first boot, doubling build time, and the metapackages would pull newer
+# generic kernels on an online upgrade. The kernel image and modules stay.
+mapfile -t generic_pkgs < <(
+    dpkg-query -W -f='${db:Status-Status} ${Package}\n' \
+        'linux-generic*' 'linux-image-generic*' 'linux-headers-*' 'linux-tools-generic*' 2>/dev/null |
+        awk '$1 == "installed" {print $2}' |
+        grep -E '^linux-(generic|image-generic|tools-generic|headers-generic)|^linux-headers-[0-9.]+-[0-9]+(-generic)?$' |
+        grep -v -e '64k' -e "${KERNEL_RELEASE:-${KERNEL_PACKAGE}}" || true
+)
+if [ "${#generic_pkgs[@]}" -gt 0 ]; then
+    log "Removing installer kernel metapackages/headers: ${generic_pkgs[*]}"
+    apt-get purge -y "${generic_pkgs[@]}" ||
+        log "WARNING: could not remove ${generic_pkgs[*]}; DKMS will also build for the installer kernel."
+fi
+
 # GRUB boots the newest kernel by default; refresh the menu explicitly in case
 # the kernel postinst hook skipped it inside the installer chroot.
 if command -v update-grub >/dev/null 2>&1; then

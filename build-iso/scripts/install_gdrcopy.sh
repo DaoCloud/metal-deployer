@@ -82,8 +82,16 @@ if modprobe nvidia_peermem 2>/dev/null; then
 else
     log "Skip nvidia_peermem: PeerDirect API unavailable (modern OFED/kernel uses dma-buf GPUDirect RDMA); not required."
 fi
-modprobe gdrdrv
-
+if ! modprobe gdrdrv 2>/tmp/gdrdrv-modprobe.err; then
+    # Unsigned DKMS module under Secure Boot: modprobe reports "Key was rejected".
+    if grep -qi 'key was rejected' /tmp/gdrdrv-modprobe.err; then
+        log "Skip gdrdrv load: Secure Boot rejects the unsigned DKMS module. libgdrapi/gdrcopy stay installed; disable Secure Boot or enroll the DKMS MOK key to use GDRCopy."
+        rm -f "$MODULE_LOAD_FILE"
+        exit 0
+    fi
+    cat /tmp/gdrdrv-modprobe.err >&2
+    exit 1
+fi
 ldconfig
 modinfo gdrdrv >/dev/null
 grep -q '^gdrdrv ' /proc/modules

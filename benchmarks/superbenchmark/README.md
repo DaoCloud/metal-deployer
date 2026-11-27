@@ -12,7 +12,7 @@
 |--------|------|------|
 | **控制节点** | Docker 已安装 | 用于运行 sbcli 控制容器 |
 | **被测节点** | Docker 已安装 | 所有被测主机需要 Docker 环境 |
-| **被测节点镜像** | 已加载镜像 | x86：`docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9`；GB300（arm64）：`docker.io/superbench/main:cuda13.0`（GB300 ISO 已预置） |
+| **被测节点镜像** | 已加载镜像 | x86：`docker.m.daocloud.io/superbench/superbench:v0.12.0-cuda12.9`；GB300（arm64）：`docker.io/superbench/main:cuda13.0`（GB300 ISO 默认不打包，需单独加载） |
 | **SSH 连接** | 密钥认证 | 控制节点能通过 SSH 密钥连接到所有被测节点 |
 
 ### 1.2 镜像准备

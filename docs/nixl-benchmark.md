@@ -44,7 +44,7 @@ ghcr.io/daocloud/metal-deployer/nixl-benchmark:latest-cuda13-x86     # B200/B300
 ### 2.3 被测主机要求
 
 1. NVIDIA GPU 与驱动；单机测试（S1/S2）要求每台至少 2 张空闲 GPU（显存占用 < 1GiB）。
-2. 跨节点测试需要 RDMA 网卡（InfiniBand 或 RoCE），`ibv_devices` 可见；GPUDirect RDMA（S5）需要 `nvidia_peermem` 内核模块。
+2. 跨节点测试需要 RDMA 网卡（InfiniBand 或 RoCE），`ibv_devices` 可见；GPUDirect RDMA（S5）需要 dma-buf（内核 `CONFIG_DMABUF_MOVE_NOTIFY` + open 驱动）或 `nvidia_peermem` 内核模块。GB300 ISO 的 Canonical 签名驱动只走 dma-buf，其 `nvidia_peermem` 加载会失败，属正常。
 3. Docker + NVIDIA Container Toolkit，或 containerd（nerdctl）。GPU-operator 部署的节点上 `--gpus all` 不可用，须改用 `GPU_FLAGS="--runtime /usr/local/nvidia/toolkit/nvidia-container-runtime -e NVIDIA_VISIBLE_DEVICES=all"`。
 
 ## 三、testNixl 测试

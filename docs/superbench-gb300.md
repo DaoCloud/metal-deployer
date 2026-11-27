@@ -6,7 +6,7 @@
 
 ## 1. 结论与范围
 
-- **worker 镜像不重建**：继续使用 GB300 ISO 预置的 `superbench/main:cuda13.0`（main@9142bdfe，含 sm_103，CUDA 13.0 与 ISO 的 580 驱动匹配）。主要缺口在配置，不在镜像。
+- **worker 镜像不重建**：继续使用 `superbench/main:cuda13.0`（GB300 ISO 默认不打包，测试前按 4.7 节加载）（main@9142bdfe，含 sm_103，CUDA 13.0 与 ISO 的 580 驱动匹配）。主要缺口在配置，不在镜像。
 - **改动集中在本仓库**：新增 `config_gb300_*.yaml` 和 `rule_gb300.yaml`，`run-tests.sh` 增加 gb300 profile。x86 的原有配置和默认行为不变。
 - **不放进 SuperBench 的测试**（见第 7 节）：Hybrid-EP / DeepGEMM、IMEX 数据面测试由 moe-bench 镜像负责；多节点 nvbandwidth、NVLoom 由宿主机 DCGM `dcgmi mndiag` 负责；IMEX 状态检查、stress-ng、Grace HPL 留在宿主机。
 
@@ -97,13 +97,15 @@ x86 配置写死 `/dev/nvme0n1` 并包含写测试，会覆盖盘上数据。GB3
 
 ### 4.7 worker 镜像引用
 
-ISO 构建时按 digest（arm64 `sha256:3828087e…`）拉取，再以 tag `docker.io/superbench/main:cuda13.0` 保存；节点上 `docker load` 不保留 digest，所以 `run-tests.sh` 只能按 tag 引用。不是用 ISO 安装的节点，需要先按 digest 拉取再打同名 tag：
+镜像约 16 GB，GB300 ISO 默认不打包（manifest `download: false`）。`run-tests.sh` 按 tag 引用，所以被测节点需要先按 digest（arm64 `sha256:3828087e…`）拉取再打同名 tag：
 
 ```bash
 docker pull docker.io/superbench/main@sha256:3828087ecb299adb72538a2e8abd7a759b7a0170df261cda397f730bfbedadd4
 docker tag docker.io/superbench/main@sha256:3828087ecb299adb72538a2e8abd7a759b7a0170df261cda397f730bfbedadd4 \
     docker.io/superbench/main:cuda13.0
 ```
+
+离线节点：在能联网的机器上执行上面两条命令，再 `docker save docker.io/superbench/main:cuda13.0 -o superbench-main-cuda13.0-arm64.tar`，拷到节点后 `docker load -i`。`docker load` 不保留 digest，只能按 tag 引用。
 
 ## 5. 已完成的离线校验
 
