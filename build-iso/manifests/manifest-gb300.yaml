@@ -29,7 +29,7 @@
 #   yq               (not in DGX OS)         4.54.3 (mikefarah, static) /usr/local/bin/yq
 #   GDS              1.15 (CUDA 13.0)        nvidia-fs signed module + libcufile (via cuda-toolkit) + gds-tools 1.15.1.6
 #   NVSM / NVVCT     26.06.03 / 1.0.00-1     not shipped              DGX-only repo component, not publicly downloadable
-#   MIG manager      0.15.0                  0.15.0                   exact (optional)
+#   MIG manager      0.15.0                  not shipped              MIG unused; add nvidia-mig-manager back if needed
 #   nvidia-system-*  2404.26.01              curated subset           DGX tuning debs, see dgx-system-tuning
 #   HPC-X            (not in DGX OS)         NGC hpc-benchmarks:25.09 optional (download: false); nccl-tests need only Ubuntu openmpi
 #   Containers       DLFW 26.07              cuda:13.0.3-runtime      smoke test; pytorch:26.09-py3 (12 GB) left out
@@ -781,15 +781,6 @@ basic:
     filename: nvidia-crashdump_25.08-1_all.deb
     install_method: apt
     group: dgx-system-tuning
-  - name: nvidia-dcgm-bind-all
-    description: DCGM nv-hostengine 监听所有地址
-    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-dcgm-bind-all/nvidia-dcgm-bind-all_24.07-1_all.deb
-    version: 24.07-1
-    sha256: 78f416a80dfa48edca9af34081c37e73b748c650c5fe260a7991e130af71b705
-    required: false
-    filename: nvidia-dcgm-bind-all_24.07-1_all.deb
-    install_method: apt
-    group: dgx-system-tuning
   - name: nvidia-logrotate
     description: NVIDIA logrotate 策略
     url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-logrotate/nvidia-logrotate_21.11-1_all.deb
@@ -806,15 +797,6 @@ basic:
     sha256: 6a88b7b4b34d44db9b120465b7f1754dfe611a4a0880db11321b93b5081e161d
     required: false
     filename: nvgpu-services-list_22.05-1_all.deb
-    install_method: apt
-    group: dgx-system-tuning
-  - name: nvidia-mig-manager
-    description: NVIDIA MIG Partition Editor 0.15.0（mig-parted,DGX OS 7.6.0 对齐,arm64）
-    url: https://repo.download.nvidia.com/baseos/ubuntu/noble/arm64/pool/common/n/nvidia-mig-manager/nvidia-mig-manager_0.15.0-1_arm64.deb
-    version: 0.15.0-1
-    sha256: c15e1dc68cb6b29832061705b46f7e1e05fb8562cf57deb7e738693fd4ab81c4
-    required: false
-    filename: nvidia-mig-manager_0.15.0-1_arm64.deb
     install_method: apt
     group: dgx-system-tuning
   - name: nvidia-chardev-links
@@ -846,6 +828,9 @@ basic:
   #                                    GPUDirect RDMA uses dma-buf (DOCA ib_core).
   #   nv-cpu-governor 22.05          : same job as cpu-performance.service (scripts),
   #                                    which writes sysfs and does not need cpupower.
+  #   nvidia-dcgm-bind-all 24.07     : makes nv-hostengine listen on all addresses;
+  #                                    keep DCGM local (exporters run on the node).
+  #   nvidia-mig-manager 0.15.0      : MIG is not used on these trays.
   #   NVSM 26.06 / NVVCT 1.0         : DGX-only "dgx" component, empty on the public repo.
 
   # ---------------------------------------------------------------------------
